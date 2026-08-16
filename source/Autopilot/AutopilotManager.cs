@@ -177,7 +177,6 @@ namespace NGUInjector.Autopilot
             Plan = AutopilotPlanner.Build(Main.Character, Config);
             var signature = Plan.Signature();
             ObserveBossTransitions(Main.Character);
-            WriteDecision();
 
             if (signature != _lastPlanSignature)
             {
@@ -212,6 +211,33 @@ namespace NGUInjector.Autopilot
                 SpendBestPerk();
             if (CanExecuteIrreversible && Config.AllowQuirkSpending)
                 SpendBestQuirk();
+        }
+
+        internal void PublishDecisionAfterAutomation(bool transactionComplete, string transactionError)
+        {
+            /*
+            POST-TRANSACTION TELEMETRY BARRIER
+
+            Tick builds policy and may mutate purchases before Main continues through inventory,
+            Daycare, quests, allocations, and rebirth. Publishing inside Tick described the state
+            before those later actions and made correct automation look stale for a full cycle.
+            Main queues this method after the one-second transaction, then its fast allocator calls
+            it after the settling sweep. The snapshot is still observational—it never drives
+            mutations—and uses the installed plan with the final native state from that cycle.
+            */
+            if (Config == null) return;
+            if (!Config.Enabled)
+            {
+                WriteDisabledDecision();
+                return;
+            }
+            // Keep the policy object that Tick actually installed. Rebuilding here only
+            // for display can produce a different rebirth/allocation target that has not
+            // yet been loaded into Profile, making telemetry predictive instead of true.
+            // All native state fields below are still sampled after the completed sweep.
+            if (Plan == null)
+                Plan = AutopilotPlanner.Build(Main.Character, Config);
+            WriteDecision(transactionComplete, transactionError);
         }
 
         private void ObserveBossTransitions(Character c)
@@ -540,7 +566,7 @@ namespace NGUInjector.Autopilot
             Profile.ReloadAllocation();
         }
 
-        private void WriteDecision()
+        private void WriteDecision(bool transactionComplete, string transactionError)
         {
             var c = Main.Character;
             UpdateResourceRates(c);
@@ -627,6 +653,9 @@ namespace NGUInjector.Autopilot
                        + "  \"mode\": \"" + Config.Mode + "\",\n"
                        + "  \"synced\": true,\n"
                        + "  \"syncState\": \"active-gameplay\",\n"
+                       + "  \"decisionPhase\": \"post-automation-transaction\",\n"
+                       + "  \"automationTransactionComplete\": " + transactionComplete.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"automationTransactionError\": \"" + EscapeJson(transactionError ?? string.Empty) + "\",\n"
                        + "  \"stage\": \"" + escapedStage + "\",\n"
                        + "  \"objective\": \"" + escapedObjective + "\",\n"
                        + "  \"rebirthSeconds\": " + Plan.RebirthSeconds + ",\n"

@@ -11,11 +11,14 @@ import AppKit
 final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let logPath: String
     private let decisionPath: String
+    private let launchedAt = Date()
     private var offset: UInt64 = 0
-    private var lastDecisionTime = ""
     private var producerPid: Int?
     private var buildId: String?
     private var lastDecisionSequence = 0
+    private var lastRenderedSequence = -1
+    private var lastAcceptedModification = Date.distantPast
+    private var producerEpoch = 0
     private var window: NSWindow!
     private var textView: NSTextView!
     private var goalsTextView: NSTextView!
@@ -152,47 +155,92 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let incomingPid = number(object, "producerPid")
             let incomingBuild = object["buildId"] as? String ?? ""
             let sequence = number(object, "decisionSequence")
-            if schema != 2 || incomingPid <= 0 || incomingBuild.isEmpty
-                || (producerPid != nil && producerPid != incomingPid)
-                || (buildId != nil && buildId != incomingBuild)
-                || sequence < lastDecisionSequence {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: decisionPath)
+            let modified = attributes?[.modificationDate] as? Date ?? .distantPast
+            let age = max(0, Date().timeIntervalSince(modified))
+            if schema != 2 || incomingPid <= 0 || incomingBuild.isEmpty || sequence <= 0 {
                 statusLabel.stringValue = "AUTOMATION • REJECTED UNVERIFIED OR OUT-OF-SEQUENCE TELEMETRY"
                 statusLabel.textColor = .systemRed
                 return
             }
+
+            /*
+            PRODUCER-EPOCH HANDSHAKE
+
+            A manually launched monitor may encounter a retained decision.json from an earlier
+            process (the normal launcher proactively removes it). Older code latched that valid-
+            looking PID/build and rejected the real producer forever. Do not bind an initial epoch
+            until the file has changed after monitor launch.
+            Once bound, accept a changed PID/build (or a small fresh sequence reset) only when the
+            atomic file is newer than the last accepted frame and currently fresh. This heals
+            legitimate restarts while still rejecting rollback/stale telemetry.
+            */
+            if producerPid == nil && modified < launchedAt.addingTimeInterval(-0.25) {
+                statusLabel.stringValue = "AUTOMATION • WAITING FOR A FRESH PRODUCER FRAME"
+                statusLabel.textColor = .systemOrange
+                summaryLabel.stringValue = "Ignoring the previous process's retained decision file…"
+                summaryLabel.textColor = .systemOrange
+                return
+            }
+            let identityChanged = producerPid != nil
+                && (producerPid != incomingPid || buildId != incomingBuild)
+            let sequenceReset = producerPid != nil && sequence < lastDecisionSequence
+            if identityChanged || sequenceReset {
+                let validNewEpoch = age <= 5 && modified > lastAcceptedModification
+                    && (identityChanged || sequence <= 10)
+                if !validNewEpoch {
+                    statusLabel.stringValue = "AUTOMATION • REJECTED STALE OR ROLLED-BACK TELEMETRY"
+                    statusLabel.textColor = .systemRed
+                    return
+                }
+                producerEpoch += 1
+                lastDecisionSequence = 0
+                lastRenderedSequence = -1
+            }
             producerPid = incomingPid
             buildId = incomingBuild
             lastDecisionSequence = sequence
+            if modified > lastAcceptedModification { lastAcceptedModification = modified }
             let elapsed = number(object, "rebirthElapsed")
             let synced = object["synced"] as? Bool ?? false
             let enabled = object["enabled"] as? Bool ?? false
             let mutationsEnabled = object["mutationsEnabled"] as? Bool ?? false
+            let transactionComplete = object["automationTransactionComplete"] as? Bool ?? false
+            let transactionError = object["automationTransactionError"] as? String ?? ""
             let mode = (object["mode"] as? String ?? "unknown").uppercased()
-            let attributes = try? FileManager.default.attributesOfItem(atPath: decisionPath)
-            let modified = attributes?[.modificationDate] as? Date ?? .distantPast
-            let age = Date().timeIntervalSince(modified)
             if age > 5 {
                 statusLabel.stringValue = "\(mode) AUTOMATION • STALE TELEMETRY \(Int(age))s • LAST \(stage.uppercased())"
                 statusLabel.textColor = .systemRed
             } else if !enabled {
                 statusLabel.stringValue = "AUTOMATION DISABLED • \(stage.uppercased())"
                 statusLabel.textColor = .systemOrange
+                summaryLabel.stringValue = "Automation is disabled; this is an observational producer heartbeat."
+                summaryLabel.textColor = .systemOrange
             } else if !synced {
                 statusLabel.stringValue = "\(mode) AUTOMATION PAUSED • NO GAMEPLAY MUTATIONS; AUTOSAVE LOAD MAY RUN"
                 statusLabel.textColor = .systemOrange
+                updateSummary(object)
             } else if !mutationsEnabled {
                 statusLabel.stringValue = "\(mode) • OBSERVATION ONLY • NO GAMEPLAY MUTATIONS"
                 statusLabel.textColor = .systemOrange
+                summaryLabel.stringValue = "The producer is live, but mutation authority is not active."
+                summaryLabel.textColor = .systemOrange
+            } else if !transactionComplete {
+                statusLabel.stringValue = "\(mode) • PARTIAL AUTOMATION CYCLE • SNAPSHOT #\(sequence)"
+                statusLabel.textColor = .systemOrange
+                summaryLabel.stringValue = transactionError.isEmpty
+                    ? "A subsystem did not finish; the snapshot is current but the cycle was partial."
+                    : "Partial cycle: \(transactionError)"
+                summaryLabel.textColor = .systemOrange
             } else {
                 let target = number(object, "rebirthSeconds")
                 let remaining = max(0, target - elapsed)
-                statusLabel.stringValue = "\(mode) • SYNCED • \(stage.uppercased()) • TARGET \(groupedInteger(target))s • ETA \(formatDuration(remaining))"
+                statusLabel.stringValue = "\(mode) • SYNCED • \(stage.uppercased()) • TARGET \(groupedInteger(target))s • ETA \(formatDuration(remaining)) • SNAPSHOT #\(sequence)"
                 statusLabel.textColor = .systemGreen
+                updateSummary(object)
             }
-            updateSummary(object)
-            let stamp = object["time"] as? String ?? ""
-            if stamp != lastDecisionTime {
-                lastDecisionTime = stamp
+            if sequence != lastRenderedSequence {
+                lastRenderedSequence = sequence
                 renderGoals(object)
             }
         } else {
@@ -217,7 +265,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let totalEnergy = numberDouble(state, "energyCurrent")
         let collection = state["collectionIsBackfill"] as? Bool ?? false ? "BACKFILL" : "FORWARD"
         let etaText = bossEta < 0 ? "evaluating" : formatEstimate(bossEta)
-        summaryLabel.stringValue = "BOSS \(selectedBoss) \(etaText)   •   ADV \(zone) [\(collection)]   •   INV \(free)/\(total) FREE [\(pressure)]   •   ENERGY \(shortNumber(usedEnergy))/\(shortNumber(totalEnergy))"
+        let sequence = number(state, "decisionSequence")
+        let transactionComplete = state["automationTransactionComplete"] as? Bool ?? false
+        let phase = state["decisionPhase"] as? String == "post-automation-transaction"
+            ? (transactionComplete ? "POST-ACTION" : "PARTIAL") : "LEGACY"
+        summaryLabel.stringValue = "BOSS \(selectedBoss) \(etaText)   •   ADV \(zone) [\(collection)]   •   INV \(free)/\(total) FREE [\(pressure)]   •   ENERGY \(shortNumber(usedEnergy))/\(shortNumber(totalEnergy))   •   \(phase) #\(sequence) E\(producerEpoch)"
         summaryLabel.textColor = pressure == "CRITICAL" ? .systemRed
             : pressure == "HIGH" ? .systemOrange : NSColor(calibratedWhite: 0.72, alpha: 1)
     }

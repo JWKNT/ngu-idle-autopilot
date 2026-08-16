@@ -26,6 +26,10 @@ if [[ ! -f "$bot_dir/runtime/autopilot.json" ]]; then
 fi
 
 cd "$bot_dir"
+# decision.json is generated telemetry, not save data. Remove the previous producer's
+# retained frame before injection so a newly opened monitor cannot briefly present it
+# as current while the DLL is still crossing the gameplay synchronization barrier.
+rm -f "$bot_dir/runtime/decision.json"
 result=$(env CX_BOTTLE=Steam "$wine_bin" injector/smi.exe inject -p NGUIdle -a NGUIdleAutopilot.dll -n NGUAutopilot -c Loader -m Init)
 print -r -- "$result"
 pointer=${result##*: }

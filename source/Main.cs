@@ -56,6 +56,9 @@ namespace NGUInjector
         private static int _furthestZone;
         private bool _syncStateInitialized;
         private bool _lastGameplayReady;
+        private bool _decisionPublishPending;
+        private bool _pendingTransactionComplete;
+        private string _pendingTransactionError = string.Empty;
         private DateTime _lastAutoEnterAttempt = DateTime.MinValue;
         private volatile bool _zoneReloadRequested;
         private volatile bool _settingsReloadRequested;
@@ -795,6 +798,33 @@ namespace NGUInjector
             catch (Exception e)
             {
                 Log("Fast allocation error: " + e.Message);
+                _pendingTransactionComplete = false;
+                _pendingTransactionError = string.IsNullOrEmpty(_pendingTransactionError)
+                    ? "Fast allocation " + e.GetType().Name + ": " + e.Message
+                    : _pendingTransactionError + "; fast allocation " + e.GetType().Name + ": " + e.Message;
+            }
+
+            /*
+            SETTLED-STATE PUBLICATION BARRIER
+
+            Inventory/loadout work can reclaim Energy, Magic, and Resource 3 near the end of the
+            one-second transaction. The fast allocator restores those pools on this 0.2-second
+            cadence. Publishing between the two made a correct bot look completely idle. Emit the
+            pending decision only after this sweep, when all cooperating mutation loops have
+            reached their stable state. Any allocation failure marks the cycle partial.
+            */
+            if (_decisionPublishPending && Autopilot != null)
+            {
+                try
+                {
+                    Autopilot.PublishDecisionAfterAutomation(_pendingTransactionComplete,
+                        _pendingTransactionError);
+                    _decisionPublishPending = false;
+                }
+                catch (Exception e)
+                {
+                    Log("Settled decision publish failed: " + e.Message);
+                }
             }
         }
 
@@ -902,6 +932,8 @@ namespace NGUInjector
         // Runs every second; tactical combat and allocations have separate faster loops.
         void AutomationRoutine()
         {
+            var transactionComplete = false;
+            var transactionError = string.Empty;
             try
             {
                 if (!IsAutomationReady)
@@ -1122,12 +1154,19 @@ namespace NGUInjector
                 {
                     ActiveProfile.DoRebirth();
                 }
+                transactionComplete = true;
             }
             catch (Exception e)
             {
+                transactionError = e.GetType().Name + ": " + e.Message;
                 Log(e.Message);
                 Log(e.StackTrace);
             }
+            // Queue publication for the next fast-allocation sweep. Gear work above may
+            // have reclaimed resource pools that are intentionally restored on that cadence.
+            _pendingTransactionComplete = transactionComplete;
+            _pendingTransactionError = transactionError;
+            _decisionPublishPending = Autopilot != null;
             _timeLeft = 1f;
         }
 
