@@ -189,7 +189,8 @@ namespace NGUInjector.Autopilot
             {
                 OpenExpBoxes();
                 if (!BuyAtomicExpUpgrade() && !BuyEarlyAdventureStatAtom()
-                    && !BuyDaycareUnlock() && !BuyBestYggPermanent())
+                    && !BuyStrategicPermanentExpUpgrade() && !BuyDaycareUnlock()
+                    && !BuyBestYggPermanent())
                     BuyBestExpPackage();
             }
             if (CanExecuteIrreversible && Config.AllowApSpending)
@@ -728,6 +729,8 @@ namespace NGUInjector.Autopilot
                        + "  \"loadoutSearchExact\": " + ProgressionLoadoutOptimizer.LastSearchExact.ToString().ToLowerInvariant() + ",\n"
                        + "  \"loadoutScoreGain\": " + ProgressionLoadoutOptimizer.LastScoreGain.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"trashDecision\": \"" + EscapeJson(InventoryManager.LastTrashDecision) + "\",\n"
+                       + "  \"yggSeedDecision\": \"" + EscapeJson(YggdrasilManager.LastSeedDecision) + "\",\n"
+                       + "  \"yggFruitDecision\": \"" + EscapeJson(YggdrasilManager.LastFruitDecision) + "\",\n"
                        + "  \"energyUtilization\": "
                        + (c.curEnergy <= 0 ? 1.0 : (double)(c.curEnergy - c.idleEnergy) / c.curEnergy)
                            .ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
@@ -921,16 +924,43 @@ namespace NGUInjector.Autopilot
                     Target = 0,
                     EtaSeconds = -1
                 };
+            var permanent = GetStrategicPermanentExpTarget(c);
             if (c.highestBoss < 17)
+            {
+                var earlyAtom = EarlyAdventureAtomIndex(c);
+                if (earlyAtom < 0 && permanent != null)
+                    return new ResourceStatus
+                    {
+                        Decision = permanent.Cost <= c.realExp - Config.ExpReserve
+                            ? "Buying " + permanent.Label + " on this decision cycle: " + permanent.Reason
+                            : "Saving EXP for " + permanent.Label + ": " + permanent.Reason,
+                        Target = permanent.Cost + Config.ExpReserve,
+                        EtaSeconds = ResourceEta(c.realExp, permanent.Cost + Config.ExpReserve, _expPerSecond)
+                    };
                 return new ResourceStatus
                 {
-                    Decision = c.realExp - Config.ExpReserve >= 3
-                        ? "Buying the highest exact marginal Adventure Power/Toughness/HP atom"
-                        : "Saving for the next 3-EXP permanent Adventure-stat atom",
-                    Target = 3 + Config.ExpReserve,
-                    EtaSeconds = ResourceEta(c.realExp, 3 + Config.ExpReserve, _expPerSecond)
+                    State = earlyAtom < 0 ? "saving" : string.Empty,
+                    Decision = earlyAtom < 0
+                        ? "Saving EXP for permanent Energy packages at Boss 17; an Adventure-stat atom does not immediately open a new zone"
+                        : c.realExp - Config.ExpReserve >= 3
+                            ? "Buying one Adventure " + (earlyAtom == 0 ? "Power" : "Toughness")
+                              + " atom because it immediately crosses the next-zone threshold"
+                            : "Saving for the exact 3-EXP Adventure atom that immediately opens the next zone",
+                    Target = earlyAtom < 0 ? 0 : 3 + Config.ExpReserve,
+                    EtaSeconds = earlyAtom < 0 ? -1
+                        : ResourceEta(c.realExp, 3 + Config.ExpReserve, _expPerSecond)
                 };
-            if (!c.purchases.hasDaycare)
+            }
+            if (permanent != null)
+                return new ResourceStatus
+                {
+                    Decision = permanent.Cost <= c.realExp - Config.ExpReserve
+                        ? "Buying " + permanent.Label + " on this decision cycle: " + permanent.Reason
+                        : "Saving EXP for " + permanent.Label + ": " + permanent.Reason,
+                    Target = permanent.Cost + Config.ExpReserve,
+                    EtaSeconds = ResourceEta(c.realExp, permanent.Cost + Config.ExpReserve, _expPerSecond)
+                };
+            if (!c.purchases.hasDaycare && 250 <= Math.Max(1.0, c.stats.totalExp) * .10)
                 return new ResourceStatus
                 {
                     Decision = c.realExp >= 250 ? "Buying Item Daycare on this decision cycle" : "Saving EXP for Item Daycare",
@@ -1018,12 +1048,25 @@ namespace NGUInjector.Autopilot
                            && c.pit.pitTime.totalseconds >= c.pitController.currentPitTime()
                            && c.pitController.canToss();
             var pitReserve = Math.Max(100000.0, Config.MoneyPitReserve);
+            double permanentPitTarget = 0;
+            string permanentPitLabel = string.Empty;
+            var hasPermanentPitTarget = pitReady
+                                        && MoneyPitManager.TryGetPermanentTierTarget(
+                                            out permanentPitTarget, out permanentPitLabel);
+            var remaining = Math.Max(0.0, Plan.RebirthSeconds - c.rebirthTime.totalseconds);
+            var permanentTierReachable = hasPermanentPitTarget && _goldPerSecond > 0
+                                         && Math.Max(0.0, permanentPitTarget - c.realGold) / _goldPerSecond <= remaining;
+            if (permanentTierReachable)
+                pitReserve = Math.Max(pitReserve, permanentPitTarget);
             var reserve = pitReady ? Math.Max(pitReserve, augmentReserve) : augmentReserve;
             return new ResourceStatus
             {
                 Decision = pitReady
                     ? (c.realGold < reserve
-                        ? "Saving gold for the ready Money Pit toss while protecting the next Augment charge"
+                        ? permanentTierReachable && c.realGold < permanentPitTarget
+                            ? "Saving gold for " + permanentPitLabel
+                              + "; a smaller toss would delay this permanent cumulative Pit breakpoint"
+                            : "Saving gold for the ready Money Pit toss while protecting the next Augment charge"
                         : "Money Pit is ready and funded; toss will execute on the next 0.2-second control tick")
                     : (augmentReserve > 0
                         ? "Money Pit is cooling down; reserving only the next active Augment charge and releasing surplus to Time Machine/diggers"
@@ -1611,25 +1654,15 @@ namespace NGUInjector.Autopilot
                 || c.realExp - Config.ExpReserve < 3)
                 return false;
 
+            var best = EarlyAdventureAtomIndex(c);
+            if (best < 0) return false;
             var current = new[]
             {
                 Math.Max(1.0, Convert.ToDouble(c.adventure.attack)),
-                Math.Max(1.0, Convert.ToDouble(c.adventure.defense)),
-                Math.Max(1.0, Convert.ToDouble(c.adventure.maxHP))
+                Math.Max(1.0, Convert.ToDouble(c.adventure.defense))
             };
-            var increment = new[] {1.0, 1.0, 10.0};
-            var weights = new[] {1.0, .85, .55};
-            var methods = new[] {"buy1Attack", "buy1Defense", "buy10HP"};
-            var labels = new[] {"Adventure Power", "Adventure Toughness", "Adventure HP"};
-            var best = 0;
-            var bestScore = double.MinValue;
-            for (var i = 0; i < current.Length; i++)
-            {
-                var score = weights[i] * Math.Log((current[i] + increment[i]) / current[i]) / 3.0;
-                if (score <= bestScore) continue;
-                bestScore = score;
-                best = i;
-            }
+            var methods = new[] {"buy1Attack", "buy1Defense"};
+            var labels = new[] {"Adventure Power", "Adventure Toughness"};
 
             var method = c.adventurePurchases.GetType().GetMethod(methods[best],
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
@@ -1644,10 +1677,30 @@ namespace NGUInjector.Autopilot
             var confirmed = c.realExp < expBefore && statAfter > statBefore;
             Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
                 confirmed
-                    ? "Bought +" + increment[best].ToString("0") + " " + labels[best] + " for "
+                    ? "Bought +1 " + labels[best] + " for "
                       + (expBefore - c.realExp) + " EXP [confirmed by EXP/stat deltas]"
                     : labels[best] + " atomic purchase produced no verified EXP/stat transition");
             return confirmed;
+        }
+
+        private static int EarlyAdventureAtomIndex(Character c)
+        {
+            if (c == null || ZoneStatHelper.UserOverrides == null || c.highestBoss < 4 || c.highestBoss >= 17)
+                return -1;
+            var power = c.totalAdvAttack();
+            var toughness = c.totalAdvDefense();
+            var maxZone = ZoneHelpers.GetMaxReachableZone(false);
+            foreach (var zone in ZoneStatHelper.UserOverrides.Where(x => x.Key <= maxZone)
+                         .OrderBy(x => x.Key))
+            {
+                if (zone.Value.FightType(power, toughness) > 0) continue;
+                var powerGap = zone.Value.MPower - power;
+                var toughnessGap = zone.Value.MToughness - toughness;
+                if (powerGap > 0 && powerGap <= 1.0 && toughnessGap <= 0) return 0;
+                if (toughnessGap > 0 && toughnessGap <= 1.0 && powerGap <= 0) return 1;
+                return -1;
+            }
+            return -1;
         }
 
         private bool BuyDaycareUnlock()
@@ -1659,15 +1712,82 @@ namespace NGUInjector.Autopilot
             if (available <= 0)
                 return false;
 
-            if (!c.purchases.hasDaycare && available >= 250)
+            var lifetime = Math.Max(1.0, c.stats.totalExp);
+            if (!c.purchases.hasDaycare && available >= 250 && 250 <= lifetime * .10)
                 return TryBuyDaycare("buyDaycare", "Item Daycare", c.purchases.hasDaycare);
             if (c.purchases.hasDaycare && !c.purchases.hasDaycareSlot2
-                && available >= 25000)
+                && available >= 25000 && 25000 <= lifetime * .10)
                 return TryBuyDaycare("buyDaycareSlot2", "Daycare slot 2", c.purchases.hasDaycareSlot2);
             if (c.purchases.hasDaycare && !c.purchases.hasDaycareSlot3
-                && available >= 500000)
+                && available >= 500000 && 500000 <= lifetime * .10)
                 return TryBuyDaycare("buyDaycareSlot3", "Daycare slot 3", c.purchases.hasDaycareSlot3);
             return false;
+        }
+
+        private bool BuyStrategicPermanentExpUpgrade()
+        {
+            var c = Main.Character;
+            var target = GetStrategicPermanentExpTarget(c);
+            if (target == null)
+                return false;
+            // Returning true while saving is deliberate: buying a smaller resource
+            // package would push the permanent unlock farther away.
+            if (target.Cost > c.realExp - Config.ExpReserve)
+                return true;
+            var expBefore = c.realExp;
+            var stateBefore = target.State();
+            var method = target.Controller.GetType().GetMethod(target.Method,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (method == null)
+            {
+                Main.LogAction("REJECTED", target.Label + " purchase API was not found");
+                return true;
+            }
+            method.Invoke(target.Controller, null);
+            var confirmed = c.realExp < expBefore && target.State() != stateBefore;
+            Main.LogAction(confirmed ? "PURCHASE" : "REJECTED", confirmed
+                ? "Bought " + target.Label + " for " + (expBefore - c.realExp)
+                  + " EXP [confirmed by EXP and ownership/stat deltas]"
+                : target.Label + " purchase produced no verified ownership/stat transition");
+            return true;
+        }
+
+        private static PermanentExpTarget GetStrategicPermanentExpTarget(Character c)
+        {
+            if (c == null || c.adventurePurchases == null || c.miscPurchases == null)
+                return null;
+            var lifetime = Math.Max(1.0, c.stats.totalExp);
+            var targets = new List<PermanentExpTarget>();
+            if (c.highestBoss >= 4 && c.purchases.boost < .999f)
+                targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyRecycleBoost",
+                    "Boost Recycling", 100, () => c.purchases.boost,
+                    "permanently recovers more boost value into gear and the Infinity Cube"));
+            if (c.highestBoss >= 4 && !c.purchases.hasAcc3)
+                targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyAcc3",
+                    "Accessory slot 3", 3000, () => c.purchases.hasAcc3 ? 1.0 : 0.0,
+                    "an additional equipped special compounds every combat and resource loadout"));
+            if (c.settings.diggersOn && !c.purchases.hasDiggerSlot1)
+                targets.Add(new PermanentExpTarget(c.miscPurchases, "buydigger1",
+                    "Digger slot", 25000, () => c.purchases.hasDiggerSlot1 ? 1.0 : 0.0,
+                    "parallel permanent digger bonuses remove repeated gold/Adventure bottlenecks"));
+            if (c.settings.beardsOn && !c.purchases.hasBeardSlot1)
+                targets.Add(new PermanentExpTarget(c.miscPurchases, "buybeard1",
+                    "Beard slot", 50000, () => c.purchases.hasBeardSlot1 ? 1.0 : 0.0,
+                    "a second permanent beard conversion stream repays across every long rebirth"));
+            if (c.highestBoss >= 4 && c.purchases.hasAcc3 && !c.purchases.hasAcc5)
+                targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyAcc5",
+                    "Accessory slot 5", 30000, () => c.purchases.hasAcc5 ? 1.0 : 0.0,
+                    "an additional equipped special compounds every contextual loadout"));
+            if (c.inventory.macguffins != null && c.inventory.macguffins.Count > 0
+                && !c.purchases.hasMacguffinSlot1)
+                targets.Add(new PermanentExpTarget(c.miscPurchases, "buyMacguffin1",
+                    "MacGuffin slot", 10000000, () => c.purchases.hasMacguffinSlot1 ? 1.0 : 0.0,
+                    "banks another permanent MacGuffin bonus on every rebirth"));
+
+            // The guide's 10%-of-lifetime rule is used only as an opportunity-cost
+            // admission test.  Within admitted upgrades we still use a progression
+            // order, and we save rather than buying an inferior affordable package.
+            return targets.FirstOrDefault(x => x.Cost <= lifetime * .10);
         }
 
         private static bool TryBuyDaycare(string methodName, string label, bool flagBefore)
@@ -2214,6 +2334,27 @@ namespace NGUInjector.Autopilot
             internal int Power;
             internal int Cap;
             internal int Bars;
+        }
+
+        private sealed class PermanentExpTarget
+        {
+            internal readonly object Controller;
+            internal readonly string Method;
+            internal readonly string Label;
+            internal readonly long Cost;
+            internal readonly Func<double> State;
+            internal readonly string Reason;
+
+            internal PermanentExpTarget(object controller, string method, string label,
+                long cost, Func<double> state, string reason)
+            {
+                Controller = controller;
+                Method = method;
+                Label = label;
+                Cost = cost;
+                State = state;
+                Reason = reason;
+            }
         }
     }
 }

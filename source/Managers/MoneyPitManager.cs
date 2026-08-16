@@ -8,6 +8,9 @@ namespace NGUInjector.Managers
 {
     internal static class MoneyPitManager
     {
+        private static string _lastHoldReason = string.Empty;
+        private static DateTime _lastHoldLog = DateTime.MinValue;
+
         internal static void CheckMoneyPit()
         {
             CheckMoneyPit(Main.Settings.MoneyPitThreshold);
@@ -19,6 +22,23 @@ namespace NGUInjector.Managers
             if (Main.Character.pit.pitTime.totalseconds < Main.Character.pitController.currentPitTime()) return;
             if (Main.Character.realGold < reserve) return;
             if (Main.Character.realGold < 1e5) return;
+
+            double tierTarget;
+            string tierLabel;
+            if (TryGetPermanentTierTarget(out tierTarget, out tierLabel)
+                && Main.Character.realGold < tierTarget && TierIsReachableThisRun(tierTarget))
+            {
+                var reason = "Money Pit ready, but preserving gold for " + tierLabel
+                             + " at " + tierTarget.ToString("0.###e+0")
+                             + " current-run gold (permanent one-time reward)";
+                if (reason != _lastHoldReason || (DateTime.UtcNow - _lastHoldLog).TotalSeconds >= 30)
+                {
+                    Main.LogAction("HOLD", reason);
+                    _lastHoldReason = reason;
+                    _lastHoldLog = DateTime.UtcNow;
+                }
+                return;
+            }
 
             var gearSwapped = false;
             var diggersSwapped = false;
@@ -56,6 +76,50 @@ namespace NGUInjector.Managers
                     LoadoutManager.ReleaseLock();
                 }
             }
+        }
+
+        internal static bool TryGetPermanentTierTarget(out double currentGoldRequired, out string label)
+        {
+            currentGoldRequired = 0;
+            label = string.Empty;
+            var c = Main.Character;
+            if (c == null || c.pit == null) return false;
+            // Native totalReward() tests floor(log10(total cumulative Pit gold)).
+            // These flags prove a one-time reward was actually collected.
+            var thresholds = new[] {1e8, 1e10, 1e11, 1e12};
+            var claimed = new[]
+            {
+                c.pit.tier1TRewarded, c.pit.tier2TRewarded,
+                c.pit.tier3TRewarded, c.pit.tier4TRewarded
+            };
+            var labels = new[]
+            {
+                "the 1e8 permanent Adventure-stat reward",
+                "the 1e10 permanent Energy/Magic bar reward",
+                "the 1e11 one-time Looty reward",
+                "the 1e12 one-time 100 EXP reward"
+            };
+            for (var i = 0; i < thresholds.Length; i++)
+            {
+                if (claimed[i]) continue;
+                currentGoldRequired = Math.Max(1e5, thresholds[i] - Math.Max(0.0, c.pit.totalGold));
+                label = labels[i];
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TierIsReachableThisRun(double target)
+        {
+            var c = Main.Character;
+            var rate = Math.Max(0.0, c.goldPerSecond());
+            if (rate <= 0) return false;
+            var seconds = Math.Max(0.0, (target - c.realGold) / rate);
+            var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
+            if (plan == null || plan.RebirthSeconds < 0 || !Main.Settings.AutoRebirth)
+                return seconds <= 3600;
+            var remaining = Math.Max(0.0, plan.RebirthSeconds - c.rebirthTime.totalseconds);
+            return seconds <= remaining;
         }
 
         private static void DoMoneyPit()

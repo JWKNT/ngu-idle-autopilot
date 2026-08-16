@@ -67,11 +67,16 @@ namespace NGUInjector.Autopilot
             plan.Objective = t4Defeated
                 ? "grow permanent Adventure and Drop Chance NGUs, Yggdrasil/EXP, beards, and PP"
                 : "finish titan sets while building Adventure NGU and Yggdrasil";
-            plan.RebirthSeconds = t4Defeated ? 86400 : 3600;
+            var fruitCycle = HighestFruitMaturitySeconds(c);
+            plan.RebirthSeconds = t4Defeated ? 86400 : Math.Max(3600, fruitCycle);
             plan.RebirthReason = t4Defeated
-                ? "bank a full-day permanent NGU/Yggdrasil/beard cycle before resetting"
-                : "hold through the 3,600-second time-multiplier jump and the active Titan spawn cycle";
-            plan.RebirthRunnerUpSeconds = t4Defeated ? 82800 : 4100;
+                ? "bank the 24-hour beard conversion maximum together with mature Yggdrasil and Titan events"
+                : fruitCycle > 3600
+                    ? "harvest the highest unlocked fruit at its exact tier-" + (fruitCycle / 3600)
+                      + " maturity boundary instead of erasing partial growth on rebirth"
+                    : "hold through the 3,600-second time-multiplier jump and the active Titan spawn cycle";
+            plan.RebirthRunnerUpSeconds = t4Defeated ? 82800
+                : plan.RebirthSeconds == 3600 ? 4100 : Math.Max(3600, plan.RebirthSeconds - 3600);
             plan.RebirthRunnerUpDeltaSeconds = Math.Abs(plan.RebirthRunnerUpSeconds - plan.RebirthSeconds);
             var t6CluesReady = c.adventure.clue1Complete && c.adventure.clue2Complete
                                && c.adventure.clue3Complete && c.adventure.clue4Complete;
@@ -289,6 +294,15 @@ namespace NGUInjector.Autopilot
             if (diff == difficulty.normal && c.inventory.itemList.jakeComplete && c.curEnergy >= 1000000000000L && c.magic.curMagic >= 1000000000000L)
                 return 1;
             return 0;
+        }
+
+        private static int HighestFruitMaturitySeconds(Character c)
+        {
+            if (!c.settings.yggdrasilOn || c.yggdrasil == null || c.yggdrasil.fruits == null)
+                return 0;
+            var tier = c.yggdrasil.fruits.Where(x => x.maxTier > 0)
+                .Select(x => (int)Math.Min(24L, x.maxTier)).DefaultIfEmpty(0).Max();
+            return tier * 3600;
         }
     }
 }

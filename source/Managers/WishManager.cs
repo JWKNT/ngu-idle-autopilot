@@ -39,6 +39,16 @@ namespace NGUInjector.Managers
 
             _curValidUpgradesList.Clear();
 
+            for (var i = 0; i < _character.wishes.wishes.Count; i++)
+            {
+                var wish = _character.wishes.wishes[i];
+                if (!PrecisionImpossible(i) || wish.energy <= 0 && wish.magic <= 0 && wish.res3 <= 0)
+                    continue;
+                _character.wishesController.removeAllResources(i);
+                Main.LogAction("HOLD", "Removed resources from Wish " + i
+                                       + " because its best-case level time exceeds the native floating-point completion limit");
+            }
+
             // Never throw away partial progress merely because another Wish's raw
             // divider changed. Native leveling discards overflow, so finishing an
             // active partial level first avoids fragmentation and returns its slot.
@@ -121,11 +131,28 @@ namespace NGUInjector.Managers
             {
                 return false;
             }
+            if (PrecisionImpossible(wishId))
+            {
+                return false;
+            }
             if (_character.wishesController.character.wishes.wishes[wishId].level >= _character.wishesController.properties[wishId].maxLevel)
             {
                 return false;
             }
             return true;          
+        }
+
+        private bool PrecisionImpossible(int wishId)
+        {
+            if (wishId < 0 || wishId >= _character.wishes.wishes.Count)
+                return true;
+            var rate = _character.wishesController.progressPerTickMax(wishId);
+            if (rate <= 0f) return true;
+            var bestCaseSeconds = 1.0 / rate / 50.0;
+            // Native single-precision progress can stop advancing near 50% when a
+            // full level is longer than 7d17h12m.  Treat the documented boundary
+            // conservatively; an impossible Wish has zero progression value.
+            return bestCaseSeconds > 666720.0;
         }
 
         public double sortValue(int wishId)

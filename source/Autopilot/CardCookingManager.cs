@@ -11,9 +11,7 @@ namespace NGUInjector.Autopilot
         private static string _lastCookingPairSignature = string.Empty;
         private static readonly cardBonus[] EvilPriorities =
         {
-            cardBonus.adventureStat, cardBonus.wishSpeed, cardBonus.hackSpeed,
-            cardBonus.PP, cardBonus.QP, cardBonus.energyNGUSpeed, cardBonus.magicNGUSpeed,
-            cardBonus.dropChance
+            cardBonus.adventureStat, cardBonus.hackSpeed, cardBonus.wishSpeed
         };
 
         private static readonly cardBonus[] SadisticPriorities =
@@ -93,9 +91,11 @@ namespace NGUInjector.Autopilot
                 var card = c.cards.cards[i];
                 if (fullControl && card.type != cardType.end && card.cardRarity == rarity.BigChonker)
                 {
-                    // Protect while Mayo is insufficient so automatic yeeting cannot
-                    // destroy the Chonker; unprotect once it can be consumed.
-                    var shouldProtect = !Affordable(c, card);
+                    // Before the recycling perk, even an off-plan Chonker banks a
+                    // future 25% spawn-timer refund and must not be lost. Afterwards
+                    // only a progression-useful Chonker waits for Mayo.
+                    var useful = EligibleAtCurrentTier(c, card);
+                    var shouldProtect = useful ? !Affordable(c, card) : !HasChonkerRecycling(c);
                     if (card.isProtected != shouldProtect)
                         c.cardsController.protectCard(i);
                 }
@@ -127,7 +127,9 @@ namespace NGUInjector.Autopilot
         {
             var order = priorities.ToArray();
             var candidate = c.cards.cards.Select((card, index) => new {card, index})
-                .Where(x => !x.card.isProtected && x.card.cardRarity >= rarity.Meh && order.Contains(x.card.bonusType) && Affordable(c, x.card))
+                .Where(x => !x.card.isProtected && x.card.cardRarity >= rarity.Meh
+                            && order.Contains(x.card.bonusType) && EligibleAtCurrentTier(c, x.card)
+                            && Affordable(c, x.card))
                 .OrderByDescending(x => CardUtility(x.card, order))
                 .FirstOrDefault();
             if (candidate == null) return;
@@ -159,11 +161,33 @@ namespace NGUInjector.Autopilot
             return card.effectAmount * strategicWeight / mana;
         }
 
+        private static bool EligibleAtCurrentTier(Character c, Card card)
+        {
+            if (c.settings.rebirthDifficulty < difficulty.sadistic)
+                return card.bonusType == cardBonus.adventureStat
+                       || card.bonusType == cardBonus.hackSpeed
+                       || card.bonusType == cardBonus.wishSpeed;
+            // PP/QP do not repay their Mayo opportunity cost until tier 4; NGU
+            // cards need tier 8.  Adventure remains progression-critical, while
+            // Hack/Wish retain value until their late-game saturation limits.
+            if (card.bonusType == cardBonus.PP || card.bonusType == cardBonus.QP)
+                return card.tier >= 4;
+            if (card.bonusType == cardBonus.energyNGUSpeed || card.bonusType == cardBonus.magicNGUSpeed)
+                return card.tier >= 8;
+            return card.bonusType == cardBonus.adventureStat
+                   || card.bonusType == cardBonus.hackSpeed
+                   || card.bonusType == cardBonus.wishSpeed
+                   || card.bonusType == cardBonus.dropChance;
+        }
+
         private static void YeetWorstCardIfFull(Character c, ICollection<cardBonus> priorities)
         {
             if (c.cards.cards.Count < c.cardsController.maxDeckSize()) return;
             var candidate = c.cards.cards.Select((card, index) => new {card, index})
-                .Where(x => !x.card.isProtected && x.card.type != cardType.end && x.card.cardRarity < rarity.Great)
+                .Where(x => !x.card.isProtected && x.card.type != cardType.end
+                            && (x.card.cardRarity < rarity.Great
+                                || x.card.cardRarity == rarity.BigChonker
+                                && HasChonkerRecycling(c) && !EligibleAtCurrentTier(c, x.card)))
                 .OrderBy(x => CardUtility(x.card, priorities.ToArray()))
                 .FirstOrDefault();
             if (candidate == null) return;
@@ -173,6 +197,12 @@ namespace NGUInjector.Autopilot
                 c.cards.cards.Count < countBefore
                     ? "Yeeted " + candidate.card.cardName + " [confirmed by deck count]"
                     : "Card yeet request for " + candidate.card.cardName + " produced no deck change");
+        }
+
+        private static bool HasChonkerRecycling(Character c)
+        {
+            return c.adventure.itopod.perkLevel.Count > 216
+                   && c.adventure.itopod.perkLevel[216] >= 1;
         }
 
         internal static void ManageCooking(Character c, bool fullControl)

@@ -11,6 +11,8 @@ namespace NGUInjector.Managers
     internal class YggdrasilManager
     {
         private readonly Character _character;
+        internal static string LastSeedDecision { get; private set; } = "Yggdrasil is not yet evaluated";
+        internal static string LastFruitDecision { get; private set; } = "Fruit eat/harvest policy is not yet evaluated";
 
         public YggdrasilManager()
         {
@@ -238,25 +240,27 @@ namespace NGUInjector.Managers
             if (all == null || all.baseSeedCost == null || _character.yggdrasil.seeds <= 0)
                 return;
             var cap = all.capTier();
-            var best = -1;
-            var bestScore = 0.0;
-            var bestCost = 0L;
             var count = Math.Min(_character.yggdrasil.fruits.Count, all.baseSeedCost.Count);
-            for (var i = 0; i < count; i++)
+            var best = StrategicSeedTarget(count, cap);
+            if (best < 0)
             {
-                var tier = _character.yggdrasil.fruits[i].maxTier;
-                if (tier >= cap || !FruitUnlockEligible(i)) continue;
-                var cost = all.baseSeedCost[i] * (tier + 1L) * (tier + 1L);
-                if (cost <= 0 || cost > _character.yggdrasil.seeds) continue;
-                var before = Math.Ceiling(Math.Pow(Math.Max(0L, tier), 1.5));
-                var after = Math.Ceiling(Math.Pow(tier + 1.0, 1.5));
-                var score = FruitUtility(i) * Math.Max(1.0, after - before) / cost;
-                if (score <= bestScore) continue;
-                bestScore = score;
-                best = i;
-                bestCost = cost;
+                LastSeedDecision = "Every unlocked strategic fruit breakpoint is complete or native-capped";
+                return;
             }
-            if (best < 0) return;
+
+            var tier = _character.yggdrasil.fruits[best].maxTier;
+            var bestCost = all.baseSeedCost[best] * (tier + 1L) * (tier + 1L);
+            // A cheaper side purchase can delay Pomegranate/Fruit of Gold and
+            // reduce every later seed harvest.  Preserve the seed balance for the
+            // first unmet compounding target instead of greedily buying whatever is
+            // affordable this tick.
+            if (bestCost <= 0 || bestCost > _character.yggdrasil.seeds)
+            {
+                LastSeedDecision = "Saving " + _character.yggdrasil.seeds + "/" + bestCost
+                                   + " seeds for fruit " + best + " tier " + (tier + 1)
+                                   + "; cheaper side upgrades would delay the compounding target";
+                return;
+            }
 
             var oldPage = all.curPage;
             all.changePage(best / 9);
@@ -267,33 +271,132 @@ namespace NGUInjector.Managers
             all.changePage(oldPage);
             var confirmed = _character.yggdrasil.fruits[best].maxTier == tierBefore + 1
                             && _character.yggdrasil.seeds == seedsBefore - bestCost;
+            LastSeedDecision = confirmed
+                ? "Bought fruit " + best + " tier " + (tierBefore + 1) + " at the strategic seed breakpoint"
+                : "Fruit " + best + " strategic seed purchase was rejected by native state validation";
             Main.LogAction(confirmed ? "YGG" : "REJECTED", confirmed
                 ? "Upgraded fruit " + best + " tier " + tierBefore + " -> " + (tierBefore + 1)
                   + " for " + bestCost + " seeds [confirmed by tier and seed deltas]"
                 : "Fruit " + best + " seed upgrade produced no verified transition");
         }
 
+        private int StrategicSeedTarget(int count, long cap)
+        {
+            // These are dependency breakpoints, not clock-based chapter scripts.
+            // The early entries build the seed engine; later entries realize the
+            // permanent rewards only after that engine has repaid its opportunity
+            // cost.  Targets above the native challenge cap are clamped.
+            var targets = new List<KeyValuePair<int, int>>
+            {
+                Pair(0, 2), Pair(1, 1), Pair(2, 1), Pair(4, 1),
+                Pair(1, 2), Pair(0, 4), Pair(4, 3), Pair(0, 10),
+                Pair(4, 5), Pair(3, 1), Pair(5, 1), Pair(4, 10), Pair(5, 5),
+                Pair(0, 24), Pair(4, 24), Pair(3, 24), Pair(5, 24),
+                Pair(1, 24), Pair(2, 24), Pair(7, 24), Pair(6, 24),
+                Pair(8, 24), Pair(9, 24)
+            };
+            if (_character.settings.rebirthDifficulty >= difficulty.evil)
+            {
+                targets.Add(Pair(10, 12));
+                targets.Add(Pair(13, 1));
+                targets.Add(Pair(14, 4));
+                targets.Add(Pair(12, 24));
+                targets.Add(Pair(14, 12));
+                targets.Add(Pair(10, 24));
+                targets.Add(Pair(14, 24));
+                targets.Add(Pair(11, 24));
+                targets.Add(Pair(13, 24));
+            }
+            if (_character.settings.rebirthDifficulty >= difficulty.sadistic)
+                for (var i = 15; i <= 20; i++) targets.Add(Pair(i, 24));
+
+            foreach (var target in targets)
+            {
+                if (target.Key < 0 || target.Key >= count || !FruitUnlockEligible(target.Key))
+                    continue;
+                var desired = Math.Min(cap, target.Value);
+                if (_character.yggdrasil.fruits[target.Key].maxTier < desired)
+                    return target.Key;
+            }
+
+            // Once every strategic breakpoint is complete, retain the old exact
+            // marginal seed-return comparison for uncapped future fruit tiers.
+            var best = -1;
+            var bestScore = 0.0;
+            for (var i = 0; i < count; i++)
+            {
+                var tier = _character.yggdrasil.fruits[i].maxTier;
+                if (tier >= cap || !FruitUnlockEligible(i)) continue;
+                var cost = _character.yggdrasilController.baseSeedCost[i] * (tier + 1L) * (tier + 1L);
+                if (cost <= 0) continue;
+                var before = Math.Ceiling(Math.Pow(Math.Max(0L, tier), 1.5));
+                var after = Math.Ceiling(Math.Pow(tier + 1.0, 1.5));
+                var score = FruitUtility(i) * Math.Max(1.0, after - before) / cost;
+                if (score <= bestScore) continue;
+                bestScore = score;
+                best = i;
+            }
+            return best;
+        }
+
+        private static KeyValuePair<int, int> Pair(int id, int tier)
+        {
+            return new KeyValuePair<int, int>(id, tier);
+        }
+
         private void ConfigureFruitOptions()
         {
             _character.settings.poopOnlyMaxTier = true;
-            var bestPoop = -1;
-            var bestUtility = 0.0;
+            var seedEngineComplete = _character.yggdrasil.fruits.Count > 4
+                                     && _character.yggdrasil.fruits[0].maxTier >= Math.Min(24, _character.yggdrasilController.capTier())
+                                     && _character.yggdrasil.fruits[4].maxTier >= Math.Min(24, _character.yggdrasilController.capTier());
             for (var i = 0; i < _character.yggdrasil.fruits.Count; i++)
             {
                 var fruit = _character.yggdrasil.fruits[i];
                 if (fruit.maxTier <= 0) continue;
-                // Consuming realizes the fruit's progression reward.  Harvest-only is
-                // dominated here because the seed optimizer already values Pomegranate.
-                fruit.eatFruit = true;
-                var utility = FruitUtility(i);
-                if (utility > bestUtility)
-                {
-                    bestUtility = utility;
-                    bestPoop = i;
-                }
+                // Before the seed engine is mature, doubling seeds compounds faster
+                // than taking small temporary rewards.  Permanent fruits are eaten
+                // once their tier is meaningful; Pomegranate is safe either way.
+                var permanentReward = i == 2 || i == 3 || i == 5 || i == 6 || i == 7
+                                      || i == 8 || i == 9 || i == 10 || i == 11
+                                      || i == 13 || i == 14 || i >= 15;
+                fruit.eatFruit = i == 4 || seedEngineComplete
+                                 || permanentReward && fruit.maxTier >= 12;
             }
+
+            var bestPoop = SelectPoopTarget(seedEngineComplete);
             for (var i = 0; i < _character.yggdrasil.fruits.Count; i++)
                 _character.yggdrasil.fruits[i].usePoop = i == bestPoop;
+            LastFruitDecision = seedEngineComplete
+                ? "Seed engine mature: eat permanent fruit rewards; poop target "
+                  + (bestPoop < 0 ? "reserved" : bestPoop.ToString())
+                : "Seed engine building: harvest low-tier temporary fruits for double seeds; "
+                  + (bestPoop < 0 ? "reserve poop" : "poop fruit " + bestPoop);
+        }
+
+        private int SelectPoopTarget(bool seedEngineComplete)
+        {
+            if (_character.arbitrary.poop1Count <= 0)
+                return -1;
+            // Early poop on a mature Pomegranate accelerates the compounding seed
+            // engine.  Afterwards reserve it for the strongest mature permanent
+            // fruits instead of spending it on the first ready fruit in page order.
+            if (!seedEngineComplete && _character.yggdrasil.fruits.Count > 4
+                && _character.yggdrasil.fruits[4].maxTier >= 6
+                && _character.yggdrasilController.fruits[0].harvestTier(4) >= _character.yggdrasil.fruits[4].maxTier)
+                return 4;
+            var order = _character.settings.rebirthDifficulty >= difficulty.evil
+                ? new[] {12, 3, 5, 7, 6, 8, 9, 14, 11, 10, 13, 2}
+                : new[] {3, 5, 7, 6, 8, 9, 2};
+            foreach (var id in order)
+            {
+                if (id < 0 || id >= _character.yggdrasil.fruits.Count) continue;
+                var fruit = _character.yggdrasil.fruits[id];
+                if (fruit.maxTier > 0
+                    && _character.yggdrasilController.fruits[0].harvestTier(id) >= fruit.maxTier)
+                    return id;
+            }
+            return -1;
         }
 
         private bool FruitUnlockEligible(int id)

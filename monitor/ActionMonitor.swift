@@ -236,6 +236,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
         let loadoutDecision = state["loadoutDecision"] as? String ?? "Evaluating owned equipment"
         let trashDecision = state["trashDecision"] as? String ?? "Conservative trash audit pending"
+        let yggSeedDecision = state["yggSeedDecision"] as? String ?? "Yggdrasil seed policy pending"
+        let yggFruitDecision = state["yggFruitDecision"] as? String ?? "Yggdrasil fruit policy pending"
         let timeMachineHorizon = state["timeMachineHorizonDecision"] as? String
             ?? "Time Machine reset-horizon value is being evaluated"
         let allocationSummary: String
@@ -417,6 +419,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Time Machine horizon: \(timeMachineHorizon)
         Equipment: \(loadoutDecision)
         Inventory reclamation: \(trashDecision)
+        Yggdrasil seeds: \(yggSeedDecision)
+        Yggdrasil harvest: \(yggFruitDecision)
         """
 
         setColoredGoals(body)
@@ -493,6 +497,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 color = .systemGreen; weight = .medium
             } else if upper.contains("EXP ") || upper.contains("AP ") || upper.contains("GOLD ") || upper.contains("ENERGY:") || upper.contains("AUGMENTATION:") {
                 color = .systemTeal
+            } else if upper.contains("YGGDRASIL") || upper.contains("SEEDS:") {
+                color = .systemGreen
             } else if upper.contains("BOSS") || upper.contains("ADVENTURE") || upper.contains("TITAN") {
                 color = .systemPink
             }

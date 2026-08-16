@@ -19,7 +19,9 @@ This repository is source-first. It deliberately excludes game saves, live telem
 | `build.command` | Compiles against the locally installed game's current managed assemblies | Local build tooling |
 | `run.command`, `stop.command`, `status.command` | Injection lifecycle and operator status scripts | Local runtime tooling |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the execution boundary and [THIRD_PARTY.md](THIRD_PARTY.md) for provenance.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the execution boundary,
+[docs/GUIDE-AUDIT.md](docs/GUIDE-AUDIT.md) for the full guide-to-policy audit, and
+[THIRD_PARTY.md](THIRD_PARTY.md) for provenance.
 
 ## Bot versus injector
 
@@ -85,4 +87,3 @@ This is a progression optimizer, not a proof of the globally optimal infinite-ho
 ## License and game ownership
 
 The modified NGUInjector-derived source remains under Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). SharpMonoInjector is a separate MIT-licensed dependency and is not committed here. NGU Idle and its game data are owned by their respective rights holders and are not distributed by this repository.
-
