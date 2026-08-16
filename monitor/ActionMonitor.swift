@@ -228,6 +228,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let basicTrainingEnergy = numberDouble(state, "energyBasicTrainingAllocated")
         let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
         let loadoutDecision = state["loadoutDecision"] as? String ?? "Evaluating owned equipment"
+        let trashDecision = state["trashDecision"] as? String ?? "Conservative trash audit pending"
         let allocationSummary: String
         if let rows = state["energyAllocationBreakdown"] as? [[String: Any]] {
             allocationSummary = rows.filter { numberDouble($0, "totalEnergy") > 0 }.map { row in
@@ -376,6 +377,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Training allocation:
         \(allocationSummary)
         Equipment: \(loadoutDecision)
+        Inventory reclamation: \(trashDecision)
         """
 
         setColoredGoals(body)

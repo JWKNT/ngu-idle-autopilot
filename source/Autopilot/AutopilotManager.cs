@@ -722,6 +722,7 @@ namespace NGUInjector.Autopilot
                        + "  \"loadoutObjective\": \"" + EscapeJson(ProgressionLoadoutOptimizer.LastObjective) + "\",\n"
                        + "  \"loadoutSearchExact\": " + ProgressionLoadoutOptimizer.LastSearchExact.ToString().ToLowerInvariant() + ",\n"
                        + "  \"loadoutScoreGain\": " + ProgressionLoadoutOptimizer.LastScoreGain.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"trashDecision\": \"" + EscapeJson(InventoryManager.LastTrashDecision) + "\",\n"
                        + "  \"energyUtilization\": "
                        + (c.curEnergy <= 0 ? 1.0 : (double)(c.curEnergy - c.idleEnergy) / c.curEnergy)
                            .ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"

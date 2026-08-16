@@ -91,6 +91,8 @@ namespace NGUInjector.Managers
         private readonly FixedSizedQueue _invBoostAvg = new FixedSizedQueue(60);
         private readonly FixedSizedQueue _cubeBoostAvg = new FixedSizedQueue(60);
         private Equipment _lastBotTrashed;
+        internal static string LastTrashDecision { get; private set; }
+            = "Waiting for the first conservative trash audit";
 
 
         //Wandoos 98, Giant Seed, Wandoos XL, Lonely Flubber, Wanderer's Cane, Guffs, Lemmi
@@ -716,14 +718,22 @@ namespace NGUInjector.Managers
             var inv = _character.inventory;
             if (inv == null || inv.inventory == null || _controller.midDrag
                 || inv.itemList == null || inv.itemList.itemMaxxed == null)
+            {
+                LastTrashDecision = _controller.midDrag
+                    ? "Paused while an inventory drag is active"
+                    : "Inventory or Item List state is not ready";
                 return;
+            }
 
             // The native trash slot is the user's one-step undo. Never overwrite an
             // item we did not put there. Once our own proven-useless item occupies it,
             // replacing it with the next proven-useless copy is intentional.
             if (inv.trash != null && inv.trash.id > 0
                 && !ReferenceEquals(inv.trash, _lastBotTrashed))
+            {
+                LastTrashDecision = "Blocked: the recoverable trash slot contains an item not placed there by the bot";
                 return;
+            }
 
             var owned = new List<Equipment>
             {
@@ -751,6 +761,9 @@ namespace NGUInjector.Managers
                 var confirmed = inv.inventory[slot].id == 0
                                 && ReferenceEquals(inv.trash, candidate);
                 if (confirmed) _lastBotTrashed = candidate;
+                LastTrashDecision = confirmed
+                    ? "Trashed one proven-redundant same-ID dominated MAXXED duplicate"
+                    : "Native trash request did not produce a verified recoverable-slot transition";
                 Main.LogAction(confirmed ? "TRASH" : "REJECTED", confirmed
                     ? "Trashed redundant item " + SafeItemName(id) + " (ID " + id + ", level " + level
                       + "): Item List is MAXXED and retained same-ID copy dominates ATK "
@@ -759,6 +772,7 @@ namespace NGUInjector.Managers
                     : "Redundant-item trash request for ID " + id + " produced no verified slot transition");
                 return; // preserve a full second of native one-step recovery
             }
+            LastTrashDecision = "Nothing is provably disposable: requires a MAXXED equipment ID and a retained same-ID physical copy that dominates every stat/cap field";
         }
 
         private bool CanProveTrashSafe(Equipment item, int slot)

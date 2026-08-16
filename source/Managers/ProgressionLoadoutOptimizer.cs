@@ -16,6 +16,9 @@ namespace NGUInjector.Managers
         private static Plan _failedPlan;
         private static double _failedUntil;
         private static bool _searchExact;
+        private static Plan _authoritativePlan;
+        private static Plan _pendingPlan;
+        private static string _authoritativeObjective = string.Empty;
 
         internal static string LastDecision { get; private set; } = "Waiting for an inventory snapshot";
         internal static double LastScoreGain { get; private set; }
@@ -88,10 +91,52 @@ namespace NGUInjector.Managers
             // Rebirth time moves backwards at every reset.  Cadence and retry
             // suppression must use a monotonic process clock instead.
             var now = (double)UnityEngine.Time.realtimeSinceStartup;
+            var objective = UseBossObjective(c)
+                ? "selected Fight Boss defeat" : "continuous Adventure progression";
+            LastObjective = objective;
+
+            // Full automation owns the progression loadout just as it owns resource
+            // allocations. Reassert the last verified exact-reference plan before
+            // the expensive search throttle: a manual equip swap changes topology,
+            // not the inventory multiset, and must not survive for five seconds.
+            string authoritativeReason;
+            if (_authoritativePlan != null && _authoritativeObjective == objective
+                && ValidatePlan(c, _authoritativePlan, out authoritativeReason))
+            {
+                var live = CurrentPlan(c, true);
+                if (!SameLayout(live, _authoritativePlan))
+                {
+                    _pendingPlan = _authoritativePlan.Clone();
+                    if (c.adventureController.currentEnemy != null)
+                    {
+                        LastDecision = "Manual/foreign gear change detected; authoritative " + objective
+                                       + " set queued for the next natural post-kill frame";
+                        return;
+                    }
+                    ApplyChosenPlan(c, _pendingPlan, now, "Restored authoritative");
+                    return;
+                }
+            }
+            else if (_authoritativePlan != null)
+            {
+                _authoritativePlan = null;
+                _pendingPlan = null;
+                _authoritativeObjective = string.Empty;
+            }
+
+            // This path deliberately runs before the inventory-probe cadence. The
+            // enemy-free frame can be shorter than one second under continuous
+            // Adventure automation.
+            if (_pendingPlan != null && c.adventureController.currentEnemy == null)
+            {
+                ApplyChosenPlan(c, _pendingPlan, now, "Equipped queued");
+                return;
+            }
+
             // The fast allocation loop is 5 Hz, but an inventory topology search
             // gains nothing from rebuilding LINQ snapshots that often. Combat still
             // gates an already-computed plan on every fast tick.
-            if (now - _lastInventoryProbe < 1.0)
+            if (now - _lastInventoryProbe < 0.2)
                 return;
             _lastInventoryProbe = now;
             var all = c.inventory.GetConvertedEquips().Concat(c.inventory.GetConvertedInventory())
@@ -104,17 +149,17 @@ namespace NGUInjector.Managers
             _lastRun = now;
 
             var current = CurrentPlan(c, true);
-            LastObjective = UseBossObjective(c) ? "selected Fight Boss defeat" : "continuous Adventure progression";
             var currentScore = Score(c, current);
             var best = Optimize(c, all);
             LastSearchExact = _searchExact;
             var bestScore = Score(c, best);
             LastScoreGain = bestScore - currentScore;
-            var ids = best.IDs();
-            var displaySignature = string.Join(",", ids.Select(x => x.ToString()).ToArray());
             if (SameLayout(best, current)
                 || !(bestScore > currentScore + Math.Max(1e-7, Math.Abs(currentScore) * 1e-7)))
             {
+                _authoritativePlan = current.Clone();
+                _authoritativeObjective = objective;
+                _pendingPlan = null;
                 LastDecision = (LastSearchExact ? "Globally optimal " : "Best verified bounded-search ")
                                + LastObjective + " set active: " + Describe(current);
                 return;
@@ -128,12 +173,18 @@ namespace NGUInjector.Managers
 
             if (c.adventureController.currentEnemy != null)
             {
+                _pendingPlan = best.Clone();
                 LastDecision = "Verified equipment upgrade queued for the next natural post-kill frame";
-                _lastFingerprint = int.MinValue;
-                _lastRun = 0;
                 return;
             }
 
+            ApplyChosenPlan(c, best, now, "Equipped");
+        }
+
+        private static void ApplyChosenPlan(Character c, Plan best, double now, string action)
+        {
+            var ids = best.IDs();
+            var displaySignature = string.Join(",", ids.Select(x => x.ToString()).ToArray());
             var beforeAttack = c.inventoryController.attackBonus();
             var beforeDefense = c.inventoryController.defenseBonus();
             var confirmed = ApplyPhysicalPlan(c, best);
@@ -141,15 +192,23 @@ namespace NGUInjector.Managers
             {
                 _failedPlan = null;
                 _failedUntil = 0;
+                _authoritativePlan = best.Clone();
+                _authoritativeObjective = LastObjective;
+                _pendingPlan = null;
+                _lastFingerprint = int.MinValue;
+                _lastRun = 0;
             }
             else
             {
                 _failedPlan = best.Clone();
                 _failedUntil = now + 30.0;
+                _authoritativePlan = null;
+                _authoritativeObjective = string.Empty;
+                _pendingPlan = null;
                 _lastFingerprint = int.MinValue;
                 _lastRun = 0;
             }
-            LastDecision = (confirmed ? "Equipped" : "Requested") + " optimized " + LastObjective + " set [" + displaySignature
+            LastDecision = (confirmed ? action : "Rejected") + " optimized " + LastObjective + " set [" + displaySignature
                            + "]; native item attack " + beforeAttack.ToString("0.##") + " -> "
                            + c.inventoryController.attackBonus().ToString("0.##") + ", defense "
                            + beforeDefense.ToString("0.##") + " -> "
@@ -466,6 +525,20 @@ namespace NGUInjector.Managers
                     hash = hash * 31 + (int)e.curAttack;
                     hash = hash * 31 + (int)e.curDefense;
                     hash = hash * 31 + (int)(e.spec1Cur + e.spec2Cur + e.spec3Cur);
+                }
+                // Include the ordered physical layout. The former multiset-only
+                // fingerprint could not see an equipped item being swapped with an
+                // inventory item, so manual changes remained cached as "optimal".
+                var c = Main.Character;
+                if (c != null && c.inventory != null)
+                {
+                    var inv = c.inventory;
+                    foreach (var e in new[] {inv.head, inv.chest, inv.legs, inv.boots, inv.weapon, inv.weapon2})
+                        hash = hash * 31 + (e == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e));
+                    foreach (var e in inv.accs)
+                        hash = hash * 31 + (e == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e));
+                    foreach (var e in inv.inventory)
+                        hash = hash * 31 + (e == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e));
                 }
                 return hash;
             }
