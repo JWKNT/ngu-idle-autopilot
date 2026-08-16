@@ -235,7 +235,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
                 let target = number(object, "rebirthSeconds")
                 let remaining = max(0, target - elapsed)
-                statusLabel.stringValue = "\(mode) • SYNCED • \(stage.uppercased()) • TARGET \(groupedInteger(target))s • ETA \(formatDuration(remaining)) • SNAPSHOT #\(sequence)"
+                statusLabel.stringValue = "REBIRTH \(formatExactDuration(remaining))"
                 statusLabel.textColor = .systemGreen
                 updateSummary(object)
             }
@@ -258,20 +258,32 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let selectedBoss = number(state, "bossSelectedId")
         let bossEta = number(state, "bossDefeatEtaSeconds")
         let zone = state["adventureTargetName"] as? String ?? "selecting zone"
-        let free = number(state, "inventoryFreeSlots")
-        let total = number(state, "inventoryTotalSlots")
-        let pressure = (state["inventoryPressure"] as? String ?? "unknown").uppercased()
-        let usedEnergy = max(0, numberDouble(state, "energyCurrent") - numberDouble(state, "energyIdle"))
-        let totalEnergy = numberDouble(state, "energyCurrent")
-        let collection = state["collectionIsBackfill"] as? Bool ?? false ? "BACKFILL" : "FORWARD"
-        let etaText = bossEta < 0 ? "evaluating" : formatEstimate(bossEta)
-        let sequence = number(state, "decisionSequence")
-        let transactionComplete = state["automationTransactionComplete"] as? Bool ?? false
-        let phase = state["decisionPhase"] as? String == "post-automation-transaction"
-            ? (transactionComplete ? "POST-ACTION" : "PARTIAL") : "LEGACY"
-        summaryLabel.stringValue = "BOSS \(selectedBoss) \(etaText)   •   ADV \(zone) [\(collection)]   •   INV \(free)/\(total) FREE [\(pressure)]   •   ENERGY \(shortNumber(usedEnergy))/\(shortNumber(totalEnergy))   •   \(phase) #\(sequence) E\(producerEpoch)"
-        summaryLabel.textColor = pressure == "CRITICAL" ? .systemRed
-            : pressure == "HIGH" ? .systemOrange : NSColor(calibratedWhite: 0.72, alpha: 1)
+        let rebirthTarget = number(state, "rebirthSeconds")
+        let rebirthElapsed = number(state, "rebirthElapsed")
+        let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
+        let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
+            || !(state["rebirthPreviewMonotonic"] as? Bool ?? true)
+            || !(state["rebirthRecoveryResetEfficient"] as? Bool ?? true)
+        let rebirthText = rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
+            : rebirthBlocked ? "route hold" : "now"
+        let bossText = bossEta < 0 ? "ETA calculating" : "in " + formatEstimate(bossEta)
+        statusLabel.stringValue = "REBIRTH \(rebirthText)   •   BOSS \(selectedBoss) \(bossText)"
+        statusLabel.textColor = rebirthBlocked && rebirthRemaining <= 0 ? .systemOrange : .systemGreen
+
+        let exp = numberDouble(state, "exp")
+        let expTarget = numberDouble(state, "expTargetCost")
+        let expShortfall = numberDouble(state, "expShortfall")
+        let expTargetName = expPurchaseName(state["expDecision"] as? String ?? "")
+        let expText: String
+        if expTarget <= 0 {
+            expText = "XP target: \(expTargetName)"
+        } else if expShortfall <= 0 {
+            expText = "XP READY for \(expTargetName) (\(shortNumber(exp))/\(shortNumber(expTarget)))"
+        } else {
+            expText = "XP \(shortNumber(expShortfall)) until \(expTargetName) (\(shortNumber(exp))/\(shortNumber(expTarget)))"
+        }
+        summaryLabel.stringValue = "ADVENTURE \(zone)   •   \(expText)"
+        summaryLabel.textColor = .systemCyan
     }
 
     private func renderGoals(_ state: [String: Any]) {
@@ -777,6 +789,30 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func number(_ object: [String: Any], _ key: String) -> Int {
         return (object[key] as? NSNumber)?.intValue ?? 0
+    }
+
+    private func expPurchaseName(_ decision: String) -> String {
+        let prefixes = ["Saving EXP for ", "Saving for ", "Held for ", "Buying ",
+                        "No spendable EXP above the "]
+        for prefix in prefixes {
+            guard let range = decision.range(of: prefix, options: .caseInsensitive) else { continue }
+            var label = String(decision[range.upperBound...])
+            for stop in [":", ";", " on this decision cycle", " because ", " toward ", " at Boss "] {
+                if let stopRange = label.range(of: stop, options: .caseInsensitive),
+                   stopRange.lowerBound > label.startIndex {
+                    label = String(label[..<stopRange.lowerBound])
+                }
+            }
+            label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            if !label.isEmpty { return label }
+        }
+        let lower = decision.lowercased()
+        if lower.contains("adventure-stat atoms") { return "Adventure-stat purchases" }
+        if lower.contains("adventure atom") { return "next-zone Adventure stat" }
+        if lower.contains("energy-speed") { return "Energy speed" }
+        if lower.contains("energy packages") { return "Boss 17 Energy packages" }
+        return "next validated EXP purchase"
     }
 
     private func numberDouble(_ object: [String: Any], _ key: String) -> Double {
