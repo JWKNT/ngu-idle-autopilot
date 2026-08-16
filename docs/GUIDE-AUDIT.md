@@ -36,6 +36,10 @@ of truth for formulas, unlocks, costs, and mutation verification.
   copies are preserved.
 - Adventure routing evaluates live reachability and set state; guide stat tables
   are conservative hints, not combat truth.
+- The guide's "snipe ahead, backfill stronger" route is represented as explicit
+  Item List debt: newest usable set first, then older sets and per-zone Bonus
+  Accessories. Full inventory is lost-drop risk, so safe cleanup and repeatable AP
+  inventory spaces receive dynamic pressure-based priority.
 - Fight Boss readiness uses the game's discrete damage, regeneration, and death
   ordering rather than static recommended-stat tables.
 

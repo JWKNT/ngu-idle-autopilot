@@ -39,6 +39,7 @@ Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam C
 - Resource decisions use separate current-run and persistent ledgers. Basic Training can reserve Energy for cap compression with a short multi-run payback; EXP/AP can wait for a higher-return permanent purchase instead of draining into a cheaper runner-up.
 - Boosts go to active/explicit gear first, then the always-on Infinity Cube up to its native full-value softcaps, then speculative locked gear. The Cube is not an equippable item.
 - Inventory cleanup runs proactively. The native trash recovery slot is intentionally rolling; only MAXXED same-ID dominated copies or no-special fixed armor with an all-future same-slot dominance proof are overwritten there.
+- Adventure collection keeps a permanent MAXX-debt queue. It snipes the strongest fightable set first, then deliberately backtracks for older incomplete sets, known zone Bonus Accessories, and already-discovered equipment entries before falling through to optional ITOPOD farming. Inventory-space AP purchases move ahead of convenience upgrades when the live free-slot reserve is smaller than projected merge/drop pressure.
 - Normal post-NGU: longer runs emphasizing Adventure/Drop NGUs, Yggdrasil, beards, PP and Titan gear.
 - Early Evil: boss climb via TM then augments; later switch to Normal NGUs/Advanced Training and finish with Evil NGUs.
 - Mature Evil: 24-hour beard cycles with Adventure NGUs, hacks, wishes and quests.

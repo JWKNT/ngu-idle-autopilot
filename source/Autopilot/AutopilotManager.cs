@@ -22,6 +22,7 @@ namespace NGUInjector.Autopilot
         private DateTime _lastDecision = DateTime.MinValue;
         private DateTime _lastAdventureDecision = DateTime.MinValue;
         private ZoneTarget _adventureTarget;
+        private AdventureCollectionTarget _collectionTarget;
         private int _loggedAdventureZone = int.MinValue;
         private int _loggedAdventureFightType = int.MinValue;
         private bool _loggedTitanAutoKill;
@@ -354,17 +355,20 @@ namespace NGUInjector.Autopilot
                 _lastAdventureDecision = DateTime.Now;
                 try
                 {
-                    _adventureTarget = ZoneStatHelper.GetBestZone();
+                    var progressionFront = ZoneStatHelper.GetBestZone();
+                    _collectionTarget = AdventureCollectionPlanner.Evaluate(Main.Character, progressionFront);
+                    _adventureTarget = _collectionTarget.Target ?? progressionFront;
                 }
                 catch
                 {
                     _adventureTarget = null;
+                    _collectionTarget = null;
                 }
             }
 
             var best = _adventureTarget;
             if (Main.Character.settings.itopodOn
-                && (best == null || OrdinaryZoneSetComplete(Main.Character, best.Zone)))
+                && (best == null || _collectionTarget != null && _collectionTarget.IncompleteZones == 0))
             {
                 var optimal = Math.Max(0, Math.Min(Main.Character.calculateBestItopodLevel(),
                     Main.Character.adventure.highestItopodLevel - 1));
@@ -391,12 +395,18 @@ namespace NGUInjector.Autopilot
 
             if (best.Zone != _loggedAdventureZone || best.FightType != _loggedAdventureFightType)
             {
-                Main.Log("Autopilot adventure: zone " + best.Zone + ", fight type " + best.FightType);
+                var collectionDetail = _collectionTarget == null ? string.Empty
+                    : "; collection: " + _collectionTarget.Reason + " ("
+                      + _collectionTarget.MissingSummary + ")";
+                Main.LogAction(_collectionTarget != null && _collectionTarget.IsBackfill ? "COLLECTION" : "ADVENTURE",
+                    "Routing to " + (ZoneStatHelper.UserOverrides.ContainsKey(best.Zone)
+                        ? ZoneStatHelper.UserOverrides[best.Zone].Name : "zone " + best.Zone)
+                    + " using fight type " + best.FightType + collectionDetail);
                 _loggedAdventureZone = best.Zone;
                 _loggedAdventureFightType = best.FightType;
             }
-            var bossOnlyForSet = best.Zone >= 0 && best.Zone < 1000
-                                 && !OrdinaryZoneSetComplete(Main.Character, best.Zone);
+            var bossOnlyForSet = _collectionTarget != null && _collectionTarget.Target != null
+                                 && _collectionTarget.Target.Zone == best.Zone && _collectionTarget.BossOnly;
             if (best.FightType == 2)
                 combat.ManualZone(best.Zone, bossOnlyForSet, true, false, true, true);
             else if (best.FightType == 1)
@@ -447,44 +457,7 @@ namespace NGUInjector.Autopilot
 
         private static bool OrdinaryZoneSetComplete(Character c, int zone)
         {
-            var list = c.inventory.itemList;
-            switch (zone)
-            {
-                case 0: return list.trainingComplete;
-                case 1: return list.sewersComplete;
-                case 2: return list.forestComplete;
-                case 3: return list.caveComplete;
-                case 4: return list.skyComplete;
-                case 5: return list.HSBComplete;
-                case 7: return list.clockComplete;
-                case 9: return list.twoDComplete;
-                case 10: return list.gaudyComplete;
-                case 12: return list.ghostComplete;
-                case 13: return list.megaComplete;
-                case 15: return list.beardverseComplete;
-                case 17: return list.badlyDrawnComplete;
-                case 18: return list.stealthComplete;
-                case 20: return list.chocoComplete;
-                case 21: return list.edgyComplete;
-                case 22: return list.prettyComplete;
-                case 24: return list.metaComplete;
-                case 25: return list.partyComplete;
-                case 27: return list.typoComplete;
-                case 28: return list.fadComplete;
-                case 29: return list.jrpgComplete;
-                case 31: return list.radComplete;
-                case 32: return list.schoolComplete;
-                case 33: return list.westernComplete;
-                case 34: return list.spaceComplete;
-                case 35: return list.breadverseComplete;
-                case 36: return list.that70sComplete;
-                case 37: return list.halloweeniesComplete;
-                case 39: return list.constructionComplete;
-                case 40: return list.duckComplete;
-                case 41: return list.netherComplete;
-                case 42: return list.pirateComplete;
-                default: return false;
-            }
+            return AdventureCollectionPlanner.CoreSetComplete(c, zone);
         }
 
         internal void ReportSynchronization(bool synchronized, string detail)
@@ -623,9 +596,16 @@ namespace NGUInjector.Autopilot
                                       && ZoneStatHelper.UserOverrides.ContainsKey(adventureTargetZone)
                 ? ZoneStatHelper.UserOverrides[adventureTargetZone].Name
                 : "Not yet selected";
-            var adventureBossOnlyForSet = adventureTargetZone >= 0 && adventureTargetZone < 1000
-                                          && !OrdinaryZoneSetComplete(c, adventureTargetZone);
+            var adventureBossOnlyForSet = _collectionTarget != null && _collectionTarget.Target != null
+                                          && _collectionTarget.Target.Zone == adventureTargetZone
+                                          && _collectionTarget.BossOnly;
             var escapedAdventureTargetName = adventureTargetName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            var collectionReason = _collectionTarget == null
+                ? "Collection planner is waiting for a fightable Adventure target" : _collectionTarget.Reason;
+            var collectionMissing = _collectionTarget == null ? "unknown" : _collectionTarget.MissingSummary;
+            var inventoryTotalSlots = AdventureCollectionPlanner.TotalInventorySlots(c);
+            var inventoryFreeSlots = AdventureCollectionPlanner.FreeInventorySlots(c);
+            var inventoryPressure = AdventureCollectionPlanner.InventoryPressure(c, _collectionTarget);
             var nextTitanName = NextTitanName(c);
             var escapedNextTitanName = nextTitanName.Replace("\\", "\\\\").Replace("\"", "\\\"");
             var json = "{\n"
@@ -706,6 +686,16 @@ namespace NGUInjector.Autopilot
                        + "  \"adventureTargetName\": \"" + escapedAdventureTargetName + "\",\n"
                        + "  \"adventureFightType\": " + adventureFightType + ",\n"
                        + "  \"adventureBossOnlyForSet\": " + adventureBossOnlyForSet.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"collectionTargetZone\": " + (_collectionTarget == null || _collectionTarget.Target == null ? -1 : _collectionTarget.Target.Zone) + ",\n"
+                       + "  \"collectionIsBackfill\": " + (_collectionTarget != null && _collectionTarget.IsBackfill).ToString().ToLowerInvariant() + ",\n"
+                       + "  \"collectionRemainingItems\": " + (_collectionTarget == null ? 0 : _collectionTarget.RemainingItems) + ",\n"
+                       + "  \"collectionIncompleteZones\": " + (_collectionTarget == null ? 0 : _collectionTarget.IncompleteZones) + ",\n"
+                       + "  \"collectionReason\": \"" + EscapeJson(collectionReason) + "\",\n"
+                       + "  \"collectionMissingSummary\": \"" + EscapeJson(collectionMissing) + "\",\n"
+                       + "  \"inventoryTotalSlots\": " + inventoryTotalSlots + ",\n"
+                       + "  \"inventoryUsedSlots\": " + Math.Max(0, inventoryTotalSlots - inventoryFreeSlots) + ",\n"
+                       + "  \"inventoryFreeSlots\": " + inventoryFreeSlots + ",\n"
+                       + "  \"inventoryPressure\": \"" + inventoryPressure + "\",\n"
                        + "  \"adventureHP\": " + c.adventure.curHP.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"adventureMaxHP\": " + c.totalAdvHP().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"adventureRecoveryReason\": \"" + EscapeJson(_adventureRecoveryReason) + "\",\n"
@@ -997,6 +987,7 @@ namespace NGUInjector.Autopilot
                 // first post-starter AP purchase that creates new progression income
                 // (+20% AP once MAXXED), whereas Loot Filter merely duplicates us.
                 : !HasYellowHeartDropped(c) ? 14
+                : !IsApOwned(c, 15) && AdventureCollectionPlanner.InventoryPressureHigh(c, _collectionTarget) ? 15
                 : NextAvailableApPurchase(controller);
             if (id < 0 || !ApPurchaseMethods.ContainsKey(id))
                 return new ResourceStatus {Decision = "Held because every supported permanent AP upgrade is already owned or locked", Target = 0, EtaSeconds = -1};
@@ -1026,6 +1017,8 @@ namespace NGUInjector.Autopilot
                 return label + " (the next permanent multi-run progression bundle; cheaper purchases would delay it)";
             if (id == 14)
                 return label + " (permanent +20% AP after MAXX; nominal AP-cost breakeven is 750,000 future AP after MAXX)";
+            if (id == 15)
+                return label + " (collection reserve is below projected merge/drop pressure; a full inventory destroys future drops)";
             return label + " (highest-ranked unlocked permanent upgrade after opportunity cost)";
         }
 
@@ -1940,6 +1933,16 @@ namespace NGUInjector.Autopilot
             if (!HasYellowHeartDropped(c) && CanReceiveYellowHeart(c))
             {
                 TryBuyYellowHeart(controller, available);
+                return;
+            }
+
+            // MAXX collection deliberately retains merge candidates. When verified
+            // free slots fall below that live debt, reserve AP for space instead of
+            // draining it into a lower-ranked convenience purchase.
+            if (!IsApOwned(c, 15)
+                && AdventureCollectionPlanner.InventoryPressureHigh(c, _collectionTarget))
+            {
+                TryBuyApUpgrade(controller, 15, available, ApPurchaseMethods[15]);
                 return;
             }
 

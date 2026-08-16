@@ -12,6 +12,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var textView: NSTextView!
     private var goalsTextView: NSTextView!
     private var statusLabel: NSTextField!
+    private var summaryLabel: NSTextField!
     private var timer: Timer?
     private let logLineRegex = try! NSRegularExpression(
         pattern: #"^(\d{2}:\d{2}:\d{2}\.\d{3}) (\[[^\]]+\]) (\([^\)]+\)) (.*)$"#)
@@ -25,7 +26,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
 
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 1060, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -37,16 +38,30 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let root = NSView(frame: window.contentView!.bounds)
         root.autoresizingMask = [.width, .height]
+        root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor(calibratedRed: 0.035, green: 0.045, blue: 0.065, alpha: 1).cgColor
         window.contentView = root
 
         statusLabel = NSTextField(labelWithString: "FULL AUTOMATION • CONNECTING")
-        statusLabel.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+        statusLabel.font = NSFont.monospacedSystemFont(ofSize: 15, weight: .bold)
         statusLabel.textColor = .systemGreen
-        statusLabel.frame = NSRect(x: 16, y: root.bounds.height - 38, width: root.bounds.width - 32, height: 22)
+        statusLabel.frame = NSRect(x: 18, y: root.bounds.height - 34, width: root.bounds.width - 36, height: 22)
         statusLabel.autoresizingMask = [.width, .minYMargin]
         root.addSubview(statusLabel)
 
-        let tabs = NSTabView(frame: NSRect(x: 12, y: 12, width: root.bounds.width - 24, height: root.bounds.height - 58))
+        summaryLabel = NSTextField(labelWithString: "Waiting for verified live telemetry…")
+        summaryLabel.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
+        summaryLabel.textColor = NSColor(calibratedWhite: 0.68, alpha: 1)
+        summaryLabel.frame = NSRect(x: 18, y: root.bounds.height - 57, width: root.bounds.width - 36, height: 18)
+        summaryLabel.autoresizingMask = [.width, .minYMargin]
+        root.addSubview(summaryLabel)
+
+        let divider = NSBox(frame: NSRect(x: 16, y: root.bounds.height - 65, width: root.bounds.width - 32, height: 1))
+        divider.boxType = .separator
+        divider.autoresizingMask = [.width, .minYMargin]
+        root.addSubview(divider)
+
+        let tabs = NSTabView(frame: NSRect(x: 12, y: 12, width: root.bounds.width - 24, height: root.bounds.height - 82))
         tabs.autoresizingMask = [.width, .height]
         root.addSubview(tabs)
 
@@ -59,7 +74,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         tabs.addTabViewItem(actionsTab)
 
         let goalsTab = NSTabViewItem(identifier: "goals")
-        goalsTab.label = "Goals"
+        goalsTab.label = "Strategy & Goals"
         let goalsScroll = makeScrollView(frame: tabs.contentRect)
         goalsTextView = makeTextView(frame: goalsScroll.bounds)
         goalsTextView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -95,6 +110,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         view.textColor = NSColor(calibratedWhite: 0.9, alpha: 1)
         view.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1)
         view.textContainerInset = NSSize(width: 10, height: 10)
+        view.insertionPointColor = .systemTeal
         return view
     }
 
@@ -111,6 +127,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     offset += UInt64(data.count)
                     if let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty {
                         textView.textStorage?.append(coloredLog(chunk))
+                        if let storage = textView.textStorage, storage.length > 750_000 {
+                            storage.deleteCharacters(in: NSRange(location: 0, length: min(150_000, storage.length)))
+                        }
                         textView.scrollToEndOfDocument(nil)
                     }
                 } catch { }
@@ -162,6 +181,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 statusLabel.stringValue = "\(mode) • SYNCED • \(stage.uppercased()) • TARGET \(groupedInteger(target))s • ETA \(formatDuration(remaining))"
                 statusLabel.textColor = .systemGreen
             }
+            updateSummary(object)
             let stamp = object["time"] as? String ?? ""
             if stamp != lastDecisionTime {
                 lastDecisionTime = stamp
@@ -171,6 +191,27 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             statusLabel.stringValue = "AUTOMATION • WAITING FOR BOT"
             statusLabel.textColor = .systemOrange
         }
+    }
+
+    private func updateSummary(_ state: [String: Any]) {
+        guard state["synced"] as? Bool ?? false else {
+            summaryLabel.stringValue = "SAFE PAUSE  •  no game mutations until active gameplay is verified"
+            summaryLabel.textColor = .systemOrange
+            return
+        }
+        let selectedBoss = number(state, "bossSelectedId")
+        let bossEta = number(state, "bossDefeatEtaSeconds")
+        let zone = state["adventureTargetName"] as? String ?? "selecting zone"
+        let free = number(state, "inventoryFreeSlots")
+        let total = number(state, "inventoryTotalSlots")
+        let pressure = (state["inventoryPressure"] as? String ?? "unknown").uppercased()
+        let usedEnergy = max(0, numberDouble(state, "energyCurrent") - numberDouble(state, "energyIdle"))
+        let totalEnergy = numberDouble(state, "energyCurrent")
+        let collection = state["collectionIsBackfill"] as? Bool ?? false ? "BACKFILL" : "FORWARD"
+        let etaText = bossEta < 0 ? "evaluating" : formatEstimate(bossEta)
+        summaryLabel.stringValue = "BOSS \(selectedBoss) \(etaText)   •   ADV \(zone) [\(collection)]   •   INV \(free)/\(total) FREE [\(pressure)]   •   ENERGY \(shortNumber(usedEnergy))/\(shortNumber(totalEnergy))"
+        summaryLabel.textColor = pressure == "CRITICAL" ? .systemRed
+            : pressure == "HIGH" ? .systemOrange : NSColor(calibratedWhite: 0.72, alpha: 1)
     }
 
     private func renderGoals(_ state: [String: Any]) {
@@ -236,6 +277,15 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
         let loadoutDecision = state["loadoutDecision"] as? String ?? "Evaluating owned equipment"
         let trashDecision = state["trashDecision"] as? String ?? "Conservative trash audit pending"
+        let collectionBackfill = state["collectionIsBackfill"] as? Bool ?? false
+        let collectionRemaining = number(state, "collectionRemainingItems")
+        let collectionZones = number(state, "collectionIncompleteZones")
+        let collectionReason = state["collectionReason"] as? String ?? "Equipment collection planner pending"
+        let collectionMissing = state["collectionMissingSummary"] as? String ?? "unknown equipment debt"
+        let inventoryTotal = number(state, "inventoryTotalSlots")
+        let inventoryUsed = number(state, "inventoryUsedSlots")
+        let inventoryFree = number(state, "inventoryFreeSlots")
+        let inventoryPressure = (state["inventoryPressure"] as? String ?? "unknown").uppercased()
         let yggSeedDecision = state["yggSeedDecision"] as? String ?? "Yggdrasil seed policy pending"
         let yggFruitDecision = state["yggFruitDecision"] as? String ?? "Yggdrasil fruit policy pending"
         let timeMachineHorizon = state["timeMachineHorizonDecision"] as? String
@@ -278,11 +328,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else if number(state, "adventureZone") == -1 && !recoveryReason.isEmpty {
             adventureStatus = "Adventure recovery: \(recoveryReason.lowercased()) (HP \(shortNumber(currentHP))/\(shortNumber(maxHP))) — ETA \(formatEstimate(recoveryETA))."
         } else if adventureBossOnly && fightType == 2 {
-            adventureStatus = "Boss-snipe \(zone) in ACTIVE fast-manual mode for its incomplete equipment set. Safe Zone hops are intentional full-respawn rerolls; combat resumes as soon as the next boss spawns."
+            adventureStatus = "Boss-snipe \(zone) in ACTIVE fast-manual mode for its incomplete equipment set. Safe Zone hops are intentional full-respawn rerolls; combat resumes as soon as the next boss spawns. Collection: \(collectionMissing)."
         } else if adventureBossOnly {
             adventureStatus = "Boss-snipe \(zone) for its incomplete equipment set; Safe Zone waits are intentional spawn rerolls, not idle downtime."
         } else if fightType == 2 {
-            adventureStatus = "Farm \(zone) in ACTIVE fast-manual mode now (P \(shortNumber(power)) / T \(shortNumber(toughness)))."
+            adventureStatus = "Farm \(zone) in ACTIVE fast-manual mode now (P \(shortNumber(power)) / T \(shortNumber(toughness))). \(collectionBackfill ? "This is deliberate MAXX backfill." : collectionReason)"
         } else if fightType == 1 {
             adventureStatus = "Push \(zone) in ACTIVE tactical mode now: pre-buff, heal/block, then attack."
         } else {
@@ -310,6 +360,12 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             shortTerm.append("Selected Fight Boss \(selectedBoss) (\(scope)): \(bossViabilityReason); \(bossEtaText), ETA refreshed once per second and start eligibility checked five times per second.")
         }
         shortTerm.append(adventureStatus)
+        if collectionRemaining > 0 {
+            shortTerm.append("MAXX collection: \(collectionMissing) — \(collectionZones) fightable zone\(collectionZones == 1 ? "" : "s") still carry permanent Item List debt.")
+        }
+        if inventoryPressure == "HIGH" || inventoryPressure == "CRITICAL" {
+            shortTerm.append("Protect loot capacity: only \(inventoryFree)/\(inventoryTotal) slots are free; safe trash/merge runs every second and AP space is promoted ahead of convenience purchases.")
+        }
         if rebirthRemaining <= 300 {
             shortTerm.append("Execute the selected rebirth checkpoint — ETA \(formatEstimate(rebirthRemaining)).")
         }
@@ -383,8 +439,17 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let roundExplanation = rebirthReason.lowercased().contains("exact")
             ? "WHY THE ROUND NUMBER: this second is a discontinuity in NGU Idle's native Number time-multiplier formula; it was evaluated, not assumed."
             : "WHY THIS SECOND: it is the highest-scoring live event or integer-second candidate in the current finite-horizon model."
+        let bossGlance = bossReady ? "READY NOW"
+            : bossViabilityETA < 0 ? "ETA CALCULATING" : "ETA " + formatEstimate(bossViabilityETA)
 
         let body = """
+        AT A GLANCE
+        ▶ NEXT: \(shortTerm.first ?? "Re-evaluating the next verified action.")
+        ◆ BOSS: selected \(selectedBoss) / next record \(nextBoss) — \(bossGlance)
+        ◆ ADVENTURE: \(zone) — \(collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
+        ◆ INVENTORY: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure) PRESSURE
+        ◆ REBIRTH: \(formatExactDuration(rebirthRemaining)) remaining — exact target \(formatExactDuration(rebirthTarget))
+
         REBIRTH DECISION — LIVE MODEL
         TARGET RUN AGE: \(formatExactDuration(rebirthTarget))
         CURRENT RUN AGE: \(formatExactDuration(rebirthElapsed))
@@ -410,6 +475,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         LIVE PROGRESS
         Highest Fight Boss: \(highestBoss)    Next record: \(nextBoss)    Selected in this run: \(selectedBoss)
         Adventure target: \(zone)
+        Equipment collection: \(collectionReason); \(collectionMissing). Remaining debt markers \(collectionRemaining) across \(collectionZones) fightable zone\(collectionZones == 1 ? "" : "s").
+        Inventory capacity: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure.lowercased()) pressure. Space purchases are dynamically promoted when the merge/drop reserve is threatened.
         Adventure stats: Power \(shortNumber(power)) / Toughness \(shortNumber(toughness))
         Energy: \(shortNumber(max(0, energyCurrent - energyIdle))) allocated / \(shortNumber(energyCurrent)) total (\(String(format: "%.1f", 100 * energyUtilization))% utilized); +\(shortNumber(energyIncome))/s; idle state: \(energyIdleReason.replacingOccurrences(of: "-", with: " "))
         Reconciliation: \(shortNumber(basicTrainingEnergy)) E in Basic Training; \(shortNumber(nonBasicTrainingEnergy)) E in Augments/other Energy systems; \(shortNumber(energyIdle)) E idle.
@@ -454,6 +521,18 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     row.addAttributes([.foregroundColor: NSColor(calibratedWhite: 0.66, alpha: 1)],
                                       range: match.range(at: 4))
                 }
+                let confirmed = nsLine.range(of: "[confirmed", options: [.caseInsensitive])
+                if confirmed.location != NSNotFound {
+                    row.addAttributes([.foregroundColor: NSColor.systemGreen,
+                                       .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)],
+                                      range: NSRange(location: confirmed.location,
+                                                     length: nsLine.length - confirmed.location))
+                }
+                let eta = nsLine.range(of: "ETA ", options: [.caseInsensitive])
+                if eta.location != NSNotFound {
+                    row.addAttribute(.foregroundColor, value: NSColor.systemYellow,
+                                     range: NSRange(location: eta.location, length: nsLine.length - eta.location))
+                }
             }
             output.append(row)
         }
@@ -466,7 +545,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if category == "[REBIRTH]" || category == "[PROGRESSION]" || category == "[SYNC]" { return .systemPurple }
         if category == "[BOSS]" || category == "[COMBAT]" || category == "[TITAN]" { return .systemPink }
         if category == "[PURCHASE]" || category == "[LOOT]" || category == "[TRASH]"
-            || category == "[INVENTORY]" || category == "[GEAR]" { return .systemTeal }
+            || category == "[INVENTORY]" || category == "[GEAR]" || category == "[COLLECTION]" { return .systemTeal }
         if category == "[ALLOC]" { return .systemBlue }
         if category == "[REWARD]" { return .systemYellow }
         return NSColor(calibratedWhite: 0.78, alpha: 1)
@@ -477,11 +556,18 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         body.enumerateLines { line, _ in
             let upper = line.uppercased()
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 2
+            paragraph.paragraphSpacing = trimmed.isEmpty ? 3 : 0
             var color = NSColor(calibratedWhite: 0.9, alpha: 1)
             var weight: NSFont.Weight = .regular
             var size: CGFloat = 13
             if !trimmed.isEmpty && trimmed == upper && !trimmed.hasPrefix("•") {
                 color = .systemPurple; weight = .bold; size = 14
+            } else if trimmed.hasPrefix("▶") {
+                color = .systemGreen; weight = .semibold; size = 13.5
+            } else if trimmed.hasPrefix("◆") {
+                color = .systemCyan; weight = .medium
             } else if upper.contains("REBIRTH") || upper.contains("OPTIMIZER") || upper.contains("ETA") {
                 color = .systemYellow; weight = .medium
             }
@@ -497,6 +583,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 color = .systemGreen; weight = .medium
             } else if upper.contains("EXP ") || upper.contains("AP ") || upper.contains("GOLD ") || upper.contains("ENERGY:") || upper.contains("AUGMENTATION:") {
                 color = .systemTeal
+            } else if upper.contains("INVENTORY") || upper.contains("COLLECTION") || upper.contains("MAXX") {
+                color = upper.contains("CRITICAL") || upper.contains("HIGH PRESSURE") ? .systemOrange : .systemCyan
             } else if upper.contains("YGGDRASIL") || upper.contains("SEEDS:") {
                 color = .systemGreen
             } else if upper.contains("BOSS") || upper.contains("ADVENTURE") || upper.contains("TITAN") {
@@ -504,7 +592,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             output.append(NSAttributedString(string: line + "\n", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: size, weight: weight),
-                .foregroundColor: color
+                .foregroundColor: color,
+                .paragraphStyle: paragraph
             ]))
         }
         goalsTextView.textStorage?.setAttributedString(output)
