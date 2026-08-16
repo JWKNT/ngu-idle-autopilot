@@ -1,0 +1,52 @@
+# NGU Idle Autopilot
+
+This is a direct, in-process NGU Idle controller for the Windows Steam build running in the local CrossOver `Steam` bottle. It does not use mouse/keyboard automation or Computer Use. `SharpMonoInjector` loads the C# controller into Unity, where it reads the live `Character` state and calls the same game controllers used by the UI.
+
+The planner adapts across Normal, Evil, and Sadistic. It generates timed Energy/Magic/Resource 3 allocation profiles and coordinates bosses, reachable adventure zones, Basic/Advanced Training, augments, Time Machine, Blood Magic, NGUs, hacks, wishes, inventory merging/boosting/filtering, gear, diggers, Titans, Yggdrasil, quests, money pit/spin, cards, cooking, EXP purchases, perks, quirks, rebirths, and optionally challenge entry.
+
+It is an adaptive strategy engine, not a proof of a mathematically global optimum. NGU Idle has long-horizon choices whose value depends on future play time and player goals; the bot uses progression-oriented policies derived from the game guide and current unlock/state information.
+
+## Start safely
+
+1. Launch NGU Idle through Steam in CrossOver.
+2. Double-click `run.command`.
+3. The first run creates `runtime/autopilot.json` with `Enabled: true` and `Mode: "dry-run"`. Dry-run only reads state, calculates a plan, and writes `runtime/decision.json`; it does not operate the game.
+4. Inspect the decision with `status.command` and the overlay in the upper-left of the game.
+5. Change `Mode` to `"assist"` when the plan looks sensible. The file is hot-reloaded.
+
+Use `stop.command` to unload. Restarting the game also unloads injected code.
+
+## Safety gates
+
+- `dry-run`: observe and calculate only.
+- `assist`: perform routine automation—allocations, combat/zone selection, inventory handling, quests, fruits, wishes, diggers, card tags/mayo generation, and recipe optimization.
+- `full`: allows consumption actions such as playing suitable cards and eating an optimized dish. High-impact actions still have separate switches.
+
+These remain disabled until individually enabled in full mode:
+
+- `AllowExpSpending`
+- `AllowRebirths`
+- `AllowChallenges` (also requires rebirths)
+- `AllowCardYeeting`
+- `AllowPerkSpending`
+- `AllowQuirkSpending`
+
+Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam Cloud/save backups enabled, and test assist mode on a copied save before enabling rebirths or challenges.
+
+## Strategy outline
+
+- Normal pre-NGU: event-scored rebirths across exact Number breakpoints, projected boss kills, persistent Basic Training events, AP ticks, and Titan windows; Basic Training caps, boss EXP, best reachable gear, augments/TM.
+- Normal post-NGU: longer runs emphasizing Adventure/Drop NGUs, Yggdrasil, beards, PP and Titan gear.
+- Early Evil: boss climb via TM then augments; later switch to Normal NGUs/Advanced Training and finish with Evil NGUs.
+- Mature Evil: 24-hour beard cycles with Adventure NGUs, hacks, wishes and quests.
+- Sadistic: roughly 23-hour MacGuffin cycles, Sadistic NGUs, milestone-efficient hacks/wishes, and Adventure/PP/QP cards.
+
+The current decision and objective are always written to `runtime/decision.json`. The generated allocation profile is `runtime/profiles/autopilot.generated.json`. Do not edit the generated profile; edit `runtime/autopilot.json`.
+
+## Rebuild after a game update
+
+Double-click `build.command`. It copies compile-time references from the installed game, compiles against the exact current `Assembly-CSharp.dll`, and replaces `NGUIdleAutopilot.dll`. Game/Unity assemblies are kept under the ignored `build/references` directory and are not required beside the finished bot at runtime.
+
+## Credits
+
+The injection and manager substrate is derived from rvazarkar's Apache-2.0-licensed NGUInjector 3.4.2. SharpMonoInjector is included as the process-injection component. See `LICENSE` and the upstream project history retained under `source`.

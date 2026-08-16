@@ -1,0 +1,13 @@
+NGU Idle Autopilot
+
+This product includes software derived from NGUInjector 3.4.2-era source:
+https://github.com/rvazarkar/NGUInjector
+Licensed under the Apache License, Version 2.0.
+
+The derived work adds adaptive strategy planning, progression and rebirth
+optimization, expanded game-system automation, synchronization and verification
+gates, telemetry, and a separate monitor. See THIRD_PARTY.md for component
+boundaries and additional provenance.
+
+NGU Idle and Unity are not distributed with this source repository.
+

@@ -1,0 +1,31 @@
+# macOS / IDE
+.DS_Store
+.idea/
+.vs/
+*.user
+*.suo
+
+# Compiled bot and monitor artifacts
+*.dll
+*.exe
+*.pdb
+*.mdb
+*.app/
+ngu-action-monitor
+source/bin/
+source/obj/
+
+# Game-owned assemblies and generated build products
+build/
+/out
+work/
+
+# Live state: saves, logs, decisions, generated profiles, and local settings
+runtime/
+
+# SharpMonoInjector is a separately licensed transport dependency. See
+# injector/README.md for the expected files and upstream source.
+injector/*.dll
+injector/*.exe
+source/inject/*.dll
+source/inject/*.exe

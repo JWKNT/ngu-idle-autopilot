@@ -1,0 +1,562 @@
+import AppKit
+
+final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private let logPath: String
+    private let decisionPath: String
+    private var offset: UInt64 = 0
+    private var lastDecisionTime = ""
+    private var producerPid: Int?
+    private var buildId: String?
+    private var lastDecisionSequence = 0
+    private var window: NSWindow!
+    private var textView: NSTextView!
+    private var goalsTextView: NSTextView!
+    private var statusLabel: NSTextField!
+    private var timer: Timer?
+
+    init(logPath: String, decisionPath: String) {
+        self.logPath = logPath
+        self.decisionPath = decisionPath
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "NGU Idle Autopilot — Control Center"
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+
+        let root = NSView(frame: window.contentView!.bounds)
+        root.autoresizingMask = [.width, .height]
+        window.contentView = root
+
+        statusLabel = NSTextField(labelWithString: "FULL AUTOMATION • CONNECTING")
+        statusLabel.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+        statusLabel.textColor = .systemGreen
+        statusLabel.frame = NSRect(x: 16, y: root.bounds.height - 38, width: root.bounds.width - 32, height: 22)
+        statusLabel.autoresizingMask = [.width, .minYMargin]
+        root.addSubview(statusLabel)
+
+        let tabs = NSTabView(frame: NSRect(x: 12, y: 12, width: root.bounds.width - 24, height: root.bounds.height - 58))
+        tabs.autoresizingMask = [.width, .height]
+        root.addSubview(tabs)
+
+        let actionsTab = NSTabViewItem(identifier: "actions")
+        actionsTab.label = "Live Actions"
+        let actionsScroll = makeScrollView(frame: tabs.contentRect)
+        textView = makeTextView(frame: actionsScroll.bounds)
+        actionsScroll.documentView = textView
+        actionsTab.view = actionsScroll
+        tabs.addTabViewItem(actionsTab)
+
+        let goalsTab = NSTabViewItem(identifier: "goals")
+        goalsTab.label = "Goals"
+        let goalsScroll = makeScrollView(frame: tabs.contentRect)
+        goalsTextView = makeTextView(frame: goalsScroll.bounds)
+        goalsTextView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        goalsScroll.documentView = goalsTextView
+        goalsTab.view = goalsScroll
+        tabs.addTabViewItem(goalsTab)
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        poll()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.poll() }
+    }
+
+    private func makeScrollView(frame: NSRect) -> NSScrollView {
+        let scroll = NSScrollView(frame: frame)
+        scroll.autoresizingMask = [.width, .height]
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.drawsBackground = true
+        return scroll
+    }
+
+    private func makeTextView(frame: NSRect) -> NSTextView {
+        let view = NSTextView(frame: frame)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = true
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.textContainer?.widthTracksTextView = true
+        view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.textColor = NSColor(calibratedWhite: 0.9, alpha: 1)
+        view.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1)
+        view.textContainerInset = NSSize(width: 10, height: 10)
+        return view
+    }
+
+    private func poll() {
+        let fm = FileManager.default
+        if let attrs = try? fm.attributesOfItem(atPath: logPath),
+           let size = attrs[.size] as? NSNumber {
+            let length = size.uint64Value
+            if length < offset { offset = 0 }
+            if length > offset, let handle = FileHandle(forReadingAtPath: logPath) {
+                do {
+                    try handle.seek(toOffset: offset)
+                    let data = handle.readDataToEndOfFile()
+                    offset += UInt64(data.count)
+                    if let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty {
+                        textView.textStorage?.append(coloredLog(chunk))
+                        textView.scrollToEndOfDocument(nil)
+                    }
+                } catch { }
+                try? handle.close()
+            }
+        }
+
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: decisionPath)),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let stage = object["stage"] as? String {
+            let schema = number(object, "schemaVersion")
+            let incomingPid = number(object, "producerPid")
+            let incomingBuild = object["buildId"] as? String ?? ""
+            let sequence = number(object, "decisionSequence")
+            if schema != 2 || incomingPid <= 0 || incomingBuild.isEmpty
+                || (producerPid != nil && producerPid != incomingPid)
+                || (buildId != nil && buildId != incomingBuild)
+                || sequence < lastDecisionSequence {
+                statusLabel.stringValue = "AUTOMATION • REJECTED UNVERIFIED OR OUT-OF-SEQUENCE TELEMETRY"
+                statusLabel.textColor = .systemRed
+                return
+            }
+            producerPid = incomingPid
+            buildId = incomingBuild
+            lastDecisionSequence = sequence
+            let elapsed = number(object, "rebirthElapsed")
+            let synced = object["synced"] as? Bool ?? false
+            let enabled = object["enabled"] as? Bool ?? false
+            let mutationsEnabled = object["mutationsEnabled"] as? Bool ?? false
+            let mode = (object["mode"] as? String ?? "unknown").uppercased()
+            let attributes = try? FileManager.default.attributesOfItem(atPath: decisionPath)
+            let modified = attributes?[.modificationDate] as? Date ?? .distantPast
+            let age = Date().timeIntervalSince(modified)
+            if age > 5 {
+                statusLabel.stringValue = "\(mode) AUTOMATION • STALE TELEMETRY \(Int(age))s • LAST \(stage.uppercased())"
+                statusLabel.textColor = .systemRed
+            } else if !enabled {
+                statusLabel.stringValue = "AUTOMATION DISABLED • \(stage.uppercased())"
+                statusLabel.textColor = .systemOrange
+            } else if !synced {
+                statusLabel.stringValue = "\(mode) AUTOMATION PAUSED • NO GAMEPLAY MUTATIONS; AUTOSAVE LOAD MAY RUN"
+                statusLabel.textColor = .systemOrange
+            } else if !mutationsEnabled {
+                statusLabel.stringValue = "\(mode) • OBSERVATION ONLY • NO GAMEPLAY MUTATIONS"
+                statusLabel.textColor = .systemOrange
+            } else {
+                statusLabel.stringValue = "\(mode) AUTOMATION • SYNCED • \(stage.uppercased()) • REBIRTH \(formatDuration(elapsed))"
+                statusLabel.textColor = .systemGreen
+            }
+            let stamp = object["time"] as? String ?? ""
+            if stamp != lastDecisionTime {
+                lastDecisionTime = stamp
+                renderGoals(object)
+            }
+        } else {
+            statusLabel.stringValue = "AUTOMATION • WAITING FOR BOT"
+            statusLabel.textColor = .systemOrange
+        }
+    }
+
+    private func renderGoals(_ state: [String: Any]) {
+        if !(state["synced"] as? Bool ?? false) {
+            let detail = state["syncDetail"] as? String ?? "Waiting for the game to enter active gameplay."
+            setColoredGoals("""
+            SYNCHRONIZATION REQUIRED
+
+            \(detail)
+
+            The automation loops are hard-paused. Combat, allocations, inventory, purchases,
+            Money Pit, bosses, Adventure, and rebirth actions cannot execute in this state.
+
+            Full mode will use NGU Idle's own Load Autosave controller when a verified local
+            save becomes available. Automation resumes only after MainMenuController reports
+            completion and the main-menu transform is hidden by the game itself.
+            """)
+            return
+        }
+        let objective = state["objective"] as? String ?? "Re-evaluating"
+        let highestBoss = number(state, "highestBoss")
+        let nextBoss = max(highestBoss + 1, number(state, "nextBoss"))
+        let selectedBoss = state["bossSelectedId"] == nil ? nextBoss : number(state, "bossSelectedId")
+        let selectedMatchesRecord = state["bossTargetMatchesSelected"] as? Bool ?? true
+        let bossReady = state["bossReady"] as? Bool ?? false
+        let bossFighting = state["bossFighting"] as? Bool ?? false
+        let bossKillETA = number(state, "bossKillEtaSeconds")
+        let bossViabilityETA = state["bossDefeatEtaSeconds"] == nil
+            ? number(state, "bossViabilityEtaSeconds") : number(state, "bossDefeatEtaSeconds")
+        let bossFitsRebirth = state["bossDefeatFitsRebirthHorizon"] as? Bool ?? (bossViabilityETA >= 0)
+        let bossRebirthSlack = number(state, "bossRebirthSlackSeconds")
+        let bossViabilityReason = state["bossViabilityReason"] as? String ?? "waiting for the next exact combat viability result"
+        let trainingGoal = state["trainingGoal"] as? String ?? "Speed-cap unlocked Basic Trainings"
+        let trainingETA = number(state, "trainingEtaSeconds")
+        let rebirthTarget = number(state, "rebirthSeconds")
+        let rebirthElapsed = number(state, "rebirthElapsed")
+        let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
+        let rebirthReason = state["rebirthReason"] as? String ?? "current highest-value checkpoint"
+        let rebirthRunnerUp = number(state, "rebirthRunnerUpSeconds")
+        let rebirthRunnerUpReason = state["rebirthRunnerUpReason"] as? String ?? "alternative checkpoint"
+        let rebirthScore = numberDouble(state, "rebirthSelectedScorePerHour")
+        let rebirthRunnerUpScore = numberDouble(state, "rebirthRunnerUpScorePerHour")
+        let rebirthCandidates = state["rebirthCandidateSummary"] as? String ?? "candidate telemetry pending"
+        let adventureUnlocked = (state["adventureUnlocked"] as? Bool) ?? (highestBoss >= 4)
+        let zone = state["adventureTargetName"] as? String ?? "best reachable zone"
+        let fightType = number(state, "adventureFightType")
+        let adventureBossOnly = state["adventureBossOnlyForSet"] as? Bool ?? false
+        let power = numberDouble(state, "adventurePower")
+        let toughness = numberDouble(state, "adventureToughness")
+        let currentHP = numberDouble(state, "adventureHP")
+        let maxHP = numberDouble(state, "adventureMaxHP")
+        let recoveryReason = state["adventureRecoveryReason"] as? String ?? ""
+        let recoveryETA = number(state, "adventureRecoveryEtaSeconds")
+        let energyCurrent = numberDouble(state, "energyCurrent")
+        let energyIdle = numberDouble(state, "energyIdle")
+        let energyUtilization = numberDouble(state, "energyUtilization")
+        let energyIdleReason = state["energyIdleReason"] as? String ?? "waiting-for-telemetry"
+        let energyIncome = numberDouble(state, "energyIncomePerSecond")
+        let basicTrainingEnergy = numberDouble(state, "energyBasicTrainingAllocated")
+        let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
+        let loadoutDecision = state["loadoutDecision"] as? String ?? "Evaluating owned equipment"
+        let allocationSummary: String
+        if let rows = state["energyAllocationBreakdown"] as? [[String: Any]] {
+            allocationSummary = rows.filter { numberDouble($0, "totalEnergy") > 0 }.map { row in
+                let pair = row["pair"] as? String ?? "Training pair"
+                let energy = numberDouble(row, "totalEnergy")
+                let attackEnergy = numberDouble(row, "attackEnergy")
+                let defenseEnergy = numberDouble(row, "defenseEnergy")
+                let attackCap = numberDouble(row, "attackCap")
+                let defenseCap = numberDouble(row, "defenseCap")
+                let attackUnlocked = row["attackUnlocked"] as? Bool ?? true
+                let defenseUnlocked = row["defenseUnlocked"] as? Bool ?? true
+                let attackRate = numberDouble(row, "attackLevelsPerSecond")
+                let defenseRate = numberDouble(row, "defenseLevelsPerSecond")
+                let attackText = attackUnlocked
+                    ? "A \(shortNumber(attackEnergy))/\(shortNumber(attackCap)) @ \(String(format: "%.2f", attackRate)) L/s"
+                    : "Attack side locked"
+                let defenseText = defenseUnlocked
+                    ? "D \(shortNumber(defenseEnergy))/\(shortNumber(defenseCap)) @ \(String(format: "%.2f", defenseRate)) L/s"
+                    : "Defense side locked"
+                return "  • \(pair): \(shortNumber(energy)) E — \(attackText); \(defenseText)"
+            }.joined(separator: "\n")
+        } else {
+            allocationSummary = "  • Waiting for per-pair allocation telemetry"
+        }
+
+        let adventureStatus: String
+        if !adventureUnlocked {
+            adventureStatus = "Unlock Adventure by defeating Boss 4. Boss checks run 5 times/second."
+        } else if number(state, "adventureZone") == -1 && !recoveryReason.isEmpty {
+            adventureStatus = "Adventure recovery: \(recoveryReason.lowercased()) (HP \(shortNumber(currentHP))/\(shortNumber(maxHP))) — ETA \(formatEstimate(recoveryETA))."
+        } else if adventureBossOnly && fightType == 2 {
+            adventureStatus = "Boss-snipe \(zone) in ACTIVE fast-manual mode for its incomplete equipment set. Safe Zone hops are intentional full-respawn rerolls; combat resumes as soon as the next boss spawns."
+        } else if adventureBossOnly {
+            adventureStatus = "Boss-snipe \(zone) for its incomplete equipment set; Safe Zone waits are intentional spawn rerolls, not idle downtime."
+        } else if fightType == 2 {
+            adventureStatus = "Farm \(zone) in ACTIVE fast-manual mode now (P \(shortNumber(power)) / T \(shortNumber(toughness)))."
+        } else if fightType == 1 {
+            adventureStatus = "Push \(zone) in ACTIVE tactical mode now: pre-buff, heal/block, then attack."
+        } else {
+            adventureStatus = "Hold the safest productive Adventure zone in IDLE mode while stats rise."
+        }
+
+        var shortTerm: [String] = []
+        if trainingETA >= 0 && trainingETA <= 300 {
+            shortTerm.append("\(trainingGoal) — ETA \(formatEstimate(trainingETA)).")
+        }
+        if bossFighting {
+            shortTerm.append("Finish the active Fight Boss \(selectedBoss) attempt — ETA \(formatEstimate(bossKillETA)).")
+        } else if bossReady {
+            shortTerm.append("Defeat selected Fight Boss \(selectedBoss) — ready now.")
+        } else {
+            let bossEtaText: String
+            if bossViabilityETA < 0 {
+                bossEtaText = "no finite defeat ETA in the 60-minute projection window"
+            } else if bossFitsRebirth {
+                bossEtaText = "estimated defeat \(formatEstimate(bossViabilityETA)), fitting the rebirth by \(formatEstimate(max(0, bossRebirthSlack)))"
+            } else {
+                bossEtaText = "raw current-run defeat estimate \(formatEstimate(bossViabilityETA)), but it misses the selected rebirth by \(formatEstimate(abs(bossRebirthSlack)))"
+            }
+            let scope = selectedMatchesRecord ? "next-record progression" : "post-rebirth catch-up toward Boss \(nextBoss)"
+            shortTerm.append("Selected Fight Boss \(selectedBoss) (\(scope)): \(bossViabilityReason); \(bossEtaText), ETA refreshed once per second and start eligibility checked five times per second.")
+        }
+        shortTerm.append(adventureStatus)
+        if rebirthRemaining <= 300 {
+            shortTerm.append("Execute the selected rebirth checkpoint — ETA \(formatEstimate(rebirthRemaining)).")
+        }
+        if state["questInProgress"] as? Bool ?? false {
+            let current = number(state, "questCurrentDrops")
+            let target = number(state, "questTargetDrops")
+            let eta = number(state, "questEtaSeconds")
+            let mode = (state["questIdle"] as? Bool ?? false) ? "idle alongside Adventure" : "active in its drop zone"
+            shortTerm.append("Quest \(current)/\(target) drops, \(mode); QP preview \(number(state, "questQpPreview")) — ETA \(formatEstimate(eta)).")
+        }
+        if let nodes = state["goalNodes"] as? [[String: Any]] {
+            for node in nodes {
+                let eta = (node["etaSeconds"] as? NSNumber)?.intValue ?? -1
+                let family = node["family"] as? String ?? ""
+                let label = node["label"] as? String ?? ""
+                guard eta >= 0 && eta <= 300 && family != "rebirth" && family != "training" else { continue }
+                if !shortTerm.contains(where: { $0.contains(label) }) {
+                    shortTerm.append("\(label) — ETA \(formatEstimate(eta)).")
+                }
+            }
+        }
+        shortTerm.append("Re-score Basic Training caps, Augment marginal value, drops, merging, boosts, and purchases on the next control tick.")
+        if energyCurrent > 0 && energyIdle / energyCurrent > 0.01
+            && energyIdleReason != "between-allocation-sweeps" && energyIdleReason != "sync-pair-remainder" {
+            shortTerm.append("Resolve \(shortNumber(energyIdle)) idle Energy: \(energyIdleReason.replacingOccurrences(of: "-", with: " ")).")
+        }
+
+        var resourceDecisions: [String] = []
+        appendResourceGoal(&resourceDecisions, state: state, amountKey: "exp", decisionKey: "expDecision", etaKey: "expEtaSeconds", label: "EXP")
+        appendResourceGoal(&resourceDecisions, state: state, amountKey: "ap", decisionKey: "apDecision", etaKey: "apEtaSeconds", label: "AP")
+        appendResourceGoal(&resourceDecisions, state: state, amountKey: "gold", decisionKey: "goldDecision", etaKey: "goldEtaSeconds", label: "gold")
+        let augmentDecision = state["augmentDecision"] as? String ?? "Re-evaluating Augments"
+        let augmentETA = number(state, "augmentEtaSeconds")
+        let augmentEnergy = numberDouble(state, "augmentEnergy")
+        let augmentEtaText = augmentETA < 0 ? "no finite completion inside this run yet" : "ETA \(formatEstimate(augmentETA))"
+        resourceDecisions.append("Augmentation: \(augmentDecision); Energy \(shortNumber(augmentEnergy)) — \(augmentEtaText).")
+
+        let numberedShort = shortTerm.enumerated()
+            .map { "\($0.offset + 1). \($0.element)" }
+            .joined(separator: "\n")
+        let longerTerm = longerTermGoals(state: state, highestBoss: highestBoss)
+            .map { "• \($0)" }
+            .joined(separator: "\n")
+        let resourceBody = resourceDecisions.isEmpty
+            ? "No held spendable resources."
+            : resourceDecisions.map { "• \($0)" }.joined(separator: "\n")
+        let rewardForecast: String
+        if state["rebirthProjectedAttackMultiplier"] != nil {
+            rewardForecast = "Current rebirth preview: ×\(String(format: "%.3g", numberDouble(state, "rebirthProjectedAttackMultiplier"))) Attack/Defense multiplier now; selected checkpoint yields \(number(state, "rebirthProjectedAp")) time-based AP before Titan bonuses."
+        } else {
+            rewardForecast = "Forecast reward: live multiplier/AP projection will appear after the next safe controller reload."
+        }
+        let optimizerForecast: String
+        if rebirthScore > 0 {
+            optimizerForecast = "Optimizer score: \(String(format: "%.5f", rebirthScore)) log-growth/hour. Runner-up \(formatDuration(rebirthRunnerUp)): \(String(format: "%.5f", rebirthRunnerUpScore))/hour — \(rebirthRunnerUpReason).\nTop candidates: \(rebirthCandidates)."
+        } else {
+            optimizerForecast = "Optimizer detail: this progression stage is still governed by a mandatory Titan, puzzle, or long-cycle checkpoint."
+        }
+
+        let body = """
+        CURRENT STRATEGY
+        \(objective)
+        Rebirth forecast: \(formatDuration(rebirthTarget)) run time — ETA \(formatEstimate(rebirthRemaining)).
+        \(rewardForecast)
+        Selection reason: \(rebirthReason).
+        \(optimizerForecast)
+
+        SHORT TERM — NEXT FEW MINUTES
+        \(numberedShort)
+
+        LONGER TERM — NEXT PROGRESSION GATES
+        \(longerTerm)
+
+        LIVE RESOURCE DECISIONS
+        \(resourceBody)
+
+        LIVE PROGRESS
+        Highest Fight Boss: \(highestBoss)    Next record: \(nextBoss)    Selected in this run: \(selectedBoss)
+        Adventure target: \(zone)
+        Adventure stats: Power \(shortNumber(power)) / Toughness \(shortNumber(toughness))
+        Energy: \(shortNumber(max(0, energyCurrent - energyIdle))) allocated / \(shortNumber(energyCurrent)) total (\(String(format: "%.1f", 100 * energyUtilization))% utilized); +\(shortNumber(energyIncome))/s; idle state: \(energyIdleReason.replacingOccurrences(of: "-", with: " "))
+        Reconciliation: \(shortNumber(basicTrainingEnergy)) E in Basic Training; \(shortNumber(nonBasicTrainingEnergy)) E in Augments/other Energy systems; \(shortNumber(energyIdle)) E idle.
+        Training allocation:
+        \(allocationSummary)
+        Equipment: \(loadoutDecision)
+        """
+
+        setColoredGoals(body)
+    }
+
+    private func coloredLog(_ chunk: String) -> NSAttributedString {
+        let output = NSMutableAttributedString()
+        chunk.enumerateLines { line, _ in
+            let upper = line.uppercased()
+            let color: NSColor
+            let weight: NSFont.Weight
+            if upper.contains("[REJECTED]") || upper.contains("[ERROR]") || upper.contains("[DEATH]") || upper.contains("CRITICAL") {
+                color = .systemRed; weight = .semibold
+            } else if upper.contains("[HOLD]") || upper.contains("[RECOVERY]") || upper.contains("WARNING") || upper.contains("BLOCKED") {
+                color = .systemOrange; weight = .medium
+            } else if upper.contains("[REBIRTH]") || upper.contains("[PROGRESSION]") || upper.contains("[SYNC]") {
+                color = .systemPurple; weight = .semibold
+            } else if upper.contains("[BOSS]") || upper.contains("[COMBAT]") || upper.contains("[TITAN]") {
+                color = .systemPink; weight = .medium
+            } else if upper.contains("[PURCHASE]") || upper.contains("[LOOT]") || upper.contains("[TRASH]") || upper.contains("[INVENTORY]") || upper.contains("[GEAR]") {
+                color = .systemTeal; weight = .medium
+            } else if upper.contains("[ALLOC]") || upper.contains("ENERGY") || upper.contains("MAGIC") {
+                color = .systemBlue; weight = .regular
+            } else if upper.contains("READY") || upper.contains("COMPLETE") || upper.contains("SUCCESS") {
+                color = .systemGreen; weight = .medium
+            } else {
+                color = NSColor(calibratedWhite: 0.88, alpha: 1); weight = .regular
+            }
+            output.append(NSAttributedString(string: line + "\n", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: weight),
+                .foregroundColor: color
+            ]))
+        }
+        return output
+    }
+
+    private func setColoredGoals(_ body: String) {
+        let output = NSMutableAttributedString()
+        body.enumerateLines { line, _ in
+            let upper = line.uppercased()
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            var color = NSColor(calibratedWhite: 0.9, alpha: 1)
+            var weight: NSFont.Weight = .regular
+            var size: CGFloat = 13
+            if !trimmed.isEmpty && trimmed == upper && !trimmed.hasPrefix("•") {
+                color = .systemPurple; weight = .bold; size = 14
+            } else if upper.contains("REBIRTH") || upper.contains("OPTIMIZER") || upper.contains("ETA") {
+                color = .systemYellow; weight = .medium
+            }
+            if upper.contains("BLOCKED") || upper.contains("MISSES") || upper.contains("NO FINITE") || upper.contains("REJECTED") {
+                color = .systemOrange; weight = .semibold
+            } else if upper.contains("READY NOW") || upper.contains("SYNCED") || upper.contains("COMPLETE") || upper.contains("FULLY-ALLOCATED") {
+                color = .systemGreen; weight = .medium
+            } else if upper.contains("EXP ") || upper.contains("AP ") || upper.contains("GOLD ") || upper.contains("ENERGY:") || upper.contains("AUGMENTATION:") {
+                color = .systemTeal
+            } else if upper.contains("BOSS") || upper.contains("ADVENTURE") || upper.contains("TITAN") {
+                color = .systemPink
+            }
+            output.append(NSAttributedString(string: line + "\n", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: size, weight: weight),
+                .foregroundColor: color
+            ]))
+        }
+        goalsTextView.textStorage?.setAttributedString(output)
+    }
+
+    private func appendResourceGoal(_ goals: inout [String], state: [String: Any], amountKey: String,
+                                    decisionKey: String, etaKey: String, label: String) {
+        let amount = numberDouble(state, amountKey)
+        guard amount > 0 else { return }
+        let decision = state[decisionKey] as? String ?? "Re-evaluating spend options"
+        let eta = number(state, etaKey)
+        let stateName = state["\(amountKey)State"] as? String ?? "evaluating"
+        let target = numberDouble(state, "\(amountKey)TargetCost")
+        let shortfall = numberDouble(state, "\(amountKey)Shortfall")
+        let rate = numberDouble(state, "\(amountKey)IncomePerSecond")
+        let etaText = shortfall <= 0
+            ? "funded/available now"
+            : eta < 0 ? "ETA unavailable until income resumes" : "ETA \(formatEstimate(eta))"
+        let targetText = target > 0
+            ? "; target \(shortNumber(target)), shortfall \(shortNumber(shortfall))"
+            : ""
+        let rateText = rate > 0 ? "; measured income \(shortNumber(rate))/s" : ""
+        goals.append("\(label) \(shortNumber(amount)) [\(stateName)]: \(decision)\(targetText)\(rateText) — \(etaText).")
+    }
+
+    private func longerTermGoals(state: [String: Any], highestBoss: Int) -> [String] {
+        var goals: [String] = []
+        let difficulty = number(state, "difficulty")
+        let nextTitan = state["nextTitanName"] as? String ?? "next Titan"
+        if highestBoss >= 58 || difficulty > 0 {
+            goals.append("Defeat \(nextTitan); prioritize its spawn window, progression drop, and set completion over routine farming.")
+        }
+
+        // The injected planner emits a source-backed event graph.  Prefer its live
+        // unresolved gates over generic prose so the roadmap changes at the exact
+        // clue, boss, set, unlock, and difficulty transition the game is on.
+        if let nodes = state["goalNodes"] as? [[String: Any]] {
+            let familyRank = ["puzzle": 0, "boss": 1, "progression": 2, "challenge": 3]
+            let candidates = nodes.filter { node in
+                let family = node["family"] as? String ?? ""
+                return familyRank[family] != nil
+            }.sorted { left, right in
+                let lf = familyRank[left["family"] as? String ?? ""] ?? 99
+                let rf = familyRank[right["family"] as? String ?? ""] ?? 99
+                if lf != rf { return lf < rf }
+                let le = (left["etaSeconds"] as? NSNumber)?.intValue ?? -1
+                let re = (right["etaSeconds"] as? NSNumber)?.intValue ?? -1
+                if (le >= 0) != (re >= 0) { return le >= 0 }
+                return le >= 0 && re >= 0 ? le < re : false
+            }
+            for node in candidates {
+                let label = node["label"] as? String ?? ""
+                guard !label.isEmpty && !goals.contains(where: { $0.contains(label) }) else { continue }
+                let eta = (node["etaSeconds"] as? NSNumber)?.intValue ?? -1
+                goals.append(eta >= 0 ? "\(label) — ETA \(formatEstimate(eta))." : label + ".")
+                if goals.count >= 6 { return goals }
+            }
+        }
+
+        if difficulty == 0 {
+            if highestBoss < 17 { goals.append("Defeat Boss 17; unlock Augments and custom EXP purchases.") }
+            if highestBoss < 30 { goals.append("Defeat Boss 30; unlock the Time Machine and establish the gold-growth loop.") }
+            if highestBoss < 37 { goals.append("Defeat Boss 37; unlock Magic and Blood Magic.") }
+            if !(state["nguUnlocked"] as? Bool ?? false) { goals.append("Complete the Number set and unlock NGUs; shift spare resources into permanent growth.") }
+            if highestBoss >= 58 { goals.append("Clear the highest-return unlocked Challenge completion by permanent reward per expected minute.") }
+            if highestBoss >= 301 { goals.append("Finish The Beast v4 and the 10,000% rich-stat requirement; enter Evil.") }
+        } else if difficulty == 1 {
+            if !(state["hacksUnlocked"] as? Bool ?? false) { goals.append("Unlock Resource 3 and Hacks; begin milestone-efficient permanent growth.") }
+            if !(state["wishesUnlocked"] as? Bool ?? false) { goals.append("Unlock Wishes and fund the highest gate-opening wish slots.") }
+            if highestBoss < 301 { goals.append("Advance Evil Fight Bosses toward Boss 301.") }
+            else { goals.append("Defeat Exile v4 and enter Sadistic.") }
+        } else {
+            if !(state["cardsUnlocked"] as? Bool ?? false) { goals.append("Unlock Cards, Mayo generation, and tagging.") }
+            goals.append("Advance the limiting Wish, Hack, NGU, MacGuffin, PP, or QP milestone by measured permanent gain per minute.")
+        }
+
+        if goals.count < 4 { goals.append("Finish the highest-value reachable Adventure set and merge its confirmed upgrades.") }
+        return Array(goals.prefix(6))
+    }
+
+    private func number(_ object: [String: Any], _ key: String) -> Int {
+        return (object[key] as? NSNumber)?.intValue ?? 0
+    }
+
+    private func numberDouble(_ object: [String: Any], _ key: String) -> Double {
+        return (object[key] as? NSNumber)?.doubleValue ?? 0
+    }
+
+    private func formatEstimate(_ seconds: Int) -> String {
+        if seconds < 0 { return "not currently forecastable; recalculated live" }
+        if seconds == 0 { return "now" }
+        return "about " + formatDuration(seconds)
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        let value = max(0, seconds)
+        if value < 60 { return "\(value)s" }
+        if value < 3600 { return "\(value / 60)m \(value % 60)s" }
+        return "\(value / 3600)h \((value % 3600) / 60)m"
+    }
+
+    private func shortNumber(_ value: Double) -> String {
+        if value >= 1_000_000_000 { return String(format: "%.2fB", value / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.2fM", value / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.2fK", value / 1_000) }
+        return String(format: "%.1f", value)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        timer?.invalidate()
+        NSApp.terminate(nil)
+    }
+}
+
+let arguments = CommandLine.arguments
+guard arguments.count >= 3 else {
+    fputs("Usage: ngu-action-monitor <actions.log> <decision.json>\n", stderr)
+    exit(2)
+}
+let app = NSApplication.shared
+let delegate = ActionMonitor(logPath: arguments[1], decisionPath: arguments[2])
+app.delegate = delegate
+app.run()

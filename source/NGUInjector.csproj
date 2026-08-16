@@ -1,0 +1,143 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{2F930638-EA52-446D-AD62-4EBEC6A03556}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>NGUInjector</RootNamespace>
+    <AssemblyName>NGUInjector</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>false</Deterministic>
+    <TargetFrameworkProfile />
+    <NuGetPackageImportStamp>
+    </NuGetPackageImportStamp>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AutopilotLoader.cs" />
+    <Reference Include="Assembly-CSharp, Version=0.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>.\Assembly-CSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Xml" />
+    <Reference Include="UnityEngine">
+      <HintPath>.\UnityEngine.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UI, Version=1.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>.\UnityEngine.UI.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Autopilot\AutopilotConfig.cs" />
+    <Compile Include="Autopilot\AutopilotManager.cs" />
+    <Compile Include="Autopilot\AutopilotPlan.cs" />
+    <Compile Include="Autopilot\AutopilotPlanner.cs" />
+    <Compile Include="Autopilot\CardCookingManager.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\AdvancedTrainingBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\AugmentBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\BaseBreakpoint.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\BasicTrainingBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\BestAug.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\BestHackBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\BR.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\CapCalc.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\HackBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\RitualBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\TimeMachineBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\WandoosBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\WishBP.cs" />
+    <Compile Include="AllocationProfiles\CustomAllocation.cs" />
+    <Compile Include="AllocationProfiles\AllocationProfile.cs" />
+    <Compile Include="AllocationProfiles\BreakpointTypes\NGUBP.cs" />
+    <Compile Include="AllocationProfiles\RebirthStuff\BaseRebirth.cs" />
+    <Compile Include="AllocationProfiles\RebirthStuff\BossNumRebirth.cs" />
+    <Compile Include="AllocationProfiles\RebirthStuff\NoRebirth.cs" />
+    <Compile Include="AllocationProfiles\RebirthStuff\NumberRebirth.cs" />
+    <Compile Include="AllocationProfiles\RebirthStuff\TimeRebirth.cs" />
+    <Compile Include="Consts.cs" />
+    <Compile Include="Managers\ZoneStatHelper.cs" />
+    <Compile Include="Managers\ZoneHelpers.cs" />
+    <Compile Include="Managers\CombatHelpers.cs" />
+    <Compile Include="Managers\CombatManager.cs" />
+    <Compile Include="Managers\DiggerManager.cs" />
+    <Compile Include="Extensions.cs" />
+    <Compile Include="Managers\InventoryManager.cs" />
+    <Compile Include="Loader.cs" />
+    <Compile Include="Managers\LoadoutManager.cs" />
+    <Compile Include="Main.cs" />
+    <Compile Include="Managers\MoneyPitManager.cs" />
+    <Compile Include="Managers\WishManager.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Managers\QuestManager.cs" />
+    <Compile Include="SavedSettings.cs" />
+    <Compile Include="SettingsForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="SettingsForm.Designer.cs">
+      <DependentUpon>SettingsForm.cs</DependentUpon>
+    </Compile>
+    <Compile Include="SimpleJson.cs" />
+    <Compile Include="Managers\YggdrasilManager.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assembly-CSharp.dll" />
+    <Content Include="inject\SharpMonoInjector.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="inject\smi.exe">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="defaultZoneStats.json" />
+    <None Include="inject.bat">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="SettingsForm.dje.resx">
+      <DependentUpon>SettingsForm.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="SettingsForm.resx">
+      <DependentUpon>SettingsForm.cs</DependentUpon>
+    </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PostBuildEvent>rmdir /S /Q dist
+md dist
+xcopy /E /I inject dist\injector
+copy NGUInjector.dll dist\injector
+copy inject.bat dist\
+xcopy /E /I $(ProjectDir)SampleProfiles dist\sampleprofiles</PostBuildEvent>
+  </PropertyGroup>
+</Project>
