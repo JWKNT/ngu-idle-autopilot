@@ -37,6 +37,7 @@ namespace NGUInjector.Autopilot
         private string _adventureRecoveryReason = string.Empty;
         private float _adventureRecoveryTargetHP;
         private int _adventureRecoveryEtaSeconds;
+        private DateTime _adventureSafeZoneSince = DateTime.MinValue;
         private DateTime _resourceRateSampleTime = DateTime.MinValue;
         private long _lastExp;
         private long _lastLifetimeAp;
@@ -477,6 +478,16 @@ namespace NGUInjector.Autopilot
         private void CaptureRecovery(CombatManager combat)
         {
             _adventureRecoveryReason = combat.RecoveryReason ?? string.Empty;
+            if (Main.Character.adventure.zone == -1)
+            {
+                if (_adventureSafeZoneSince == DateTime.MinValue)
+                    _adventureSafeZoneSince = DateTime.UtcNow;
+            }
+            else
+            {
+                _adventureSafeZoneSince = DateTime.MinValue;
+                _adventureRecoveryReason = string.Empty;
+            }
             if (string.IsNullOrEmpty(_adventureRecoveryReason))
             {
                 _adventureRecoveryTargetHP = 0;
@@ -634,6 +645,12 @@ namespace NGUInjector.Autopilot
                                           && _collectionTarget.Target.Zone == adventureTargetZone
                                           && _collectionTarget.BossOnly;
             var escapedAdventureTargetName = adventureTargetName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            var adventureSafeZoneSeconds = adventureZone == -1 && _adventureSafeZoneSince != DateTime.MinValue
+                ? Math.Max(0, (int)Math.Floor((DateTime.UtcNow - _adventureSafeZoneSince).TotalSeconds)) : 0;
+            var adventureControlReason = adventureZone != -1 ? "engaged selected Adventure target"
+                : !string.IsNullOrEmpty(_adventureRecoveryReason) ? _adventureRecoveryReason
+                : adventureTargetZone >= 0 ? "transiting from Safe Zone to " + adventureTargetName
+                : "waiting for the Adventure planner to select a target";
             var collectionReason = _collectionTarget == null
                 ? "Collection planner is waiting for a fightable Adventure target" : _collectionTarget.Reason;
             var collectionMissing = _collectionTarget == null ? "unknown" : _collectionTarget.MissingSummary;
@@ -738,6 +755,8 @@ namespace NGUInjector.Autopilot
                        + "  \"adventureRecoveryReason\": \"" + EscapeJson(_adventureRecoveryReason) + "\",\n"
                        + "  \"adventureRecoveryTargetHP\": " + _adventureRecoveryTargetHP.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"adventureRecoveryEtaSeconds\": " + _adventureRecoveryEtaSeconds + ",\n"
+                       + "  \"adventureControlReason\": \"" + EscapeJson(adventureControlReason) + "\",\n"
+                       + "  \"adventureSafeZoneSeconds\": " + adventureSafeZoneSeconds + ",\n"
                        + "  \"adventurePower\": " + c.totalAdvAttack().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"adventureToughness\": " + c.totalAdvDefense().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"energyCurrent\": " + c.curEnergy + ",\n"

@@ -462,9 +462,14 @@ namespace NGUInjector.Managers
             var canPrecast = ChargeUnlocked() || ParryUnlocked();
             var needsPrecast = ChargeUnlocked() && !ChargeActive()
                                || ParryUnlocked() && !ParryActive();
+            var readyPrecast = ChargeUnlocked() && !ChargeActive() && ChargeReady()
+                               || ParryUnlocked() && !ParryActive() && ParryReady();
             if (precastBuffs && canPrecast && needsPrecast
-                && _character.adventureController.currentEnemy == null)
+                && readyPrecast
+                && _character.adventureController.currentEnemy == null
+                && _character.adventure.zone != -1)
             {
+                RecoveryReason = "Entering Safe Zone to prepare unlocked combat skills";
                 MoveToZone(-1);
                 return;
             }
@@ -477,11 +482,13 @@ namespace NGUInjector.Managers
                 {
                     if (ChargeUnlocked() && !ChargeActive())
                     {
+                        RecoveryReason = "Pre-casting Charge before the next Adventure fight";
                         if (CastCharge()) return;
                     }
 
                     if (ParryUnlocked() && !ParryActive())
                     {
+                        RecoveryReason = "Pre-casting Parry before the next Adventure fight";
                         if (CastParry()) return;
                     }
 

@@ -328,6 +328,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let maxHP = numberDouble(state, "adventureMaxHP")
         let recoveryReason = state["adventureRecoveryReason"] as? String ?? ""
         let recoveryETA = number(state, "adventureRecoveryEtaSeconds")
+        let adventureControlReason = state["adventureControlReason"] as? String ?? ""
+        let adventureSafeZoneSeconds = number(state, "adventureSafeZoneSeconds")
         let energyCurrent = numberDouble(state, "energyCurrent")
         let energyIdle = numberDouble(state, "energyIdle")
         let energyUtilization = numberDouble(state, "energyUtilization")
@@ -386,8 +388,10 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let adventureStatus: String
         if !adventureUnlocked {
             adventureStatus = "Unlock Adventure by defeating Boss 4. Boss checks run 5 times/second."
-        } else if number(state, "adventureZone") == -1 && !recoveryReason.isEmpty {
-            adventureStatus = "Adventure recovery: \(recoveryReason.lowercased()) (HP \(shortNumber(currentHP))/\(shortNumber(maxHP))) — ETA \(formatEstimate(recoveryETA))."
+        } else if number(state, "adventureZone") == -1 {
+            let reason = adventureControlReason.isEmpty ? recoveryReason : adventureControlReason
+            let eta = recoveryETA > 0 ? " — ETA \(formatEstimate(recoveryETA))" : ""
+            adventureStatus = "Safe Zone for \(adventureSafeZoneSeconds)s: \(reason.lowercased()) (HP \(shortNumber(currentHP))/\(shortNumber(maxHP)))\(eta)."
         } else if adventureBossOnly && fightType == 2 {
             adventureStatus = "Boss-snipe \(zone) in ACTIVE fast-manual mode for its incomplete equipment set. Safe Zone hops are intentional full-respawn rerolls; combat resumes as soon as the next boss spawns. Collection: \(collectionMissing)."
         } else if adventureBossOnly {
