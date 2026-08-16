@@ -33,6 +33,7 @@ namespace NGUInjector
         internal static StreamWriter PitSpinWriter;
         internal static StreamWriter ActionWriter;
         private static readonly object ActionLogLock = new object();
+        private static readonly Dictionary<string, DateTime> LastRepeatedAction = new Dictionary<string, DateTime>();
         internal static Main reference;
         private YggdrasilManager _yggManager;
         private InventoryManager _invManager;
@@ -129,6 +130,26 @@ namespace NGUInjector
             if (ActionWriter == null || string.IsNullOrEmpty(msg)) return;
             lock (ActionLogLock)
             {
+                // Identical 5 Hz allocation confirmations bury combat, purchases,
+                // holds, and progression. Preserve every changed allocation but
+                // reduce exact repeats to one heartbeat every two seconds.
+                if (string.Equals(category, "ALLOC", StringComparison.OrdinalIgnoreCase))
+                {
+                    var key = category + "\n" + msg;
+                    DateTime last;
+                    var now = DateTime.UtcNow;
+                    if (LastRepeatedAction.TryGetValue(key, out last)
+                        && (now - last).TotalSeconds < 2.0)
+                        return;
+                    LastRepeatedAction[key] = now;
+                    if (LastRepeatedAction.Count > 128)
+                    {
+                        var cutoff = now.AddSeconds(-30);
+                        foreach (var stale in LastRepeatedAction.Where(x => x.Value < cutoff)
+                                     .Select(x => x.Key).ToArray())
+                            LastRepeatedAction.Remove(stale);
+                    }
+                }
                 var rebirth = Character == null ? 0 : Math.Floor(Character.rebirthTime.totalseconds);
                 ActionWriter.WriteLine($"{DateTime.Now:HH:mm:ss.fff} [{category}] ({rebirth}s) {msg.Replace("\r", " ").Replace("\n", " ")}");
             }

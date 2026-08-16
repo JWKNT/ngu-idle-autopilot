@@ -13,6 +13,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var goalsTextView: NSTextView!
     private var statusLabel: NSTextField!
     private var timer: Timer?
+    private let logLineRegex = try! NSRegularExpression(
+        pattern: #"^(\d{2}:\d{2}:\d{2}\.\d{3}) (\[[^\]]+\]) (\([^\)]+\)) (.*)$"#)
 
     init(logPath: String, decisionPath: String) {
         self.logPath = logPath
@@ -155,7 +157,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 statusLabel.stringValue = "\(mode) • OBSERVATION ONLY • NO GAMEPLAY MUTATIONS"
                 statusLabel.textColor = .systemOrange
             } else {
-                statusLabel.stringValue = "\(mode) AUTOMATION • SYNCED • \(stage.uppercased()) • REBIRTH \(formatDuration(elapsed))"
+                let target = number(object, "rebirthSeconds")
+                let remaining = max(0, target - elapsed)
+                statusLabel.stringValue = "\(mode) • SYNCED • \(stage.uppercased()) • TARGET \(groupedInteger(target))s • ETA \(formatDuration(remaining))"
                 statusLabel.textColor = .systemGreen
             }
             let stamp = object["time"] as? String ?? ""
@@ -210,6 +214,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthScore = numberDouble(state, "rebirthSelectedScorePerHour")
         let rebirthRunnerUpScore = numberDouble(state, "rebirthRunnerUpScorePerHour")
         let rebirthCandidates = state["rebirthCandidateSummary"] as? String ?? "candidate telemetry pending"
+        let rebirthCandidateCount = number(state, "rebirthCandidateCount")
+        let rebirthResolution = max(1, number(state, "rebirthSearchResolutionSeconds"))
+        let rebirthHysteresis = numberDouble(state, "rebirthHysteresisPercent")
         let adventureUnlocked = (state["adventureUnlocked"] as? Bool) ?? (highestBoss >= 4)
         let zone = state["adventureTargetName"] as? String ?? "best reachable zone"
         let fightType = number(state, "adventureFightType")
@@ -345,19 +352,40 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rewardForecast = "Forecast reward: live multiplier/AP projection will appear after the next safe controller reload."
         }
         let optimizerForecast: String
+        let rankedCandidates = "  • " + rebirthCandidates.replacingOccurrences(of: " | ", with: "\n  • ")
         if rebirthScore > 0 {
-            optimizerForecast = "Optimizer score: \(String(format: "%.5f", rebirthScore)) log-growth/hour. Runner-up \(formatDuration(rebirthRunnerUp)): \(String(format: "%.5f", rebirthRunnerUpScore))/hour — \(rebirthRunnerUpReason).\nTop candidates: \(rebirthCandidates)."
+            let advantage = rebirthRunnerUpScore > 0
+                ? 100.0 * (rebirthScore / rebirthRunnerUpScore - 1.0) : 0.0
+            optimizerForecast = """
+            WINNER SCORE: \(String(format: "%.6f", rebirthScore)) log-growth/hour
+            RUNNER-UP: \(formatExactDuration(rebirthRunnerUp)) — \(String(format: "%.6f", rebirthRunnerUpScore))/hour
+            ADVANTAGE: \(String(format: "%.3f", advantage))% over the next-best evaluated second
+            RUNNER-UP REASON: \(rebirthRunnerUpReason)
+            SEARCH: \(groupedInteger(rebirthCandidateCount)) legal timings at \(rebirthResolution)-second resolution; \(String(format: "%.2f", rebirthHysteresis))% anti-jitter hysteresis
+            NAMED MECHANICS CANDIDATES:
+            \(rankedCandidates)
+            """
         } else {
             optimizerForecast = "Optimizer detail: this progression stage is still governed by a mandatory Titan, puzzle, or long-cycle checkpoint."
         }
 
+        let roundExplanation = rebirthReason.lowercased().contains("exact")
+            ? "WHY THE ROUND NUMBER: this second is a discontinuity in NGU Idle's native Number time-multiplier formula; it was evaluated, not assumed."
+            : "WHY THIS SECOND: it is the highest-scoring live event or integer-second candidate in the current finite-horizon model."
+
         let body = """
+        REBIRTH DECISION — LIVE MODEL
+        TARGET RUN AGE: \(formatExactDuration(rebirthTarget))
+        CURRENT RUN AGE: \(formatExactDuration(rebirthElapsed))
+        REMAINING: \(formatExactDuration(rebirthRemaining))
+        EXPECTED EXECUTION: \(wallClockEstimate(rebirthRemaining)) local time
+        \(roundExplanation)
+        SELECTION REASON: \(rebirthReason)
+        \(optimizerForecast)
+
         CURRENT STRATEGY
         \(objective)
-        Rebirth forecast: \(formatDuration(rebirthTarget)) run time — ETA \(formatEstimate(rebirthRemaining)).
         \(rewardForecast)
-        Selection reason: \(rebirthReason).
-        \(optimizerForecast)
 
         SHORT TERM — NEXT FEW MINUTES
         \(numberedShort)
@@ -386,32 +414,47 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func coloredLog(_ chunk: String) -> NSAttributedString {
         let output = NSMutableAttributedString()
         chunk.enumerateLines { line, _ in
-            let upper = line.uppercased()
-            let color: NSColor
-            let weight: NSFont.Weight
-            if upper.contains("[REJECTED]") || upper.contains("[ERROR]") || upper.contains("[DEATH]") || upper.contains("CRITICAL") {
-                color = .systemRed; weight = .semibold
-            } else if upper.contains("[HOLD]") || upper.contains("[RECOVERY]") || upper.contains("WARNING") || upper.contains("BLOCKED") {
-                color = .systemOrange; weight = .medium
-            } else if upper.contains("[REBIRTH]") || upper.contains("[PROGRESSION]") || upper.contains("[SYNC]") {
-                color = .systemPurple; weight = .semibold
-            } else if upper.contains("[BOSS]") || upper.contains("[COMBAT]") || upper.contains("[TITAN]") {
-                color = .systemPink; weight = .medium
-            } else if upper.contains("[PURCHASE]") || upper.contains("[LOOT]") || upper.contains("[TRASH]") || upper.contains("[INVENTORY]") || upper.contains("[GEAR]") {
-                color = .systemTeal; weight = .medium
-            } else if upper.contains("[ALLOC]") || upper.contains("ENERGY") || upper.contains("MAGIC") {
-                color = .systemBlue; weight = .regular
-            } else if upper.contains("READY") || upper.contains("COMPLETE") || upper.contains("SUCCESS") {
-                color = .systemGreen; weight = .medium
-            } else {
-                color = NSColor(calibratedWhite: 0.88, alpha: 1); weight = .regular
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 1.5
+            let row = NSMutableAttributedString(string: line + "\n", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: NSColor(calibratedWhite: 0.9, alpha: 1),
+                .paragraphStyle: paragraph
+            ])
+            let nsLine = line as NSString
+            let fullRange = NSRange(location: 0, length: nsLine.length)
+            if let match = self.logLineRegex.firstMatch(in: line, range: fullRange) {
+                let category = nsLine.substring(with: match.range(at: 2)).uppercased()
+                let categoryColor = self.logColor(category)
+                row.addAttributes([.foregroundColor: NSColor(calibratedWhite: 0.48, alpha: 1)],
+                                  range: match.range(at: 1))
+                row.addAttributes([
+                    .foregroundColor: categoryColor,
+                    .backgroundColor: categoryColor.withAlphaComponent(0.13),
+                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
+                ], range: match.range(at: 2))
+                row.addAttributes([.foregroundColor: NSColor(calibratedWhite: 0.58, alpha: 1)],
+                                  range: match.range(at: 3))
+                if category == "[ALLOC]" {
+                    row.addAttributes([.foregroundColor: NSColor(calibratedWhite: 0.66, alpha: 1)],
+                                      range: match.range(at: 4))
+                }
             }
-            output.append(NSAttributedString(string: line + "\n", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: weight),
-                .foregroundColor: color
-            ]))
+            output.append(row)
         }
         return output
+    }
+
+    private func logColor(_ category: String) -> NSColor {
+        if category == "[REJECTED]" || category == "[ERROR]" || category == "[DEATH]" { return .systemRed }
+        if category == "[HOLD]" || category == "[RECOVERY]" { return .systemOrange }
+        if category == "[REBIRTH]" || category == "[PROGRESSION]" || category == "[SYNC]" { return .systemPurple }
+        if category == "[BOSS]" || category == "[COMBAT]" || category == "[TITAN]" { return .systemPink }
+        if category == "[PURCHASE]" || category == "[LOOT]" || category == "[TRASH]"
+            || category == "[INVENTORY]" || category == "[GEAR]" { return .systemTeal }
+        if category == "[ALLOC]" { return .systemBlue }
+        if category == "[REWARD]" { return .systemYellow }
+        return NSColor(calibratedWhite: 0.78, alpha: 1)
     }
 
     private func setColoredGoals(_ body: String) {
@@ -429,6 +472,12 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             if upper.contains("BLOCKED") || upper.contains("MISSES") || upper.contains("NO FINITE") || upper.contains("REJECTED") {
                 color = .systemOrange; weight = .semibold
+            } else if upper.contains("WINNER") || upper.contains("ADVANTAGE") {
+                color = .systemGreen; weight = .semibold
+            } else if upper.contains("RUNNER-UP") || upper.contains("SEARCH:") {
+                color = .systemBlue; weight = .medium
+            } else if upper.contains("WHY THE ROUND NUMBER") || upper.contains("TARGET RUN AGE") || upper.contains("EXPECTED EXECUTION") {
+                color = .systemYellow; weight = .semibold
             } else if upper.contains("READY NOW") || upper.contains("SYNCED") || upper.contains("COMPLETE") || upper.contains("FULLY-ALLOCATED") {
                 color = .systemGreen; weight = .medium
             } else if upper.contains("EXP ") || upper.contains("AP ") || upper.contains("GOLD ") || upper.contains("ENERGY:") || upper.contains("AUGMENTATION:") {
@@ -538,6 +587,24 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if value < 60 { return "\(value)s" }
         if value < 3600 { return "\(value / 60)m \(value % 60)s" }
         return "\(value / 3600)h \((value % 3600) / 60)m"
+    }
+
+    private func formatExactDuration(_ seconds: Int) -> String {
+        let value = max(0, seconds)
+        return "\(value / 3600)h \((value % 3600) / 60)m \(value % 60)s (\(groupedInteger(value)) seconds)"
+    }
+
+    private func groupedInteger(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private func wallClockEstimate(_ seconds: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm:ss a"
+        return formatter.string(from: Date().addingTimeInterval(TimeInterval(max(0, seconds))))
     }
 
     private func shortNumber(_ value: Double) -> String {

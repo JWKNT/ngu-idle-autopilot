@@ -17,6 +17,7 @@ namespace NGUInjector.Autopilot
         internal double ProjectedMultiplier;
         internal int ProjectedAP;
         internal string CandidateSummary = string.Empty;
+        internal int CandidateCount;
     }
 
     internal static class RebirthOptimizer
@@ -100,6 +101,25 @@ namespace NGUInjector.Autopilot
             AddCandidate(candidates, Math.Max(minimum, 4100), "first-ap-comparison",
                 "compare the first time-based AP reward against resetting now");
 
+            // Do not constrain the answer to the named mechanics breakpoints. Scan
+            // every legal integer second in the modeled early-run horizon; named
+            // event candidates retain their richer labels at the same timestamp.
+            // This proves a round result such as 3,600 rather than assuming it.
+            if (minimum <= 7200)
+            {
+                var occupied = new HashSet<int>(candidates.Select(x => x.Time));
+                for (var second = minimum; second <= 7200; second++)
+                {
+                    if (!occupied.Add(second)) continue;
+                    candidates.Add(new Candidate
+                    {
+                        Time = second,
+                        Kind = "integer-second-scan",
+                        Reason = "best one-second-resolution point between named progression events"
+                    });
+                }
+            }
+
             foreach (var candidate in candidates)
                 Score(c, candidate, elapsed, bossEta);
 
@@ -107,13 +127,15 @@ namespace NGUInjector.Autopilot
                 .ThenByDescending(x => x.CapScore).ThenBy(x => x.Time).ToList();
             var selected = ordered[0];
             var sticky = candidates.FirstOrDefault(x => x.Time == _stickyTarget && x.Kind == _stickyKind);
-            if (sticky != null && sticky.Time >= minimum && sticky.Score >= selected.Score * 0.995)
+            if (sticky != null && sticky.Time >= minimum && sticky.Score >= selected.Score * 0.9995)
                 selected = sticky;
             _stickyTarget = selected.Time;
             _stickyKind = selected.Kind;
 
             var runnerUp = ordered.FirstOrDefault(x => x != selected) ?? selected;
-            var summary = string.Join(" | ", ordered.Take(5).Select(x =>
+            var meaningful = ordered.Where(x => x.Kind != "integer-second-scan").Take(5).ToList();
+            if (selected.Kind == "integer-second-scan") meaningful.Insert(0, selected);
+            var summary = string.Join(" | ", meaningful.Take(6).Select(x =>
                 x.Time + "s " + x.Kind + "=" + x.Score.ToString("0.0000") + "/h").ToArray());
             return new RebirthRecommendation
             {
@@ -126,7 +148,8 @@ namespace NGUInjector.Autopilot
                 RunnerUpScorePerHour = runnerUp.Score,
                 ProjectedMultiplier = selected.ProjectedMultiplier,
                 ProjectedAP = selected.ProjectedAP,
-                CandidateSummary = summary
+                CandidateSummary = summary,
+                CandidateCount = candidates.Count
             };
         }
 
