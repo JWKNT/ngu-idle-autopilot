@@ -90,7 +90,6 @@ namespace NGUInjector.Managers
         private Cube _lastCube = null;
         private readonly FixedSizedQueue _invBoostAvg = new FixedSizedQueue(60);
         private readonly FixedSizedQueue _cubeBoostAvg = new FixedSizedQueue(60);
-        private Equipment _lastBotTrashed;
         internal static string LastTrashDecision { get; private set; }
             = "Waiting for the first conservative trash audit";
 
@@ -120,6 +119,16 @@ namespace NGUInjector.Managers
 
         internal ih[] GetBoostSlots(ih[] ci)
         {
+            return GetBoostSlots(ci, true);
+        }
+
+        internal ih[] GetImmediateBoostSlots(ih[] ci)
+        {
+            return GetBoostSlots(ci, false);
+        }
+
+        private ih[] GetBoostSlots(ih[] ci, bool includeSpeculativeLockedItems)
+        {
             var result = new List<ih>();
             //First, find items in our priority list
             foreach (var id in Settings.PriorityBoosts)
@@ -137,9 +146,15 @@ namespace NGUInjector.Managers
                 .Where(x => !Settings.PriorityBoosts.Contains(x.id) && !Settings.BoostBlacklist.Contains(x.id));
             result = result.Concat(equipped).ToList();
 
-            //Finally, find locked items in inventory that aren't blacklisted
-            var invItems = ci.Where(x => x.locked && x.equipment.isEquipment() && !Settings.BoostBlacklist.Contains(x.id) && !Settings.PriorityBoosts.Contains(x.id));
-            result = result.Concat(invItems).ToList();
+            // Locked, unequipped gear can be useful later but is speculative. The
+            // caller gives active/explicit gear first claim, then brings the always-
+            // on Cube to its full-value softcap, then returns here for this tier.
+            if (includeSpeculativeLockedItems)
+            {
+                var invItems = ci.Where(x => x.locked && x.equipment.isEquipment()
+                    && !Settings.BoostBlacklist.Contains(x.id) && !Settings.PriorityBoosts.Contains(x.id));
+                result = result.Concat(invItems).ToList();
+            }
 
             //Make sure we filter out non-equips again, just in case one snuck into priorityboosts
             return result.Where(x => x.equipment.isEquipment()).Where(x => x.equipment.GetNeededBoosts().Total() > 0).ToArray();
@@ -243,6 +258,41 @@ namespace NGUInjector.Managers
                 confirmed
                     ? "Routed surplus boosts to Infinity Cube [confirmed by cube/boost delta]"
                     : "Infinity Cube boost request produced no state transition");
+        }
+
+        // Raw Cube Power/Toughness are permanent and contribute in every Adventure
+        // loadout. Below the native softcaps each point has full value. Active and
+        // explicitly-prioritized gear gets first claim; the Cube then outranks only
+        // speculative unequipped gear that can become obsolete.
+        internal void BoostInfinityCubeToSoftcaps()
+        {
+            var inv = _character.inventory;
+            if (inv == null || inv.inventory == null)
+                return;
+            var powerBefore = inv.cubePower;
+            var toughnessBefore = inv.cubeToughness;
+            for (var slot = 0; slot < inv.inventory.Count; slot++)
+            {
+                var boost = inv.inventory[slot];
+                if (boost == null || !boost.removable || !boost.isBoost())
+                    continue;
+                var needPower = inv.cubePower < _controller.cubePowerSoftcap();
+                var needToughness = inv.cubeToughness < _controller.cubeToughnessSoftcap();
+                if (!needPower && !needToughness)
+                    break;
+                var compatible = boost.type == part.atkBoost && needPower
+                                 || boost.type == part.defBoost && needToughness
+                                 || boost.type == part.specBoost && (needPower || needToughness);
+                if (!compatible)
+                    continue;
+                _controller.infinityCubeBoost(slot);
+            }
+            _controller.updateInventory();
+            if (inv.cubePower > powerBefore || inv.cubeToughness > toughnessBefore)
+                Main.LogAction("INVENTORY", "Prioritized permanent Infinity Cube softcap value: Power "
+                                            + powerBefore.ToString("0.##") + " -> " + inv.cubePower.ToString("0.##")
+                                            + ", Toughness " + toughnessBefore.ToString("0.##") + " -> "
+                                            + inv.cubeToughness.ToString("0.##"));
         }
 
         internal void MergeEquipped(ih[] ci)
@@ -709,10 +759,10 @@ namespace NGUInjector.Managers
             _controller.selectAutoNoneTransform();
         }
 
-        // Conservative inventory reclamation.  Different item IDs are never
-        // compared: an apparently weaker item can carry a unique set/progression
-        // role.  We only discard a maxed duplicate when another physical copy of
-        // the exact same ID is at least as good in every present and future stat.
+        // Conservative inventory reclamation. Same-ID dominated copies are exact
+        // redundancy. A different-ID item is eligible only in a fixed armor slot,
+        // after its Item List entry is MAXXED, when it has no special effects and a
+        // retained same-slot item dominates both current stats and all future caps.
         internal void TrashProvenRedundantItem()
         {
             var inv = _character.inventory;
@@ -725,15 +775,9 @@ namespace NGUInjector.Managers
                 return;
             }
 
-            // The native trash slot is the user's one-step undo. Never overwrite an
-            // item we did not put there. Once our own proven-useless item occupies it,
-            // replacing it with the next proven-useless copy is intentional.
-            if (inv.trash != null && inv.trash.id > 0
-                && !ReferenceEquals(inv.trash, _lastBotTrashed))
-            {
-                LastTrashDecision = "Blocked: the recoverable trash slot contains an item not placed there by the bot";
-                return;
-            }
+            // NGU Idle intentionally keeps the most recently discarded item in this
+            // rolling recovery slot. A new native trash action overwrites it; a
+            // non-empty slot is normal state, not an ownership lock.
 
             var owned = new List<Equipment>
             {
@@ -749,6 +793,11 @@ namespace NGUInjector.Managers
                 var keeper = owned.FirstOrDefault(x => x != null
                     && !ReferenceEquals(x, candidate) && x.id == candidate.id
                     && DominatesForAllUses(x, candidate));
+                var sameIdProof = keeper != null;
+                if (keeper == null && !IsConfiguredLoadoutItem(candidate.id))
+                    keeper = owned.FirstOrDefault(x => x != null
+                        && !ReferenceEquals(x, candidate)
+                        && DominatesFixedSlotForAllFuture(x, candidate));
                 if (keeper == null) continue;
 
                 var id = candidate.id;
@@ -760,19 +809,22 @@ namespace NGUInjector.Managers
                 _controller.updateInventory();
                 var confirmed = inv.inventory[slot].id == 0
                                 && ReferenceEquals(inv.trash, candidate);
-                if (confirmed) _lastBotTrashed = candidate;
                 LastTrashDecision = confirmed
-                    ? "Trashed one proven-redundant same-ID dominated MAXXED duplicate"
+                    ? sameIdProof
+                        ? "Trashed one proven-redundant same-ID dominated MAXXED duplicate; rolling recovery slot overwritten by design"
+                        : "Trashed one obsolete fixed-slot MAXXED item dominated now and at every future boost level; rolling recovery slot overwritten by design"
                     : "Native trash request did not produce a verified recoverable-slot transition";
                 Main.LogAction(confirmed ? "TRASH" : "REJECTED", confirmed
-                    ? "Trashed redundant item " + SafeItemName(id) + " (ID " + id + ", level " + level
-                      + "): Item List is MAXXED and retained same-ID copy dominates ATK "
+                    ? "Trashed " + (sameIdProof ? "redundant" : "provably obsolete fixed-slot")
+                      + " item " + SafeItemName(id) + " (ID " + id + ", level " + level
+                      + "): Item List is MAXXED and retained " + (sameIdProof ? "same-ID" : "same-slot")
+                      + " copy dominates ATK "
                       + attack.ToString("0.##") + "/DEF " + defense.ToString("0.##")
-                      + " plus every cap/special field [confirmed in native recoverable trash slot]"
+                      + " plus every relevant current/future cap and special field [confirmed; native recovery slot intentionally overwritten]"
                     : "Redundant-item trash request for ID " + id + " produced no verified slot transition");
                 return; // preserve a full second of native one-step recovery
             }
-            LastTrashDecision = "Nothing is provably disposable: requires a MAXXED equipment ID and a retained same-ID physical copy that dominates every stat/cap field";
+            LastTrashDecision = "Nothing is provably disposable: preserving non-MAXXED Item List progress, specials, future multi-slot gear, and any item without an all-future dominance proof";
         }
 
         private bool CanProveTrashSafe(Equipment item, int slot)
@@ -808,6 +860,15 @@ namespace NGUInjector.Managers
             return false;
         }
 
+        private static bool IsConfiguredLoadoutItem(int id)
+        {
+            return Settings.TitanLoadout.Contains(id)
+                   || Settings.YggdrasilLoadout.Contains(id)
+                   || Settings.GoldDropLoadout.Contains(id)
+                   || Settings.MoneyPitLoadout.Contains(id)
+                   || Settings.QuickLoadout.Contains(id);
+        }
+
         private static bool DominatesForAllUses(Equipment keeper, Equipment candidate)
         {
             const double epsilon = 1e-6;
@@ -834,6 +895,26 @@ namespace NGUInjector.Managers
                    || keeper.spec1Cap > candidate.spec1Cap + epsilon
                    || keeper.spec2Cap > candidate.spec2Cap + epsilon
                    || keeper.spec3Cap > candidate.spec3Cap + epsilon;
+        }
+
+        private static bool DominatesFixedSlotForAllFuture(Equipment keeper, Equipment candidate)
+        {
+            if (keeper.id <= 0 || keeper.id == candidate.id || keeper.type != candidate.type)
+                return false;
+            if (candidate.type != part.Head && candidate.type != part.Chest
+                && candidate.type != part.Legs && candidate.type != part.Boots)
+                return false;
+            // Any special can be a later resource/loadout bottleneck even when its
+            // present scalar looks weak, so cross-ID proof is deliberately disallowed.
+            if (candidate.spec1Type != specType.None || candidate.spec2Type != specType.None
+                || candidate.spec3Type != specType.None)
+                return false;
+            const double epsilon = 1e-6;
+            return keeper.curAttack + epsilon >= candidate.curAttack
+                   && keeper.curDefense + epsilon >= candidate.curDefense
+                   && keeper.capAttack + epsilon >= candidate.capAttack
+                   && keeper.capDefense + epsilon >= candidate.capDefense
+                   && keeper.bossRequired <= candidate.bossRequired;
         }
 
         private string SafeItemName(int id)

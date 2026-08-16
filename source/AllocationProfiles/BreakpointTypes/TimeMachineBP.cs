@@ -7,6 +7,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class TimeMachineBP : BaseBreakpoint
     {
+        internal static string LastHorizonDecision { get; private set; }
+            = "Time Machine reset-horizon value has not been evaluated yet";
+
         protected override bool Unlocked()
         {
             return Character.buttons.brokenTimeMachine.interactable && !Character.challenges.timeMachineChallenge.inChallenge;
@@ -16,8 +19,74 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         {
             var target = Type == ResourceType.Energy ? Character.machine.speedTarget : Character.machine.multiTarget;
             var level = Type == ResourceType.Energy ? Character.machine.levelSpeed : Character.machine.levelGoldMulti;
+            if (target == -1 || target > 0 && level >= target)
+                return true;
+            if (!HasPreRebirthGoldValue())
+                return true;
+            return false;
+        }
 
-            return target == -1 || target > 0 && level >= target;
+        private bool HasPreRebirthGoldValue()
+        {
+            var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
+            if (plan == null || plan.RebirthSeconds <= 0)
+            {
+                LastHorizonDecision = "Allowed: no finite rebirth horizon is available, so reset-local value cannot yet be bounded";
+                return true;
+            }
+            var remaining = plan.RebirthSeconds - (int)Math.Floor(Character.rebirthTime.totalseconds);
+            if (remaining <= 0)
+            {
+                LastHorizonDecision = "Blocked: the selected rebirth checkpoint has arrived; additional reset-local gold cannot complete a sink";
+                return false;
+            }
+
+            // An allocated Augment/Upgrade can charge again on a later completion;
+            // preserving its working capital is a concrete pre-reset use of gold.
+            if (Character.augments != null && Character.augments.augs != null
+                && Character.augments.augs.Any(x => x.augEnergy > 0 || x.upgradeEnergy > 0))
+            {
+                LastHorizonDecision = "Allowed: active Augment/Upgrade work can consume gold before the selected rebirth";
+                return true;
+            }
+
+            if (Character.settings.pitUnlocked && Character.pitController != null)
+            {
+                var pitWait = Character.pitController.currentPitTime() - Character.pit.pitTime.totalseconds;
+                if (pitWait <= remaining)
+                {
+                    LastHorizonDecision = "Allowed: Money Pit becomes available before rebirth, converting reset-local gold into persistent rewards";
+                    return true;
+                }
+            }
+
+            if (Character.buttons.bloodMagic.interactable && Character.bloodMagicController != null
+                && Character.bloodMagicController.ritualsUnlocked() > 0)
+            {
+                LastHorizonDecision = "Allowed: unlocked Blood Magic rituals convert gold into blood/spells before rebirth";
+                return true;
+            }
+
+            if (Character.allDiggers != null && Character.diggers != null
+                && Character.diggers.diggers != null)
+            {
+                var projectedBaselineGold = Character.realGold
+                                            + Math.Max(0.0, Character.grossGoldPerSecond()) * remaining;
+                for (var i = 0; i < Character.diggers.diggers.Count; i++)
+                {
+                    if (Character.diggers.diggers[i].maxLevel >= Character.allDiggers.hardCapLevel(i))
+                        continue;
+                    var cost = Character.allDiggers.upgradeCost(i);
+                    if (cost > 0 && cost <= projectedBaselineGold)
+                    {
+                        LastHorizonDecision = "Allowed: projected pre-reset gold reaches a permanent Digger max-level upgrade";
+                        return true;
+                    }
+                }
+            }
+
+            LastHorizonDecision = "Blocked: no Augment charge, Money Pit toss, or reachable permanent Digger upgrade exists before rebirth; Time Machine levels and unspent gold would reset";
+            return false;
         }
 
         internal override bool Allocate()

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Remoting.Messaging;
 using System.Text;
+using NGUInjector.Autopilot;
 
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -53,6 +54,145 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         }
 
         internal double ConfiguredFraction { get { return CapPercent; } }
+
+        // A locally greedy boss derivative can permanently starve a newly unlocked,
+        // high-cap row.  This reservation asks a different question: can a constant
+        // allocation reach the row's maximum cap reduction before this rebirth, and
+        // will the permanently smaller cap repay that allocation within two future
+        // runs?  The allocator funds these investments before ranking the remaining
+        // Energy by immediate boss value.
+        internal long LongHorizonReservation
+        {
+            get
+            {
+                if (Main.Autopilot == null || Main.Autopilot.Plan == null
+                    || Main.Autopilot.Plan.RebirthSeconds <= 0)
+                    return 0;
+                var remaining = Main.Autopilot.Plan.RebirthSeconds
+                                - (int)Math.Floor(Character.rebirthTime.totalseconds);
+                if (remaining <= 0)
+                    return 0;
+
+                var attack = Index <= 5 && AttackUnlocked
+                    ? SideReservation(true, remaining) : new HorizonReservation();
+                var defense = ((Index > 5 && DefenseUnlocked)
+                               || (Character.settings.syncTraining && Index <= 5 && DefenseUnlocked))
+                    ? SideReservation(false, remaining) : new HorizonReservation();
+                var required = attack.Energy + defense.Energy;
+                var permanentSaving = attack.PermanentCapSaving + defense.PermanentCapSaving;
+                if (required <= 0 || permanentSaving <= 0)
+                    return 0;
+
+                // Allocation is not consumed, but it displaces current-run work.  A
+                // two-run energy-cap payback is a conservative finite horizon that
+                // admits durable investments without sacrificing a run for tiny gains.
+                return required <= 2L * permanentSaving ? required : 0;
+            }
+        }
+
+        internal double LongHorizonPaybackRuns
+        {
+            get
+            {
+                if (Main.Autopilot == null || Main.Autopilot.Plan == null)
+                    return double.MaxValue;
+                var remaining = Main.Autopilot.Plan.RebirthSeconds
+                                - (int)Math.Floor(Character.rebirthTime.totalseconds);
+                if (remaining <= 0)
+                    return double.MaxValue;
+                var attack = Index <= 5 && AttackUnlocked
+                    ? SideReservation(true, remaining) : new HorizonReservation();
+                var defense = ((Index > 5 && DefenseUnlocked)
+                               || (Character.settings.syncTraining && Index <= 5 && DefenseUnlocked))
+                    ? SideReservation(false, remaining) : new HorizonReservation();
+                var saving = attack.PermanentCapSaving + defense.PermanentCapSaving;
+                return saving <= 0 ? double.MaxValue : (double)(attack.Energy + defense.Energy) / saving;
+            }
+        }
+
+        internal long AllocateLongHorizonReservation(long availableBudget)
+        {
+            if (availableBudget <= 0 || Main.Autopilot == null || Main.Autopilot.Plan == null)
+                return 0;
+            var remaining = Main.Autopilot.Plan.RebirthSeconds
+                            - (int)Math.Floor(Character.rebirthTime.totalseconds);
+            if (remaining <= 0)
+                return 0;
+            var attack = Index <= 5 && AttackUnlocked
+                ? SideReservation(true, remaining) : new HorizonReservation();
+            var defense = ((Index > 5 && DefenseUnlocked)
+                           || (Character.settings.syncTraining && Index <= 5 && DefenseUnlocked))
+                ? SideReservation(false, remaining) : new HorizonReservation();
+            var required = attack.Energy + defense.Energy;
+            if (required <= 0 || required > availableBudget || required > Character.idleEnergy)
+                return 0;
+
+            var idleBefore = Character.idleEnergy;
+            if (Character.settings.syncTraining && Index <= 5)
+            {
+                var paired = Math.Min(attack.Energy, defense.Energy);
+                if (paired > 0)
+                {
+                    Character.allOffenseController.trains[BTIndex].addEnergy(paired);
+                    Character.allDefenseController.trains[BTIndex].addEnergy(paired);
+                }
+                if (attack.Energy > paired)
+                    Character.allOffenseController.trains[BTIndex].addEnergy(attack.Energy - paired);
+                if (defense.Energy > paired)
+                    Character.allDefenseController.trains[BTIndex].addEnergy(defense.Energy - paired);
+            }
+            else if (Index <= 5 && attack.Energy > 0)
+            {
+                Character.allOffenseController.trains[BTIndex].addEnergy(attack.Energy);
+            }
+            else if (Index > 5 && defense.Energy > 0)
+            {
+                Character.allDefenseController.trains[BTIndex].addEnergy(defense.Energy);
+            }
+            return Math.Max(0L, idleBefore - Character.idleEnergy);
+        }
+
+        private HorizonReservation SideReservation(bool attackSide, int remainingSeconds)
+        {
+            var level = attackSide ? Character.training.attackTraining[BTIndex]
+                : Character.training.defenseTraining[BTIndex];
+            var cap = attackSide ? Character.training.attackCaps[BTIndex]
+                : Character.training.defenseCaps[BTIndex];
+            if (cap <= 1)
+                return new HorizonReservation();
+            var target = RebirthOptimizer.MaxCapReductionLevel(cap, BTIndex);
+            if (level >= target)
+                return new HorizonReservation();
+
+            var levelMultiplier = 1L;
+            if (Character.adventure.itopod.perkLevel.Count > 15
+                && Character.adventure.itopod.perkLevel[15] >= 1) levelMultiplier++;
+            if (Character.beastQuest.quirkLevel.Count > 17
+                && Character.beastQuest.quirkLevel[17] >= 1) levelMultiplier++;
+            if (Character.wishes.wishes.Count > 23
+                && Character.wishes.wishes[23].level >= 1) levelMultiplier++;
+            var completions = (long)Math.Ceiling((target - level) / (double)levelMultiplier);
+            var ticksAvailable = 50L * remainingSeconds;
+            if (completions <= 0 || ticksAvailable < completions)
+                return new HorizonReservation();
+            var ticksPerCompletion = ticksAvailable / completions;
+            if (ticksPerCompletion <= 0)
+                return new HorizonReservation();
+            var energy = Math.Min(cap, (long)Math.Ceiling(cap / (double)ticksPerCompletion));
+            var currentReduction = RebirthOptimizer.CapReduction(level, cap, BTIndex);
+            var targetReduction = RebirthOptimizer.CapReduction(target, cap, BTIndex);
+            return new HorizonReservation
+            {
+                Energy = energy,
+                PermanentCapSaving = Math.Max(0L, targetReduction - currentReduction)
+            };
+        }
+
+        private struct HorizonReservation
+        {
+            internal long Energy;
+            internal long PermanentCapSaving;
+        }
 
         private double MarginalBossUtility(bool attackSide)
         {

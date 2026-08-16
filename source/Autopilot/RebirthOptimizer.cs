@@ -268,7 +268,7 @@ namespace NGUInjector.Autopilot
             best = Math.Min(best, (target - current) / perSecond);
         }
 
-        private static long MaxCapReductionLevel(long cap, int tier)
+        internal static long MaxCapReductionLevel(long cap, int tier)
         {
             if (cap <= 1) return 0;
             var maxReduction = cap / 10L + 1L;
@@ -279,7 +279,7 @@ namespace NGUInjector.Autopilot
             return estimate;
         }
 
-        private static long CapReduction(long level, long cap, int tier)
+        internal static long CapReduction(long level, long cap, int tier)
         {
             var shifted = Math.Max(0.0, level - 500.0 * tier);
             var raw = (long)(1.0 + Math.Pow(shifted, 1.2) / 500.0 * cap / 1000.0);

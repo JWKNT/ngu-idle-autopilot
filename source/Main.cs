@@ -940,6 +940,11 @@ namespace NGUInjector
                     converted = Character.inventory.GetConvertedInventory().ToArray();
                     _invManager.MergeGuffs(converted);
                     converted = Character.inventory.GetConvertedInventory().ToArray();
+                    var immediateBoostSlots = _invManager.GetImmediateBoostSlots(converted);
+                    _invManager.BoostInventory(immediateBoostSlots);
+                    converted = Character.inventory.GetConvertedInventory().ToArray();
+                    _invManager.BoostInfinityCubeToSoftcaps();
+                    converted = Character.inventory.GetConvertedInventory().ToArray();
                     var boostSlots = _invManager.GetBoostSlots(converted);
                     _invManager.BoostInventory(boostSlots);
                     _invManager.BoostInfinityCube();

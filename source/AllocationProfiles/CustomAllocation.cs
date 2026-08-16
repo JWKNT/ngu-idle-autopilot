@@ -570,6 +570,7 @@ namespace NGUInjector.AllocationProfiles
             var optimizeCappedTraining = cappedTraining.Count > 0
                                          && cappedTraining.All(x => x.IsCapPrio());
             var optimizedTrainingSpent = 0L;
+            var longHorizonTrainingSpent = 0L;
             if (optimizeCappedTraining)
             {
                 // Preserve the planner's aggregate BT budget, but solve its internal
@@ -577,6 +578,24 @@ namespace NGUInjector.AllocationProfiles
                 // now means "60% to the best BT margins", not four equal 15% slices.
                 var fraction = Math.Min(1.0, cappedTraining.Sum(x => x.ConfiguredFraction));
                 var remainingTrainingBudget = (long)Math.Ceiling(_character.curEnergy * fraction);
+
+                // Fund persistent cap-compression investments before the immediate
+                // boss derivative.  This prevents a high-cap newly unlocked row from
+                // remaining at zero forever merely because its very first point has
+                // weak local value.  Unreachable or >2-run-payback events reserve 0.
+                foreach (var training in cappedTraining
+                             .Where(x => x.LongHorizonReservation > 0)
+                             .OrderBy(x => x.LongHorizonPaybackRuns))
+                {
+                    if (remainingTrainingBudget <= 0 || _character.idleEnergy <= 0) break;
+                    var reservation = training.LongHorizonReservation;
+                    if (reservation > remainingTrainingBudget || reservation > _character.idleEnergy)
+                        continue;
+                    var spent = training.AllocateLongHorizonReservation(remainingTrainingBudget);
+                    optimizedTrainingSpent += spent;
+                    longHorizonTrainingSpent += spent;
+                    remainingTrainingBudget -= spent;
+                }
                 foreach (var training in cappedTraining.OrderByDescending(x => x.PriorityScore))
                 {
                     if (remainingTrainingBudget <= 0 || _character.idleEnergy <= 0) break;
@@ -645,6 +664,7 @@ namespace NGUInjector.AllocationProfiles
                 Main.LogAction("ALLOC", "Rebalanced Energy across " + temp.Count + " targets: " + priorityKinds
                                         + "; idle=" + _character.idleEnergy
                                         + (optimizedTrainingSpent > 0 ? ", optimizedBT=" + optimizedTrainingSpent : string.Empty)
+                                        + (longHorizonTrainingSpent > 0 ? ", persistent-cap-reserve=" + longHorizonTrainingSpent : string.Empty)
                                         + (swept > 0 ? ", residual->BT=" + swept : string.Empty));
                 _lastEnergyActionShape = actionShape;
                 _lastEnergyActionLog = DateTime.UtcNow;

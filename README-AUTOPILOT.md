@@ -35,7 +35,10 @@ Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam C
 
 ## Strategy outline
 
-- Normal pre-NGU: event-scored rebirths across exact Number breakpoints, projected boss kills, persistent Basic Training events, AP ticks, and Titan windows; Basic Training caps, boss EXP, best reachable gear, augments/TM.
+- Normal pre-NGU: event-scored rebirths across exact Number breakpoints, projected boss kills, persistent Basic Training events, AP ticks, and Titan windows; Basic Training caps, boss EXP, best reachable gear, and only Augment/Time Machine work that pays before the selected reset.
+- Resource decisions use separate current-run and persistent ledgers. Basic Training can reserve Energy for cap compression with a short multi-run payback; EXP/AP can wait for a higher-return permanent purchase instead of draining into a cheaper runner-up.
+- Boosts go to active/explicit gear first, then the always-on Infinity Cube up to its native full-value softcaps, then speculative locked gear. The Cube is not an equippable item.
+- Inventory cleanup runs proactively. The native trash recovery slot is intentionally rolling; only MAXXED same-ID dominated copies or no-special fixed armor with an all-future same-slot dominance proof are overwritten there.
 - Normal post-NGU: longer runs emphasizing Adventure/Drop NGUs, Yggdrasil, beards, PP and Titan gear.
 - Early Evil: boss climb via TM then augments; later switch to Normal NGUs/Advanced Training and finish with Evil NGUs.
 - Mature Evil: 24-hour beard cycles with Adventure NGUs, hacks, wishes and quests.

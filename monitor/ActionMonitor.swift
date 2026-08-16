@@ -236,9 +236,15 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
         let loadoutDecision = state["loadoutDecision"] as? String ?? "Evaluating owned equipment"
         let trashDecision = state["trashDecision"] as? String ?? "Conservative trash audit pending"
+        let timeMachineHorizon = state["timeMachineHorizonDecision"] as? String
+            ?? "Time Machine reset-horizon value is being evaluated"
         let allocationSummary: String
         if let rows = state["energyAllocationBreakdown"] as? [[String: Any]] {
-            allocationSummary = rows.filter { numberDouble($0, "totalEnergy") > 0 }.map { row in
+            allocationSummary = rows.filter {
+                numberDouble($0, "totalEnergy") > 0
+                    || ($0["attackUnlocked"] as? Bool ?? false)
+                    || ($0["defenseUnlocked"] as? Bool ?? false)
+            }.map { row in
                 let pair = row["pair"] as? String ?? "Training pair"
                 let energy = numberDouble(row, "totalEnergy")
                 let attackEnergy = numberDouble(row, "attackEnergy")
@@ -255,7 +261,10 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let defenseText = defenseUnlocked
                     ? "D \(shortNumber(defenseEnergy))/\(shortNumber(defenseCap)) @ \(String(format: "%.2f", defenseRate)) L/s"
                     : "Defense side locked"
-                return "  • \(pair): \(shortNumber(energy)) E — \(attackText); \(defenseText)"
+                let selection = energy > 0
+                    ? ""
+                    : " — UNFUNDED: no immediate-gate win or reachable ≤2-run permanent cap-payback frontier"
+                return "  • \(pair): \(shortNumber(energy)) E — \(attackText); \(defenseText)\(selection)"
             }.joined(separator: "\n")
         } else {
             allocationSummary = "  • Waiting for per-pair allocation telemetry"
@@ -404,6 +413,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Reconciliation: \(shortNumber(basicTrainingEnergy)) E in Basic Training; \(shortNumber(nonBasicTrainingEnergy)) E in Augments/other Energy systems; \(shortNumber(energyIdle)) E idle.
         Training allocation:
         \(allocationSummary)
+        Long-horizon BT rule: \(state["basicTrainingLongHorizonPolicy"] as? String ?? "persistent cap investments are evaluated before immediate boss marginal value")
+        Time Machine horizon: \(timeMachineHorizon)
         Equipment: \(loadoutDecision)
         Inventory reclamation: \(trashDecision)
         """

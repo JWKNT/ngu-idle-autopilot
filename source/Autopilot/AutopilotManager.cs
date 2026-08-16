@@ -718,6 +718,8 @@ namespace NGUInjector.Autopilot
                        + "  \"energyIncomePerSecond\": " + energyIncome.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"energySweepBound\": " + energySweepBound + ",\n"
                        + "  \"energyIdleReason\": \"" + energyIdleReason + "\",\n"
+                       + "  \"basicTrainingLongHorizonPolicy\": \"reserve Energy first for reachable maximum cap-reduction frontiers with at most a two-future-run Energy-cap payback; then optimize immediate boss marginal value\",\n"
+                       + "  \"timeMachineHorizonDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.TimeMachineBP.LastHorizonDecision) + "\",\n"
                        + "  \"energyAllocationBreakdown\": " + energyBreakdown + ",\n"
                        + "  \"energyBasicTrainingAllocated\": " + basicTrainingEnergy + ",\n"
                        + "  \"energyNonBasicTrainingAllocated\": " + nonBasicTrainingEnergy + ",\n"
@@ -979,11 +981,22 @@ namespace NGUInjector.Autopilot
             return new ResourceStatus
             {
                 Decision = cost <= c.arbitrary.curArbitraryPoints - Config.ApReserve
-                    ? "Buying AP upgrade " + label + " on this decision cycle"
-                    : "Saving AP for " + label,
+                    ? "Buying " + ApLongHorizonReason(id, label) + " on this decision cycle"
+                    : "Saving AP for " + ApLongHorizonReason(id, label),
                 Target = cost + Config.ApReserve,
                 EtaSeconds = ResourceEta(c.arbitrary.curArbitraryPoints, cost + Config.ApReserve, _apPerSecond)
             };
+        }
+
+        private static string ApLongHorizonReason(int id, string label)
+        {
+            if (id == 9)
+                return label + " (permanently removes repeated Basic Training ramp time)";
+            if (id == 16)
+                return label + " (the next permanent multi-run progression bundle; cheaper purchases would delay it)";
+            if (id == 14)
+                return label + " (permanent +20% AP after MAXX; nominal AP-cost breakeven is 750,000 future AP after MAXX)";
+            return label + " (highest-ranked unlocked permanent upgrade after opportunity cost)";
         }
 
         private ResourceStatus GetGoldStatus(Character c)
@@ -1014,7 +1027,7 @@ namespace NGUInjector.Autopilot
                         : "Money Pit is ready and funded; toss will execute on the next 0.2-second control tick")
                     : (augmentReserve > 0
                         ? "Money Pit is cooling down; reserving only the next active Augment charge and releasing surplus to Time Machine/diggers"
-                        : "Money Pit is cooling down; gold is free for Time Machine, Blood Magic, and profitable digger upgrades"),
+                        : "Money Pit is cooling down; gold is available only to Time Machine/Blood actions that complete before rebirth or permanent Digger upgrades"),
                 Target = reserve,
                 EtaSeconds = ResourceEta(c.realGold, reserve, _goldPerSecond)
             };
@@ -1464,16 +1477,11 @@ namespace NGUInjector.Autopilot
                 return;
 
             var candidates = BuildExpCandidates(c);
-            PurchaseCandidate best = null;
-            foreach (var candidate in candidates)
-            {
-                if (candidate.Cost <= 0 || candidate.Cost > c.realExp - Config.ExpReserve)
-                    continue;
-                if (best == null || candidate.Score < best.Score)
-                    best = candidate;
-            }
-
-            if (best == null)
+            // Select before testing affordability.  Buying a locally affordable
+            // runner-up can delay the higher-return permanent package and increase
+            // total progression time; in that case saving is the actual action.
+            var best = candidates.Where(x => x.Cost > 0).OrderBy(x => x.Score).FirstOrDefault();
+            if (best == null || best.Cost > c.realExp - Config.ExpReserve)
                 return;
 
             SetPurchaseRatio(best.Controller, best.Power, best.Cap, best.Bars);
@@ -1775,9 +1783,12 @@ namespace NGUInjector.Autopilot
 
         private static readonly int[] ApPurchaseOrder =
         {
-            7, 14, 16, 12, 13, 9, 8, 56, 17, 34, 54, 62, 74, 81,
+            14, 16, 12, 13, 9, 56, 17, 34, 54, 62, 74, 81,
             32, 21, 22, 25, 28, 29, 47, 48, 49, 39, 40, 41, 55, 57,
-            58, 64, 65, 66, 67, 68, 69, 71, 72, 73, 75, 76, 77, 15
+            58, 64, 65, 66, 67, 68, 69, 71, 72, 73, 75, 76, 77, 15,
+            // Bot-managed filtering/merging duplicates these convenience upgrades;
+            // buy them only after upgrades that create progression value.
+            7, 8
         };
 
         private void SpendBestApUpgrade()
@@ -2132,9 +2143,15 @@ namespace NGUInjector.Autopilot
                 var costMethod = controller.GetType().GetMethod("customAllCost", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (costMethod == null) return;
                 var raw = costMethod.Invoke(controller, null);
+                var cost = Convert.ToInt64(raw);
                 list.Add(new PurchaseCandidate
                 {
-                    Controller = controller, Name = name, Score = score, Cost = Convert.ToInt64(raw),
+                    Controller = controller, Name = name,
+                    // currentPower/difficultyWeight is the inverse first-order
+                    // fractional power gain. Multiplying by exact package cost makes
+                    // this cost per weighted permanent marginal—not merely whichever
+                    // resource is currently smallest.
+                    Score = Math.Max(1L, cost) * score, Cost = cost,
                     Power = power, Cap = cap, Bars = bars
                 });
             }
