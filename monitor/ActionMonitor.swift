@@ -318,6 +318,10 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthCandidateCount = number(state, "rebirthCandidateCount")
         let rebirthResolution = max(1, number(state, "rebirthSearchResolutionSeconds"))
         let rebirthHysteresis = numberDouble(state, "rebirthHysteresisPercent")
+        let rebirthExecutionEnabled = state["rebirthExecutionEnabled"] as? Bool ?? true
+        let rebirthPreviewMonotonic = state["rebirthPreviewMonotonic"] as? Bool ?? true
+        let rebirthBossCatchupComplete = state["rebirthBossCatchupComplete"] as? Bool ?? true
+        let rebirthSafetyBlockReason = state["rebirthSafetyBlockReason"] as? String ?? ""
         let adventureUnlocked = (state["adventureUnlocked"] as? Bool) ?? (highestBoss >= 4)
         let zone = state["adventureTargetName"] as? String ?? "best reachable zone"
         let fightType = number(state, "adventureFightType")
@@ -431,7 +435,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if inventoryPressure == "HIGH" || inventoryPressure == "CRITICAL" {
             shortTerm.append("Protect loot capacity: only \(inventoryFree)/\(inventoryTotal) slots are free; safe trash/merge runs every second and AP space is promoted ahead of convenience purchases.")
         }
-        if rebirthRemaining <= 300 {
+        if !rebirthExecutionEnabled || !rebirthPreviewMonotonic || !rebirthBossCatchupComplete {
+            let reason = rebirthSafetyBlockReason.isEmpty
+                ? "waiting for a monotonic Number gain and completed boss catch-up" : rebirthSafetyBlockReason
+            shortTerm.append("Rebirth safety hold: \(reason).")
+        } else if rebirthRemaining <= 300 {
             shortTerm.append("Execute the selected rebirth checkpoint — ETA \(formatEstimate(rebirthRemaining)).")
         }
         if state["questInProgress"] as? Bool ?? false {
@@ -479,7 +487,10 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             : resourceDecisions.map { "• \($0)" }.joined(separator: "\n")
         let rewardForecast: String
         if state["rebirthProjectedAttackMultiplier"] != nil {
-            rewardForecast = "Current rebirth preview: ×\(String(format: "%.3g", numberDouble(state, "rebirthProjectedAttackMultiplier"))) Attack/Defense multiplier now; selected checkpoint yields \(number(state, "rebirthProjectedAp")) time-based AP before Titan bonuses."
+            let attackGain = numberDouble(state, "rebirthProjectedAttackMultiplier")
+            let defenseGain = numberDouble(state, "rebirthProjectedDefenseMultiplier")
+            let safety = rebirthPreviewMonotonic ? "MONOTONIC" : "BLOCKED: WOULD DECREASE NUMBER"
+            rewardForecast = "Native rebirth preview: Attack ×\(String(format: "%.4g", attackGain)), Defense ×\(String(format: "%.4g", defenseGain)) [\(safety)]; selected checkpoint yields \(number(state, "rebirthProjectedAp")) time-based AP before Titan bonuses."
         } else {
             rewardForecast = "Forecast reward: live multiplier/AP projection will appear after the next safe controller reload."
         }
@@ -513,7 +524,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ◆ BOSS: selected \(selectedBoss) / next record \(nextBoss) — \(bossGlance)
         ◆ ADVENTURE: \(zone) — \(collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
         ◆ INVENTORY: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure) PRESSURE
-        ◆ REBIRTH: \(formatExactDuration(rebirthRemaining)) remaining — exact target \(formatExactDuration(rebirthTarget))
+        ◆ REBIRTH: \(rebirthExecutionEnabled && rebirthPreviewMonotonic && rebirthBossCatchupComplete ? formatExactDuration(rebirthRemaining) + " remaining — exact target " + formatExactDuration(rebirthTarget) : "SAFETY HOLD — " + rebirthSafetyBlockReason)
 
         REBIRTH DECISION — LIVE MODEL
         TARGET RUN AGE: \(formatExactDuration(rebirthTarget))

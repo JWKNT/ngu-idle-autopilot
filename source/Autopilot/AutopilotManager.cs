@@ -624,6 +624,16 @@ namespace NGUInjector.Autopilot
             var nonBasicTrainingEnergy = Math.Max(0L,
                 Math.Max(0L, c.curEnergy - c.idleEnergy) - basicTrainingEnergy);
             var projectedAttackMultiplier = c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : c.nextAttackMulti;
+            var projectedDefenseMultiplier = c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : c.nextDefenseMulti;
+            var bossCatchupComplete = c.bossID == activeHighestBoss;
+            var rebirthPreviewMonotonic = projectedAttackMultiplier > 1.0 && projectedDefenseMultiplier > 1.0;
+            var rebirthSafetyBlockReason = !Config.AllowRebirths
+                ? "rebirth execution is disabled while the monotonic safety repair is verified"
+                : !bossCatchupComplete
+                    ? "selected Fight Boss has not caught up to the persistent record"
+                    : !rebirthPreviewMonotonic
+                        ? "native next-Number preview would lower Attack or Defense multiplier"
+                        : string.Empty;
             var projectedRebirthAp = Math.Max(0, (Plan.RebirthSeconds - 3600) / 500);
             var questEta = -1;
             if (c.beastQuest.inQuest && c.beastQuest.targetDrops > c.beastQuest.curDrops)
@@ -692,6 +702,15 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthHysteresisPercent\": 0.05,\n"
                        + "  \"rebirthElapsed\": " + Math.Floor(c.rebirthTime.totalseconds) + ",\n"
                        + "  \"rebirthProjectedAttackMultiplier\": " + projectedAttackMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthProjectedDefenseMultiplier\": " + projectedDefenseMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthCurrentAttackMultiplier\": " + c.attackMulti.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthNextAttackMultiplierPreview\": " + c.nextAttackMulti.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthCurrentDefenseMultiplier\": " + c.defenseMulti.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthNextDefenseMultiplierPreview\": " + c.nextDefenseMulti.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthPreviewMonotonic\": " + rebirthPreviewMonotonic.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthBossCatchupComplete\": " + bossCatchupComplete.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthExecutionEnabled\": " + Config.AllowRebirths.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthSafetyBlockReason\": \"" + EscapeJson(rebirthSafetyBlockReason) + "\",\n"
                        + "  \"rebirthProjectedAp\": " + projectedRebirthAp + ",\n"
                        + "  \"highestBoss\": " + activeHighestBoss + ",\n"
                        + "  \"normalHighestBoss\": " + c.highestBoss + ",\n"

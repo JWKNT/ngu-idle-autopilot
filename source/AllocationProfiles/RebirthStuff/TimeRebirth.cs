@@ -27,6 +27,22 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
             if (!BaseRebirthChecks())
                 return false;
 
+            // Ordinary Normal rebirths must never lower Number or reset again while
+            // native boss catch-up is unfinished. Both failures were observed live:
+            // short 197/316-second cycles compounded a lower Number and repeatedly
+            // threw away the climb back to the persistent record boss. Challenge
+            // starts are exempt because their permanent completion reward is the
+            // explicit objective of that reset.
+            var challengeReset = !CharObj.challenges.inChallenge && AnyChallengesValid();
+            if (CharObj.settings.rebirthDifficulty == difficulty.normal && !challengeReset)
+            {
+                if (CharObj.bossID != CharObj.highestBoss)
+                    return false;
+                if (CharObj.nextAttackMulti <= CharObj.attackMulti
+                    || CharObj.nextDefenseMulti <= CharObj.defenseMulti)
+                    return false;
+            }
+
             var time = CharObj.rebirthTime.totalseconds;
             // A challenge start is itself a hard rebirth.  It must obey the same
             // optimized checkpoint as an ordinary rebirth so it cannot preempt a

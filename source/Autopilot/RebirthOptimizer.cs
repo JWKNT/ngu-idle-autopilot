@@ -38,6 +38,7 @@ namespace NGUInjector.Autopilot
             internal double Score;
             internal double CapScore;
             internal double ProjectedMultiplier;
+            internal double ProjectedGainRatio;
             internal int ProjectedAP;
         }
 
@@ -131,10 +132,33 @@ namespace NGUInjector.Autopilot
             foreach (var candidate in candidates)
                 Score(c, candidate, elapsed, bossEta);
 
-            var ordered = candidates.OrderByDescending(x => x.Score)
+            var viable = candidates.Where(x => x.ProjectedGainRatio > 1.000001
+                                                && !double.IsNaN(x.Score)
+                                                && !double.IsInfinity(x.Score)).ToList();
+            if (viable.Count == 0)
+            {
+                var holdUntil = Math.Max(7200, elapsed + 60);
+                _stickyTarget = -1;
+                _stickyKind = string.Empty;
+                return new RebirthRecommendation
+                {
+                    TargetSeconds = holdUntil,
+                    Reason = "hold: no modeled checkpoint preserves or increases the current Number multiplier",
+                    RunnerUpSeconds = holdUntil,
+                    RunnerUpReason = "wait for native Number preview, boss catch-up, or permanent growth to improve",
+                    SelectedScorePerHour = 0,
+                    RunnerUpScorePerHour = 0,
+                    ProjectedMultiplier = c.nextAttackMulti,
+                    ProjectedAP = holdUntil < 4100 ? 0 : 1 + (holdUntil - 4100) / 500,
+                    CandidateSummary = "all modeled candidates rejected by monotonic Number constraint",
+                    CandidateCount = candidates.Count
+                };
+            }
+
+            var ordered = viable.OrderByDescending(x => x.Score)
                 .ThenByDescending(x => x.CapScore).ThenBy(x => x.Time).ToList();
             var selected = ordered[0];
-            var sticky = candidates.FirstOrDefault(x => x.Time == _stickyTarget && x.Kind == _stickyKind);
+            var sticky = viable.FirstOrDefault(x => x.Time == _stickyTarget && x.Kind == _stickyKind);
             if (sticky != null && sticky.Time >= minimum && sticky.Score >= selected.Score * 0.9995)
                 selected = sticky;
             _stickyTarget = selected.Time;
@@ -191,9 +215,11 @@ namespace NGUInjector.Autopilot
                             * ExactTimeMultiplier(candidate.Time);
             var currentMultiplier = Math.Max(1e-300, (double)c.attackMulti);
             candidate.ProjectedMultiplier = projected;
+            candidate.ProjectedGainRatio = projected / currentMultiplier;
             // Explicit objective: maximize compounded logarithmic Attack/Defense
             // multiplier growth per wall-clock hour.
-            candidate.Score = 3600.0 * Math.Log(Math.Max(1.0, projected / currentMultiplier)) / duration;
+            candidate.Score = candidate.ProjectedGainRatio <= 1.000001 ? double.NegativeInfinity
+                : 3600.0 * Math.Log(candidate.ProjectedGainRatio) / duration;
             candidate.ProjectedAP = candidate.Time < 4100 ? 0 : 1 + (candidate.Time - 4100) / 500;
             candidate.CapScore = ProjectedCapCompression(c, remaining) / duration;
         }
