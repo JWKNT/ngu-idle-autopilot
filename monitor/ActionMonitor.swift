@@ -321,6 +321,13 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthExecutionEnabled = state["rebirthExecutionEnabled"] as? Bool ?? true
         let rebirthPreviewMonotonic = state["rebirthPreviewMonotonic"] as? Bool ?? true
         let rebirthBossCatchupComplete = state["rebirthBossCatchupComplete"] as? Bool ?? true
+        let rebirthRecoveryMode = state["rebirthRecoveryMode"] as? Bool ?? !rebirthBossCatchupComplete
+        let rebirthRecoveryResetEfficient = state["rebirthRecoveryResetEfficient"] as? Bool ?? rebirthBossCatchupComplete
+        let rebirthRecoveryResetETA = number(state, "rebirthRecoveryResetRouteEtaSeconds")
+        let rebirthRecoveryContinueETA = number(state, "rebirthRecoveryContinueRouteEtaSeconds")
+        let rebirthOptimizerRecoveryETA = number(state, "rebirthOptimizerRecordRecoveryEtaSeconds")
+        let rebirthRecoveryRemainingBosses = number(state, "rebirthRecoveryRemainingBosses")
+        let rebirthRecoveryReason = state["rebirthRecoveryReason"] as? String ?? "recovery route calculation pending"
         let rebirthSafetyBlockReason = state["rebirthSafetyBlockReason"] as? String ?? ""
         let adventureUnlocked = (state["adventureUnlocked"] as? Bool) ?? (highestBoss >= 4)
         let zone = state["adventureTargetName"] as? String ?? "best reachable zone"
@@ -435,10 +442,10 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if inventoryPressure == "HIGH" || inventoryPressure == "CRITICAL" {
             shortTerm.append("Protect loot capacity: only \(inventoryFree)/\(inventoryTotal) slots are free; safe trash/merge runs every second and AP space is promoted ahead of convenience purchases.")
         }
-        if !rebirthExecutionEnabled || !rebirthPreviewMonotonic || !rebirthBossCatchupComplete {
+        if !rebirthExecutionEnabled || !rebirthPreviewMonotonic || !rebirthRecoveryResetEfficient {
             let reason = rebirthSafetyBlockReason.isEmpty
-                ? "waiting for a monotonic Number gain and completed boss catch-up" : rebirthSafetyBlockReason
-            shortTerm.append("Rebirth safety hold: \(reason).")
+                ? "waiting for a strict Number improvement or a faster modeled recovery route" : rebirthSafetyBlockReason
+            shortTerm.append("Rebirth route hold: \(reason).")
         } else if rebirthRemaining <= 300 {
             shortTerm.append("Execute the selected rebirth checkpoint — ETA \(formatEstimate(rebirthRemaining)).")
         }
@@ -499,8 +506,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if rebirthScore > 0 {
             let advantage = rebirthRunnerUpScore > 0
                 ? 100.0 * (rebirthScore / rebirthRunnerUpScore - 1.0) : 0.0
+            let scoreUnit = rebirthRecoveryMode ? "record-recovery progress/hour" : "log-growth/hour"
             optimizerForecast = """
-            WINNER SCORE: \(String(format: "%.6f", rebirthScore)) log-growth/hour
+            WINNER SCORE: \(String(format: "%.6f", rebirthScore)) \(scoreUnit)
             RUNNER-UP: \(formatExactDuration(rebirthRunnerUp)) — \(String(format: "%.6f", rebirthRunnerUpScore))/hour
             ADVANTAGE: \(String(format: "%.3f", advantage))% over the next-best evaluated second
             RUNNER-UP REASON: \(rebirthRunnerUpReason)
@@ -510,6 +518,21 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             """
         } else {
             optimizerForecast = "Optimizer detail: this progression stage is still governed by a mandatory Titan, puzzle, or long-cycle checkpoint."
+        }
+
+        let recoveryForecast: String
+        if rebirthRecoveryMode {
+            let resetEtaText = rebirthRecoveryResetETA >= 0 ? formatEstimate(rebirthRecoveryResetETA) : "unavailable"
+            let continueEtaText = rebirthRecoveryContinueETA >= 0 ? formatEstimate(rebirthRecoveryContinueETA) : "no finite current-run route"
+            recoveryForecast = """
+            RECORD RECOVERY MODE: \(rebirthRecoveryRemainingBosses) catch-up boss transitions remain.
+            SELECTED REPEATED-CYCLE POLICY ETA: \(rebirthOptimizerRecoveryETA >= 0 ? formatEstimate(rebirthOptimizerRecoveryETA) : "still projecting")
+            RESET + REPLAY ROUTE: \(resetEtaText)
+            CONTINUE CURRENT RUN ROUTE: \(continueEtaText)
+            ROUTE VERDICT: \(rebirthRecoveryReason)
+            """
+        } else {
+            recoveryForecast = "RECORD RECOVERY MODE: complete; ordinary long-run growth objective applies."
         }
 
         let roundExplanation = rebirthReason.lowercased().contains("exact")
@@ -524,7 +547,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ◆ BOSS: selected \(selectedBoss) / next record \(nextBoss) — \(bossGlance)
         ◆ ADVENTURE: \(zone) — \(collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
         ◆ INVENTORY: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure) PRESSURE
-        ◆ REBIRTH: \(rebirthExecutionEnabled && rebirthPreviewMonotonic && rebirthBossCatchupComplete ? formatExactDuration(rebirthRemaining) + " remaining — exact target " + formatExactDuration(rebirthTarget) : "SAFETY HOLD — " + rebirthSafetyBlockReason)
+        ◆ REBIRTH: \(rebirthExecutionEnabled && rebirthPreviewMonotonic && rebirthRecoveryResetEfficient ? formatExactDuration(rebirthRemaining) + " remaining — exact target " + formatExactDuration(rebirthTarget) : "ROUTE HOLD — " + rebirthSafetyBlockReason)
 
         REBIRTH DECISION — LIVE MODEL
         TARGET RUN AGE: \(formatExactDuration(rebirthTarget))
@@ -534,6 +557,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         \(roundExplanation)
         SELECTION REASON: \(rebirthReason)
         \(optimizerForecast)
+        \(recoveryForecast)
 
         CURRENT STRATEGY
         \(objective)

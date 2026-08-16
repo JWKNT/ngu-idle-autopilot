@@ -26,6 +26,10 @@ namespace NGUInjector.Autopilot
         internal int ProjectedAP;
         internal string CandidateSummary = string.Empty;
         internal int CandidateCount;
+        internal bool RecoveryMode;
+        internal int RecoveryEtaSeconds = -1;
+        internal int RecoveryRemainingBosses;
+        internal string RecoveryReason = string.Empty;
     }
 
     internal static class RebirthOptimizer
@@ -40,6 +44,8 @@ namespace NGUInjector.Autopilot
             internal double ProjectedMultiplier;
             internal double ProjectedGainRatio;
             internal int ProjectedAP;
+            internal double RecoveryEta;
+            internal int RemainingCatchupBosses;
         }
 
         private static readonly int[] TimeGates =
@@ -172,16 +178,28 @@ namespace NGUInjector.Autopilot
             return new RebirthRecommendation
             {
                 TargetSeconds = selected.Time,
-                Reason = selected.Reason,
+                Reason = c.bossID < c.highestBoss
+                    ? selected.Reason + "; this second minimizes the modeled reset/replay ETA back to Boss "
+                      + (c.highestBoss + 1)
+                    : selected.Reason,
                 RunnerUpSeconds = runnerUp.Time,
                 RunnerUpDeltaSeconds = Math.Abs(runnerUp.Time - selected.Time),
-                RunnerUpReason = runnerUp.Reason,
+                RunnerUpReason = c.bossID < c.highestBoss
+                    ? runnerUp.Reason + "; alternate record-recovery route"
+                    : runnerUp.Reason,
                 SelectedScorePerHour = selected.Score,
                 RunnerUpScorePerHour = runnerUp.Score,
                 ProjectedMultiplier = selected.ProjectedMultiplier,
                 ProjectedAP = selected.ProjectedAP,
                 CandidateSummary = summary,
-                CandidateCount = candidates.Count
+                CandidateCount = candidates.Count,
+                RecoveryMode = c.bossID < c.highestBoss,
+                RecoveryEtaSeconds = selected.RecoveryEta >= int.MaxValue ? -1
+                    : (int)Math.Ceiling(selected.RecoveryEta),
+                RecoveryRemainingBosses = selected.RemainingCatchupBosses,
+                RecoveryReason = c.bossID < c.highestBoss
+                    ? "minimizes the repeated-cycle ETA back to the persistent boss record"
+                    : "boss record is already caught up"
             };
         }
 
@@ -216,12 +234,122 @@ namespace NGUInjector.Autopilot
             var currentMultiplier = Math.Max(1e-300, (double)c.attackMulti);
             candidate.ProjectedMultiplier = projected;
             candidate.ProjectedGainRatio = projected / currentMultiplier;
-            // Explicit objective: maximize compounded logarithmic Attack/Defense
-            // multiplier growth per wall-clock hour.
+            // While a damaged run is below its persistent record, the same
+            // logarithmic-growth objective has a more useful interpretation: boss
+            // requirements are multiplicative, so required log-stat distance divided
+            // by log(Number gain) is the expected count of repeated cycles needed to
+            // recover. Include the exact current-boss event (a native 2x bossMulti)
+            // and the boss-array ratios instead of imposing "reach record first".
+            var recoveryMode = c.bossID < c.highestBoss;
+            var recoveryStart = c.bossID + (includesBoss ? 1 : 0);
+            candidate.RemainingCatchupBosses = Math.Max(0, c.highestBoss - recoveryStart);
+            var requiredBossLog = RequiredBossLogDistance(c, recoveryStart, c.highestBoss);
+            candidate.RecoveryEta = candidate.ProjectedGainRatio <= 1.000001
+                ? double.PositiveInfinity
+                : remaining + duration * requiredBossLog / Math.Log(candidate.ProjectedGainRatio);
             candidate.Score = candidate.ProjectedGainRatio <= 1.000001 ? double.NegativeInfinity
-                : 3600.0 * Math.Log(candidate.ProjectedGainRatio) / duration;
+                : recoveryMode
+                    ? 3600.0 / Math.Max(1.0, candidate.RecoveryEta)
+                    : 3600.0 * Math.Log(candidate.ProjectedGainRatio) / duration;
             candidate.ProjectedAP = candidate.Time < 4100 ? 0 : 1 + (candidate.Time - 4100) / 500;
             candidate.CapScore = ProjectedCapCompression(c, remaining) / duration;
+        }
+
+        // Compare the two routes at the actual mutation boundary. Route A resets
+        // with the native Number preview and repeats the selected cycle. Route B
+        // waits for the exact projected selected-boss defeat, banks its 2x Normal
+        // bossMulti, then repeats the longer cycle with one fewer catch-up boss.
+        // Both are expressed as remaining wall-clock seconds to remove the exact
+        // multiplicative boss-stat distance. This is a recovery calculation, not a
+        // catch-up safeguard; if waiting is exponentially bad, reset wins directly.
+        internal static bool RecoveryResetEfficient(Character c, int selectedBossEta,
+            out int resetRouteEta, out int continueRouteEta, out string reason)
+        {
+            resetRouteEta = -1;
+            continueRouteEta = -1;
+            reason = string.Empty;
+            if (c == null || c.bossID >= c.highestBoss)
+            {
+                reason = "boss record already caught up; normal checkpoint objective applies";
+                return true;
+            }
+
+            var elapsed = Math.Max(1, (int)Math.Floor(c.rebirthTime.totalseconds));
+            var attackGain = c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0;
+            var defenseGain = c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0;
+            var gain = Math.Min(attackGain, defenseGain);
+            if (gain <= 1.000001 || double.IsNaN(gain) || double.IsInfinity(gain))
+            {
+                reason = "native Number preview is not a strict Attack/Defense improvement";
+                return false;
+            }
+
+            var resetDistance = RequiredBossLogDistance(c, c.bossID, c.highestBoss);
+            var resetEta = elapsed * resetDistance / Math.Log(gain);
+            resetRouteEta = FiniteSeconds(resetEta);
+
+            if (selectedBossEta < 0)
+            {
+                reason = "reset wins: selected boss has no finite current-run defeat ETA, while repeated higher-Number cycles remove the remaining log-stat distance";
+                return true;
+            }
+
+            var wait = Math.Max(1, selectedBossEta + 2);
+            var continueDistance = RequiredBossLogDistance(c, c.bossID + 1, c.highestBoss);
+            var continueGain = gain * 2.0; // exact Normal advanceBoss bossMulti reward
+            var continueEta = wait + (elapsed + wait) * continueDistance / Math.Log(continueGain);
+            continueRouteEta = FiniteSeconds(continueEta);
+            if (continueEta + 0.5 < resetEta)
+            {
+                reason = "continue wins: defeating selected Boss " + (c.bossID + 1)
+                         + " first shortens modeled record recovery by "
+                         + FiniteSeconds(resetEta - continueEta).ToString("N0") + "s";
+                return false;
+            }
+
+            reason = "reset wins: higher Number plus replay reaches the record about "
+                     + FiniteSeconds(continueEta - resetEta).ToString("N0")
+                     + "s sooner than extending this run for the selected boss";
+            return true;
+        }
+
+        private static int FiniteSeconds(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0 || value >= int.MaxValue)
+                return -1;
+            return (int)Math.Ceiling(value);
+        }
+
+        private static double RequiredBossLogDistance(Character c, int startBossIndex, int recordIndex)
+        {
+            if (c == null || startBossIndex >= recordIndex) return 0.0;
+            var total = 0.0;
+            try
+            {
+                var boss = c.bossController == null ? null : c.bossController.boss;
+                var attack = boss == null ? null : boss.bossAttack;
+                var defense = boss == null ? null : boss.bossDefense;
+                var hp = boss == null ? null : boss.bossMaxHP;
+                for (var i = Math.Max(1, startBossIndex); i < recordIndex; i++)
+                {
+                    var ratio = Math.Max(StatRatio(attack, i),
+                        Math.Max(StatRatio(defense, i), StatRatio(hp, i)));
+                    total += Math.Log(Math.Max(1.000001, ratio));
+                }
+            }
+            catch
+            {
+                var remaining = Math.Max(0, recordIndex - startBossIndex);
+                total = remaining * Math.Log(startBossIndex >= 20 ? 10.0 : 5.0);
+            }
+            return total;
+        }
+
+        private static double StatRatio(double[] values, int index)
+        {
+            if (values == null || index <= 0 || index >= values.Length || values[index - 1] <= 0)
+                return index >= 20 ? 10.0 : 5.0;
+            return values[index] / values[index - 1];
         }
 
         private static double ProjectedCapCompression(Character c, int seconds)

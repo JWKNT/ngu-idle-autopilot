@@ -14,6 +14,10 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 {
     internal class TimeRebirth : BaseRebirth
     {
+        private static int _recoveryEtaSecond = -1;
+        private static int _recoveryEtaBoss = -1;
+        private static int _recoveryEta = -1;
+
         internal double RebirthTime { get; set; }
 
         internal override bool RebirthAvailable()
@@ -27,37 +31,42 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
             if (!BaseRebirthChecks())
                 return false;
 
-            // Ordinary Normal rebirths must never lower Number or reset again while
-            // native boss catch-up is unfinished. Both failures were observed live:
-            // short 197/316-second cycles compounded a lower Number and repeatedly
-            // threw away the climb back to the persistent record boss. Challenge
-            // starts are exempt because their permanent completion reward is the
-            // explicit objective of that reset.
-            var challengeReset = !CharObj.challenges.inChallenge && AnyChallengesValid();
-            if (CharObj.settings.rebirthDifficulty == difficulty.normal && !challengeReset)
-            {
-                if (CharObj.bossID != CharObj.highestBoss)
-                    return false;
-                if (CharObj.nextAttackMulti <= CharObj.attackMulti
-                    || CharObj.nextDefenseMulti <= CharObj.defenseMulti)
-                    return false;
-            }
-
             var time = CharObj.rebirthTime.totalseconds;
-            // A challenge start is itself a hard rebirth.  It must obey the same
-            // optimized checkpoint as an ordinary rebirth so it cannot preempt a
-            // Titan spawn, puzzle window, or long-cycle permanent-growth harvest.
             if (time < RebirthTime)
                 return false;
 
-            // The planner and fight controller run on different cadences.  Recheck
-            // the exact selected-boss event at the point of mutation so we cannot
-            // throw away a catch-up/record kill whose training or pending Augment
-            // breakpoint is at most two minutes away.
-            if ((Main.Settings.AutoRebirth || Main.AutopilotWants(x => x.AllowRebirths))
-                && AutopilotManager.SelectedBossDefeatEta(CharObj, 120) >= 0)
-                return false;
+            // Ordinary Normal rebirths must never lower Number. Catch-up itself is
+            // not an absolute gate: requiring the old record can make recovery
+            // exponentially slow. Below the record, compare continuing for the
+            // selected boss with resetting to the higher Number and replaying the
+            // multiplicative boss chain. Challenge starts remain separately exempt.
+            var challengeReset = !CharObj.challenges.inChallenge && AnyChallengesValid();
+            if (CharObj.settings.rebirthDifficulty == difficulty.normal && !challengeReset)
+            {
+                if (CharObj.nextAttackMulti <= CharObj.attackMulti
+                    || CharObj.nextDefenseMulti <= CharObj.defenseMulti)
+                    return false;
 
+                if (CharObj.bossID < CharObj.highestBoss)
+                {
+                    var elapsedSecond = (int)Math.Floor(time);
+                    if (_recoveryEtaSecond != elapsedSecond || _recoveryEtaBoss != CharObj.bossID)
+                    {
+                        _recoveryEtaSecond = elapsedSecond;
+                        _recoveryEtaBoss = CharObj.bossID;
+                        _recoveryEta = AutopilotManager.SelectedBossDefeatEta(CharObj, 7200);
+                    }
+                    int resetRouteEta;
+                    int continueRouteEta;
+                    string recoveryReason;
+                    if (!RebirthOptimizer.RecoveryResetEfficient(CharObj, _recoveryEta,
+                            out resetRouteEta, out continueRouteEta, out recoveryReason))
+                        return false;
+                }
+            }
+            // A challenge start is itself a hard rebirth.  It must obey the same
+            // optimized checkpoint as an ordinary rebirth so it cannot preempt a
+            // Titan spawn, puzzle window, or long-cycle permanent-growth harvest.
             // Adventure Titans are also discrete persistent progression events.
             // Never reset between their ready spawn and controller dispatch, or
             // during the fight itself.

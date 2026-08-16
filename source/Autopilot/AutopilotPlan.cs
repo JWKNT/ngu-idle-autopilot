@@ -39,6 +39,10 @@ namespace NGUInjector.Autopilot
         internal int RebirthProjectedAP;
         internal string RebirthCandidateSummary = string.Empty;
         internal int RebirthCandidateCount;
+        internal bool RebirthRecoveryMode;
+        internal int RebirthRecoveryEtaSeconds = -1;
+        internal int RebirthRecoveryRemainingBosses;
+        internal string RebirthRecoveryReason = string.Empty;
         internal readonly List<TimedValue> NGUDifficulties = new List<TimedValue>();
         internal readonly List<string> Challenges = new List<string>();
         internal int WandoosOS;

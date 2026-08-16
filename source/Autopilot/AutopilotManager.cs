@@ -627,12 +627,25 @@ namespace NGUInjector.Autopilot
             var projectedDefenseMultiplier = c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : c.nextDefenseMulti;
             var bossCatchupComplete = c.bossID == activeHighestBoss;
             var rebirthPreviewMonotonic = projectedAttackMultiplier > 1.0 && projectedDefenseMultiplier > 1.0;
+            var recoveryResetEta = -1;
+            var recoveryContinueEta = -1;
+            var recoveryRouteReason = string.Empty;
+            var recoveryMode = c.settings.rebirthDifficulty == difficulty.normal && c.bossID < c.highestBoss;
+            var recoveryResetEfficient = !recoveryMode
+                || RebirthOptimizer.RecoveryResetEfficient(c, bossViabilityEta,
+                    out recoveryResetEta, out recoveryContinueEta, out recoveryRouteReason);
+            if (!recoveryMode)
+            {
+                recoveryResetEta = -1;
+                recoveryContinueEta = -1;
+                recoveryRouteReason = "boss record already caught up; normal checkpoint objective applies";
+            }
             var rebirthSafetyBlockReason = !Config.AllowRebirths
-                ? "rebirth execution is disabled while the monotonic safety repair is verified"
-                : !bossCatchupComplete
-                    ? "selected Fight Boss has not caught up to the persistent record"
-                    : !rebirthPreviewMonotonic
-                        ? "native next-Number preview would lower Attack or Defense multiplier"
+                ? "rebirth execution is disabled in autopilot settings"
+                : !rebirthPreviewMonotonic
+                    ? "native next-Number preview would lower Attack or Defense multiplier"
+                    : !recoveryResetEfficient
+                        ? recoveryRouteReason
                         : string.Empty;
             var projectedRebirthAp = Math.Max(0, (Plan.RebirthSeconds - 3600) / 500);
             var questEta = -1;
@@ -690,12 +703,15 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthRunnerUpSeconds\": " + Plan.RebirthRunnerUpSeconds + ",\n"
                        + "  \"rebirthRunnerUpDeltaSeconds\": " + Plan.RebirthRunnerUpDeltaSeconds + ",\n"
                        + "  \"rebirthRunnerUpReason\": \"" + EscapeJson(Plan.RebirthRunnerUpReason) + "\",\n"
-                       + "  \"rebirthOptimizerModel\": \"exact-time-multiplier-event-rate-v1\",\n"
-                       + "  \"rebirthObjective\": \"maximize compounded log Attack/Defense multiplier growth per wall-clock hour; cap compression breaks near ties\",\n"
+                       + "  \"rebirthOptimizerModel\": \"exact-time-and-boss-array-recovery-route-v2\",\n"
+                       + "  \"rebirthObjective\": \"minimize modeled wall-clock time to the persistent boss record while preserving strict Number growth; maximize compounded log growth after catch-up\",\n"
                        + "  \"rebirthSelectedScorePerHour\": " + Plan.RebirthSelectedScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthRunnerUpScorePerHour\": " + Plan.RebirthRunnerUpScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthOptimizerProjectedMultiplier\": " + Plan.RebirthProjectedMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthOptimizerProjectedAp\": " + Plan.RebirthProjectedAP + ",\n"
+                       + "  \"rebirthOptimizerRecordRecoveryEtaSeconds\": " + Plan.RebirthRecoveryEtaSeconds + ",\n"
+                       + "  \"rebirthOptimizerRecoveryRemainingBosses\": " + Plan.RebirthRecoveryRemainingBosses + ",\n"
+                       + "  \"rebirthOptimizerRecoveryReason\": \"" + EscapeJson(Plan.RebirthRecoveryReason) + "\",\n"
                        + "  \"rebirthCandidateSummary\": \"" + EscapeJson(Plan.RebirthCandidateSummary) + "\",\n"
                        + "  \"rebirthCandidateCount\": " + Plan.RebirthCandidateCount + ",\n"
                        + "  \"rebirthSearchResolutionSeconds\": 1,\n"
@@ -709,6 +725,12 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthNextDefenseMultiplierPreview\": " + c.nextDefenseMulti.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthPreviewMonotonic\": " + rebirthPreviewMonotonic.ToString().ToLowerInvariant() + ",\n"
                        + "  \"rebirthBossCatchupComplete\": " + bossCatchupComplete.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthRecoveryMode\": " + recoveryMode.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthRecoveryResetEfficient\": " + recoveryResetEfficient.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthRecoveryResetRouteEtaSeconds\": " + recoveryResetEta + ",\n"
+                       + "  \"rebirthRecoveryContinueRouteEtaSeconds\": " + recoveryContinueEta + ",\n"
+                       + "  \"rebirthRecoveryRemainingBosses\": " + Math.Max(0, activeHighestBoss - c.bossID) + ",\n"
+                       + "  \"rebirthRecoveryReason\": \"" + EscapeJson(recoveryRouteReason) + "\",\n"
                        + "  \"rebirthExecutionEnabled\": " + Config.AllowRebirths.ToString().ToLowerInvariant() + ",\n"
                        + "  \"rebirthSafetyBlockReason\": \"" + EscapeJson(rebirthSafetyBlockReason) + "\",\n"
                        + "  \"rebirthProjectedAp\": " + projectedRebirthAp + ",\n"
