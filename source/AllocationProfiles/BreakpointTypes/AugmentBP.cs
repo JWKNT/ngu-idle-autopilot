@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+AugmentBP targets a specific Augment or Upgrade track, computes the Energy needed for its cap or
+requested share, and invokes native allocation. Augment progress and levels reset on rebirth and
+gold is charged at progress start; horizon and working-capital decisions must precede this layer.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class AugmentBP : BaseBreakpoint

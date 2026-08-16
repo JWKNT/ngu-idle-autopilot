@@ -2,6 +2,13 @@
 using System.Collections.Generic;
 using System.Linq;
 
+/*
+FILE PURPOSE
+
+DiggerManager selects, upgrades, and temporarily locks Gold Diggers for progression, Titan gold,
+and Money Pit contexts. It coordinates with LoadoutManager so transient objectives take precedence
+over generic optimization. Gold reserves and rebirth-local value are supplied by higher policy.
+*/
 namespace NGUInjector.Managers
 {
     internal static class DiggerManager

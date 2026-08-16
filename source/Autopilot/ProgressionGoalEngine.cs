@@ -2,6 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 
+/*
+FILE PURPOSE
+
+ProgressionGoalEngine converts mechanics into structured roadmap nodes with progress, targets,
+ETAs, and dependencies. Nodes explain projections; they do not authorize mutations. Keep boss
+scope, unlocks, and set events truthful so the monitor never labels catch-up as record progress.
+*/
 namespace NGUInjector.Autopilot
 {
     internal sealed class GoalNode

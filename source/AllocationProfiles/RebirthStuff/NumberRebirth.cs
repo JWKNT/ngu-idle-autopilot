@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+NumberRebirth is the explicit-profile strategy that waits for a requested Number multiplier
+threshold. It reads the game's preview multiplier and delegates irreversible execution to
+BaseRebirth. The adaptive full-mode timing model belongs to RebirthOptimizer, not this class.
+*/
 namespace NGUInjector.AllocationProfiles.RebirthStuff
 {
     internal class NumberRebirth : BaseRebirth

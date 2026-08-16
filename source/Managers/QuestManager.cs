@@ -1,5 +1,12 @@
 ﻿using static NGUInjector.Main;
 
+/*
+FILE PURPOSE
+
+QuestManager starts, routes, consumes drops for, and turns in Beast Quests using native state.
+It distinguishes idle/active and major/minor reward policy while preserving quest-item MAXX goals.
+Adventure combat policy may defer to an active quest; this manager does not choose general zones.
+*/
 namespace NGUInjector.Managers
 {
     internal class QuestManager

@@ -8,6 +8,13 @@ using NGUInjector.Managers;
 using UnityEngine;
 using static NGUInjector.Main;
 
+/*
+FILE PURPOSE
+
+These helpers adapt native NGU Idle objects into reusable calculations and narrow controller
+conveniences. They hold audited formulas when public overloads are absent or misleading. Keep
+policy ordering elsewhere and preserve exact difficulty, float, and tick semantics.
+*/
 namespace NGUInjector
 {
     public static class Extensions

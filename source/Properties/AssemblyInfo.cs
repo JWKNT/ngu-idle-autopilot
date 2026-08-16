@@ -2,6 +2,14 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
+/*
+FILE PURPOSE
+
+This file declares assembly identity and interop metadata consumed by the compiler and Mono
+injector. It contains no gameplay behavior. Keep names compatible with build/injection scripts;
+telemetry build identity comes from the module MVID rather than a hand-edited version.
+*/
+
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.

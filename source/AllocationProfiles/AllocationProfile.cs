@@ -1,5 +1,13 @@
 ﻿using System.IO;
 
+/*
+FILE PURPOSE
+
+AllocationProfile is the abstract contract between Main's schedulers and concrete allocation
+policy. Implementations allocate Energy, Magic, R3, gear, and diggers through native systems.
+Callers rely on each pass being repeatable and state-derived; lifecycle and optimization policy
+belong in concrete profiles, not this interface.
+*/
 namespace NGUInjector.AllocationProfiles
 {
     internal abstract class AllocationProfile

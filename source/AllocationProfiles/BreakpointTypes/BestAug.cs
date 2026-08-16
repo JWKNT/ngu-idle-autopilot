@@ -4,6 +4,14 @@ using System.Linq;
 using System.Text;
 using NGUInjector.Managers;
 
+/*
+FILE PURPOSE
+
+BestAug ranks currently unlocked Augment/Upgrade completions by marginal combat multiplier,
+finish time, gold availability, and remaining rebirth horizon, then funds a completable track.
+Partial reset-local work must not masquerade as value. Cross-system Energy comparison belongs to
+CustomAllocation; this file owns only the internal Augment choice.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class BestAug : BaseBreakpoint

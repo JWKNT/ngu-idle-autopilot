@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using NGUInjector.AllocationProfiles.RebirthStuff;
 
+/*
+FILE PURPOSE
+
+AutopilotPlanner composes a Character snapshot and config into a progression stage, resource
+breakpoints, and rebirth recommendation. Exact subsystem formulas stay in breakpoints/managers;
+this layer sequences them. Prefer live events over fixed chapter-clock schedules.
+*/
 namespace NGUInjector.Autopilot
 {
     internal static class AutopilotPlanner

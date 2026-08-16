@@ -1,5 +1,12 @@
 ﻿using System;
 
+/*
+FILE PURPOSE
+
+NGUBP allocates Energy or Magic to one NGU target using native cap/progress formulas and profile
+targets. NGU levels are persistent but speed and resource opportunity cost are stage-dependent;
+the planner decides admission while this file validates and executes the chosen track.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class NGUBP : BaseBreakpoint

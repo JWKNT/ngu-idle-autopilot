@@ -2,6 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+/*
+FILE PURPOSE
+
+This manager owns late-game Card and Cooking automation: tagging/consumption, mayo assignment,
+recipe selection, and dish execution. It reads live deck/kitchen economics and verifies native
+controller transitions. Ambiguous permanent cards are retained; general spending is out of scope.
+*/
 namespace NGUInjector.Autopilot
 {
     internal static class CardCookingManager

@@ -4,6 +4,14 @@ using System.Linq;
 using System.Runtime.Remoting.Messaging;
 using static NGUInjector.Main;
 
+/*
+FILE PURPOSE
+
+WishManager ranks permanent Wishes, assigns available wish slots, and exposes safe target/cap data
+to allocation profiles. It validates difficulty, unlocks, maximum levels, and impossible resource
+requirements so a Wish cannot absorb resources forever. Exact resource mutation is performed by
+WishBP.
+*/
 namespace NGUInjector.Managers
 {
     internal class WishManager

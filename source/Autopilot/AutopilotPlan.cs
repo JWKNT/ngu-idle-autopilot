@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+This file defines plan records shared by the high-level planner, generated allocation profile,
+rebirth controller, and telemetry. Plans describe intended timed priorities and optimizer
+evidence; they are not proof of mutation. Live controller state does not belong in serialization.
+*/
 namespace NGUInjector.Autopilot
 {
     internal sealed class PlanBreakpoint

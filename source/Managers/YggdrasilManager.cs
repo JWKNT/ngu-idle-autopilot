@@ -6,6 +6,14 @@ using System.Text;
 using System.Windows.Forms;
 using static NGUInjector.Main;
 
+/*
+FILE PURPOSE
+
+YggdrasilManager manages activation, seed saving/spending, poop, maturity-aware eat versus harvest,
+and rebirth-cycle collection through native fruit controllers. Fruit/seed decisions are permanent
+economics and are emitted to telemetry. Never harvest blindly at a fixed time or spend seeds that
+delay the next high-return permanent tier.
+*/
 namespace NGUInjector.Managers
 {
     internal class YggdrasilManager

@@ -12,6 +12,14 @@ using System.Windows.Forms;
 using NGUInjector.AllocationProfiles;
 using NGUInjector.Managers;
 
+/*
+FILE PURPOSE
+
+SettingsForm is the optional in-game WinForms editor for legacy/manual injector settings. It maps
+controls to SavedSettings and previews loadouts/priorities; it is not the macOS monitor and does
+not own full-autopilot strategy. UI writes must remain headless-compatible and cannot bypass
+synchronization or controller verification.
+*/
 namespace NGUInjector
 {
     public partial class SettingsForm : Form
@@ -1364,8 +1372,28 @@ namespace NGUInjector
 
         private void EnemyBlacklistZone_SelectedIndexChanged(object sender, EventArgs e)
         {
+            /*
+            UI INITIALIZATION SAFETY
+
+            Binding a ComboBox fires SelectedIndexChanged synchronously while the form is still
+            being constructed. On a fresh Unity process, the static zone list can already contain
+            late zone IDs while AdventureController.enemyList is not populated to that index yet.
+            A settings-only preview must never abort Main.Start and therefore the entire bot.
+            Treat unavailable enemy data as an empty selector; gameplay routing does not consume
+            this WinForms list and will populate it naturally after the game finishes loading.
+            */
             var selected = EnemyBlacklistZone.SelectedItem;
-            var item = (KeyValuePair<int, string>) selected;
+            if (!(selected is KeyValuePair<int, string>) || Main.Character == null
+                || Main.Character.adventureController == null
+                || Main.Character.adventureController.enemyList == null)
+                return;
+            var item = (KeyValuePair<int, string>)selected;
+            if (item.Key < 0 || item.Key >= Main.Character.adventureController.enemyList.Count
+                || Main.Character.adventureController.enemyList[item.Key] == null)
+            {
+                EnemyBlacklistNames.DataSource = null;
+                return;
+            }
             var values = Main.Character.adventureController.enemyList[item.Key]
                 .Select(x => new KeyValuePair<int, string>(x.spriteID, x.name)).ToList();
             EnemyBlacklistNames.DataSource = null;

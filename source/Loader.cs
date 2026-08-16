@@ -5,6 +5,13 @@ using System.Text;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
+/*
+FILE PURPOSE
+
+This file owns assembly lifecycle inside Unity: injection creates the single persistent Main
+component and ejection destroys it. Exactly-one-host is the critical invariant preventing
+duplicated timers and double mutations. Gameplay policy belongs in Main, Autopilot, or Managers.
+*/
 namespace NGUInjector
 {
     public class Loader

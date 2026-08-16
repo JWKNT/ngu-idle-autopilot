@@ -4,6 +4,13 @@ using System.Linq;
 using System.Text;
 using UnityEngine;
 
+/*
+FILE PURPOSE
+
+AdvancedTrainingBP allocates Energy to temporary Adventure-stat training targets. It converts
+profile intent into native Advanced Training caps and allocation calls. Levels reset on rebirth,
+so callers must admit this breakpoint only when its projected gate value fits the current run.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class AdvancedTrainingBP : BaseBreakpoint

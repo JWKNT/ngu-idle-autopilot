@@ -5,6 +5,14 @@ using System.Runtime.Remoting.Messaging;
 using System.Text;
 using NGUInjector.Autopilot;
 
+/*
+FILE PURPOSE
+
+BasicTrainingBP models one attack/defense training pair, including asymmetric unlocks, Sync
+Training's two-Energy cost, native discrete rates, boss marginal value, and permanent cap-
+compression payoff. It allocates through explicit side overloads and verifies idle/side deltas.
+Never replace this with equal shares or a strongest-skill-only shortcut.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class BasicTrainingBP : BaseBreakpoint

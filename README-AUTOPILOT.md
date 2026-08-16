@@ -1,3 +1,12 @@
+<!--
+FILE PURPOSE
+
+This is the operator runbook for automation modes, strategy stages, safety rules, configuration,
+and runtime artifacts. It describes supported behavior rather than implementing it. Whenever a
+new irreversible policy or major subsystem is deployed, update this document with the same safety
+boundary expressed in source.
+-->
+
 # NGU Idle Autopilot
 
 This is a direct, in-process NGU Idle controller for the Windows Steam build running in the local CrossOver `Steam` bottle. It does not use mouse/keyboard automation or Computer Use. `SharpMonoInjector` loads the C# controller into Unity, where it reads the live `Character` state and calls the same game controllers used by the UI.

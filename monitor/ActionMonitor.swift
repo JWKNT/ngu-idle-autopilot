@@ -1,3 +1,11 @@
+/*
+FILE PURPOSE
+
+ActionMonitor is a separate read-only macOS AppKit process. It tails confirmed actions and
+schema-validated decision.json, rejects stale/build/PID/out-of-order telemetry, and renders status,
+ETAs, collection debt, inventory pressure, and holds. It has no game handle or mutation path;
+display features should follow explicit truthful producer fields.
+*/
 import AppKit
 
 final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -277,6 +285,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
         let loadoutDecision = state["loadoutDecision"] as? String ?? "Evaluating owned equipment"
         let trashDecision = state["trashDecision"] as? String ?? "Conservative trash audit pending"
+        let filterDecision = state["filterDecision"] as? String ?? "Collection-safe loot-filter audit pending"
         let collectionBackfill = state["collectionIsBackfill"] as? Bool ?? false
         let collectionRemaining = number(state, "collectionRemainingItems")
         let collectionZones = number(state, "collectionIncompleteZones")
@@ -486,6 +495,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Time Machine horizon: \(timeMachineHorizon)
         Equipment: \(loadoutDecision)
         Inventory reclamation: \(trashDecision)
+        Loot-filter safety: \(filterDecision)
         Yggdrasil seeds: \(yggSeedDecision)
         Yggdrasil harvest: \(yggFruitDecision)
         """

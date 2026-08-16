@@ -1,3 +1,11 @@
+<!--
+FILE PURPOSE
+
+This document records which Sayolove guide strategies were adopted, adapted, or rejected after
+checking the game source and live optimizer goals. It prevents future contributors from treating
+human chapter heuristics as exact formulas or unknowingly reintroducing already-audited shortcuts.
+-->
+
 # Sayolove guide strategy audit
 
 The automation has been compared against the complete 52-page English tree at

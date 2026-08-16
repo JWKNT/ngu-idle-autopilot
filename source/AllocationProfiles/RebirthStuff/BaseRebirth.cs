@@ -5,6 +5,14 @@ using System.Reflection;
 using System.Windows.Forms;
 using NGUInjector.Managers;
 
+/*
+FILE PURPOSE
+
+BaseRebirth centralizes the safety gates and native controller path shared by rebirth strategies,
+including fights, challenges, harvest/spell preparation, and progression locks. A recommendation
+is not sufficient: the final preflight must still prove the live state safe. Derived classes only
+decide availability; this base owns the irreversible transaction contract.
+*/
 namespace NGUInjector.AllocationProfiles.RebirthStuff
 {
     internal enum ChallengeType

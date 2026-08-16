@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+TimeMachineBP allocates Energy/Magic only when reset-local gold generation can repay its resource
+cost before the selected rebirth. It publishes the horizon decision for telemetry and uses native
+Time Machine caps. Do not fund it merely because it is unlocked; gold and TM levels reset.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class TimeMachineBP : BaseBreakpoint

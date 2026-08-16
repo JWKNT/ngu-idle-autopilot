@@ -1,3 +1,11 @@
+<!--
+FILE PURPOSE
+
+This document maps injector lifecycle, synchronized control loops, native game-controller
+boundaries, telemetry, and the separate monitor process. It is the quickest architectural handoff
+for future contributors; keep ownership arrows and safety boundaries aligned with executable code.
+-->
+
 # Architecture
 
 ## Trust and execution boundaries
@@ -68,4 +76,3 @@ Notable components:
 - `Assembly-CSharp.dll` and Unity assemblies: game-owned compile-time references.
 
 All of the above are ignored so a clone represents the authored/modified code rather than one player's live game state.
-

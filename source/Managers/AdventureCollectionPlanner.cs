@@ -2,6 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+/*
+FILE PURPOSE
+
+AdventureCollectionPlanner converts fightable zones and Item List state into permanent MAXX debt.
+It takes stronger forward gear first, then backfills older sets, known Bonus Accessories, and
+discovered equipment. It also owns collection-aware inventory pressure and protection queries.
+Drop-source tables are audited from LootDrop; unknown/misc IDs are filtered by native item type.
+Never treat a set as disposable until its game completion flag is confirmed.
+*/
 namespace NGUInjector.Managers
 {
     internal sealed class AdventureCollectionTarget
@@ -159,6 +168,35 @@ namespace NGUInjector.Managers
             if (total <= 0) return "unavailable";
             if (free <= 2) return "critical";
             return InventoryPressureHigh(c, collection) ? "high" : free <= Math.Ceiling(total * .20) ? "watch" : "healthy";
+        }
+
+        internal static bool HasFightableCollectionDebt(Character c)
+        {
+            if (c == null) return false;
+            try
+            {
+                var front = ZoneStatHelper.GetBestZone();
+                return front != null && Evaluate(c, front).IncompleteZones > 0;
+            }
+            catch
+            {
+                // Filtering is destructive at drop time.  If collection state cannot
+                // be proven complete, the safe answer is to keep equipment enabled.
+                return true;
+            }
+        }
+
+        internal static bool IsProtectedCollectionItem(Character c, int id)
+        {
+            if (c == null || id <= 0) return true;
+            if (!IsMaxxed(c, id)) return true;
+            foreach (var pair in ZoneLootIds)
+            {
+                if (!pair.Value.Contains(id)) continue;
+                if (HasCoreSet(pair.Key) && !CoreSetComplete(c, pair.Key))
+                    return true;
+            }
+            return false;
         }
 
         internal static bool CoreSetComplete(Character c, int zone)

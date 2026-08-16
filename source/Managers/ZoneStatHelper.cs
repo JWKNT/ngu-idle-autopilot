@@ -6,6 +6,14 @@ using System.Security.Cryptography;
 using System.Text;
 using SimpleJSON;
 
+/*
+FILE PURPOSE
+
+ZoneStatHelper loads conservative per-zone manual/idle stat thresholds and optional user overrides,
+then identifies the strongest currently fightable ordinary zone. Thresholds are routing hints,
+not exact enemy simulation; collection backfill is layered by AdventureCollectionPlanner. Keep
+zone IDs/names aligned with the shipped game and preserve safe override parsing.
+*/
 namespace NGUInjector.Managers
 {
     internal class ZoneStatHelper

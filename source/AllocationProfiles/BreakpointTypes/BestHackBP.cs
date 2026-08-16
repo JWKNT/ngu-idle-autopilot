@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+BestHackBP specializes Hack allocation by selecting the best live permanent Hack target rather
+than a fixed index. It inherits native cap/allocation behavior from HackBP. Wish/NGU policy and
+Resource 3 budgeting remain outside this selector.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class BestHackBP : HackBP

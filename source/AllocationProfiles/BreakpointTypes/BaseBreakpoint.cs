@@ -4,6 +4,14 @@ using System.Linq;
 using System.Text;
 using UnityEngine;
 
+/*
+FILE PURPOSE
+
+BaseBreakpoint defines the shared schema and validation contract for one resource-allocation
+target. It carries resource type, amount/cap semantics, priority ordering, and unlock validity.
+Derived breakpoints own native mutations; this base must stay policy-neutral and fail closed on
+invalid amounts or unavailable game features.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal enum ResourceType

@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+RitualBP allocates Magic to Blood Magic rituals, respecting unlocks, caps, and native controller
+state. Ritual levels and Blood have different reset/persistence semantics, so spell/reserve
+strategy lives in AutopilotManager; this breakpoint only realizes an admitted ritual target.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class RitualBP : BaseBreakpoint

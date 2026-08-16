@@ -4,6 +4,15 @@ using System.Linq;
 using System.Reflection;
 using static NGUInjector.Main;
 
+/*
+FILE PURPOSE
+
+InventoryManager owns merge, boost, conversion, MacGuffin, loot-filter, and conservative trash
+operations. These are potentially irreversible: unMAXXED equipment is always unfiltered, items
+from an incomplete set remain protected, and trash requires confirmed Item List MAXX plus an
+all-use dominance proof. Physical gear selection belongs to ProgressionLoadoutOptimizer; this file
+maintains contents and capacity through native InventoryController calls with state verification.
+*/
 namespace NGUInjector.Managers
 {
 
@@ -92,6 +101,8 @@ namespace NGUInjector.Managers
         private readonly FixedSizedQueue _cubeBoostAvg = new FixedSizedQueue(60);
         internal static string LastTrashDecision { get; private set; }
             = "Waiting for the first conservative trash audit";
+        internal static string LastFilterDecision { get; private set; }
+            = "Waiting for the first collection-safe loot-filter reconciliation";
 
 
         //Wandoos 98, Giant Seed, Wandoos XL, Lonely Flubber, Wanderer's Cane, Guffs, Lemmi
@@ -836,6 +847,13 @@ namespace NGUInjector.Managers
             if (id >= _character.inventory.itemList.itemMaxxed.Count
                 || !_character.inventory.itemList.itemMaxxed[id])
                 return false;
+            // A set-completion flag is the authoritative collection checkpoint. Even
+            // if one piece's individual Item List entry is already MAXXED, retain all
+            // drops from that source while another piece keeps the set incomplete.
+            // This prevents a stale/partial set from repeatedly farming and deleting
+            // its own merge material.
+            if (AdventureCollectionPlanner.IsProtectedCollectionItem(_character, id))
+                return false;
             if (_pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id)
                 || _filterExcludes.Contains(id) || _guffs.Contains(id)
                 || _mergeBlacklist.Contains(id) || _convertibles.Contains(id)
@@ -926,10 +944,45 @@ namespace NGUInjector.Managers
         #region Filtering
         internal void EnsureFiltered(ih[] ci)
         {
-            if (!Main.Character.arbitrary.lootFilter)
-                return;
+            var settings = _character.settings;
+            var typeFilterChanged = settings.filterHead || settings.filterChest || settings.filterLegs
+                                    || settings.filterBoots || settings.filterWeapon || settings.filterAccessory;
+            // Coarse type filters discard a drop before the bot can inspect its ID or
+            // merge it. Exact item filtering is safe only after Item List MAXX is
+            // confirmed, so full automation owns these six toggles and keeps them off.
+            settings.filterHead = false;
+            settings.filterChest = false;
+            settings.filterLegs = false;
+            settings.filterBoots = false;
+            settings.filterWeapon = false;
+            settings.filterAccessory = false;
 
-            var targets = ci.Where(x => x.level == 100);
+            if (!Main.Character.arbitrary.lootFilter)
+            {
+                LastFilterDecision = typeFilterChanged
+                    ? "Disabled coarse equipment-type filters so unMAXXED collection drops cannot be destroyed"
+                    : "Improved item filter not owned; all equipment types remain enabled for MAXX collection";
+                return;
+            }
+
+            var list = _character.inventory.itemList;
+            var count = Math.Min(list.itemFiltered.Count, list.itemMaxxed.Count);
+            var unfiltered = 0;
+            for (var id = 0; id < count && id < _controller.itemInfo.type.Length; id++)
+            {
+                var equipment = _controller.itemInfo.type[id] >= part.Head
+                                && _controller.itemInfo.type[id] <= part.Accessory;
+                if (!equipment || list.itemMaxxed[id]
+                    && !AdventureCollectionPlanner.IsProtectedCollectionItem(_character, id))
+                    continue;
+                if (!list.itemFiltered[id]) continue;
+                list.itemFiltered[id] = false;
+                unfiltered++;
+            }
+
+            var targets = ci.Where(x => x.level == 100 && x.id < list.itemMaxxed.Count
+                                        && list.itemMaxxed[x.id]
+                                        && !AdventureCollectionPlanner.IsProtectedCollectionItem(_character, x.id));
             foreach (var target in targets)
             {
                 FilterItem(target.id);
@@ -947,10 +1000,18 @@ namespace NGUInjector.Managers
             {
                 FilterEquip(acc);
             }
+            LastFilterDecision = unfiltered > 0 || typeFilterChanged
+                ? "Reopened " + unfiltered + " exact equipment IDs and disabled coarse type filters; only confirmed MAXXED, collection-complete IDs remain filtered"
+                : "Only confirmed MAXXED, collection-complete equipment IDs are filtered; all unMAXXED drops remain enabled";
         }
 
         void FilterItem(int id)
         {
+            if (id <= 0 || _character.inventory.itemList.itemMaxxed == null
+                || id >= _character.inventory.itemList.itemMaxxed.Count
+                || !_character.inventory.itemList.itemMaxxed[id]
+                || AdventureCollectionPlanner.IsProtectedCollectionItem(_character, id))
+                return;
             if (_pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id) ||
                 _filterExcludes.Contains(id) || _guffs.Contains(id) || id < 40 || _mergeBlacklist.Contains(id))
                 return;

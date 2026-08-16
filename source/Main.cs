@@ -19,6 +19,14 @@ using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using Application = UnityEngine.Application;
 
+/*
+FILE PURPOSE
+
+Main is the Unity orchestration host. It discovers the live Character/controllers, establishes
+the active-game synchronization barrier, schedules fast allocation/combat and one-second policy
+loops, owns managers, and writes confirmed action logs. No mutation may run before
+IsAutomationReady; focused managers should own mechanics while Main remains cadence authority.
+*/
 namespace NGUInjector
 {
     internal class Main : MonoBehaviour

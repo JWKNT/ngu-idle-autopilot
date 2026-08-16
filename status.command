@@ -1,4 +1,10 @@
 #!/bin/zsh
+# FILE PURPOSE
+#
+# This read-only diagnostic prints current game/monitor processes and recent telemetry/log state so
+# an operator can distinguish healthy synchronization from stale files. It must never inject,
+# eject, kill, or mutate the save; recovery actions belong to run.command/stop.command and explicit
+# deployment procedures.
 set -euo pipefail
 
 bot_dir=${0:A:h}

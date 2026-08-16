@@ -5,6 +5,14 @@ using System.Reflection;
 using System.Text;
 using UnityEngine.UI;
 
+/*
+FILE PURPOSE
+
+CombatHelpers is the shared mathematical authority for Fight Boss viability, nuke checks, and
+discrete 0.02-second combat outcomes. It mirrors native tick ordering, regen, defense, and death-
+before-counterattack semantics. Callers must use these results instead of continuous DPS guesses;
+the helpers calculate only and never start a fight.
+*/
 namespace NGUInjector.Managers
 {
     internal static class CombatHelpers

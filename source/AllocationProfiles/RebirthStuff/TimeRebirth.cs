@@ -2,6 +2,14 @@
 using NGUInjector.Autopilot;
 using NGUInjector.Managers;
 
+/*
+FILE PURPOSE
+
+TimeRebirth bridges the optimizer's exact selected run age to BaseRebirth's final safety checks.
+It revalidates the active recommendation and nearby boss events at execution time so a stale plan
+cannot reset through a valuable reachable kill. It must not substitute a rounded 30/60-minute
+constant when full autopilot telemetry supplies a live target.
+*/
 namespace NGUInjector.AllocationProfiles.RebirthStuff
 {
     internal class TimeRebirth : BaseRebirth

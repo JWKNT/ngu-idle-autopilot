@@ -9,6 +9,14 @@ using NGUInjector.AllocationProfiles;
 using NGUInjector.Managers;
 using UnityEngine.UI;
 
+/*
+FILE PURPOSE
+
+AutopilotManager is the live policy coordinator: it reloads plans, routes bosses/Adventure,
+executes verified purchases and spells, separates persistent from reset-local spending, and emits
+decision.json for the read-only monitor. Irreversible actions require full mode plus a confirmed
+post-state delta. New mechanics should expose focused managers instead of duplicating authority.
+*/
 namespace NGUInjector.Autopilot
 {
     internal sealed class AutopilotManager
@@ -719,6 +727,7 @@ namespace NGUInjector.Autopilot
                        + "  \"loadoutSearchExact\": " + ProgressionLoadoutOptimizer.LastSearchExact.ToString().ToLowerInvariant() + ",\n"
                        + "  \"loadoutScoreGain\": " + ProgressionLoadoutOptimizer.LastScoreGain.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"trashDecision\": \"" + EscapeJson(InventoryManager.LastTrashDecision) + "\",\n"
+                       + "  \"filterDecision\": \"" + EscapeJson(InventoryManager.LastFilterDecision) + "\",\n"
                        + "  \"yggSeedDecision\": \"" + EscapeJson(YggdrasilManager.LastSeedDecision) + "\",\n"
                        + "  \"yggFruitDecision\": \"" + EscapeJson(YggdrasilManager.LastFruitDecision) + "\",\n"
                        + "  \"energyUtilization\": "

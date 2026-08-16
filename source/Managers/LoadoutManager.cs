@@ -4,6 +4,14 @@ using System.Linq;
 using System.Reflection;
 using static NGUInjector.Main;
 
+/*
+FILE PURPOSE
+
+LoadoutManager serializes transient gear/digger objectives and performs native loadout changes
+without violating Titan, Yggdrasil, Gold, or Money Pit locks. Saved game loadouts are positional
+and native swaps update them, so direct Equipment assignment is forbidden. Generic progression
+optimization must yield while a specialized lock is active.
+*/
 namespace NGUInjector.Managers
 {
     internal enum LockType

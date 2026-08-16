@@ -5,6 +5,14 @@ using System.Reflection;
 using static NGUInjector.Main;
 using static NGUInjector.Managers.CombatHelpers;
 
+/*
+FILE PURPOSE
+
+CombatManager executes Adventure movement and active/idle skill rotations through native
+controllers, tracks observed fight timing, and exposes recovery state. It must not fabricate kills
+or abandon special enemies merely to swap gear. Zone policy comes from AutopilotManager; this file
+owns tactical action sequencing and confirmation.
+*/
 namespace NGUInjector.Managers
 {
     internal class CombatManager

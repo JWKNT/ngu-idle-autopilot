@@ -1,4 +1,10 @@
 #!/bin/zsh
+# FILE PURPOSE
+#
+# This deployment entrypoint injects the already-built DLL into one running NGUIdle process,
+# records the returned assembly pointer for safe ejection, and launches the separate read-only
+# monitor. It does not start the game or build source. A successful injector pointer is required;
+# gameplay mutation remains paused until the DLL independently verifies active synchronization.
 set -euo pipefail
 
 bot_dir=${0:A:h}

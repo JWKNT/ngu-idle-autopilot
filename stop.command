@@ -1,4 +1,10 @@
 #!/bin/zsh
+# FILE PURPOSE
+#
+# This script cleanly ejects the exact assembly pointer recorded by run.command and stops only the
+# companion monitor. It intentionally does not kill NGU Idle; a full game restart is a separate
+# deployment step used when Mono may retain old assemblies. Never guess an assembly pointer or
+# target unrelated Wine/CrossOver processes.
 set -euo pipefail
 
 bot_dir=${0:A:h}

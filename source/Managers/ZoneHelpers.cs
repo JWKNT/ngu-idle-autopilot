@@ -2,6 +2,13 @@
 using System.Linq;
 using System.Reflection;
 
+/*
+FILE PURPOSE
+
+ZoneHelpers owns native Adventure unlock/reachability checks and Titan spawn/combat gates. It
+mirrors puzzle-item and version-specific invincibility requirements before declaring a Titan
+available. It supplies facts to routing/loadouts and never chooses ordinary collection policy.
+*/
 namespace NGUInjector.Managers
 {
     static class ZoneHelpers

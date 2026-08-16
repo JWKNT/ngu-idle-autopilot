@@ -6,6 +6,14 @@ using System.Text;
 using System.Windows.Forms;
 using UnityEngine;
 
+/*
+FILE PURPOSE
+
+SavedSettings is the legacy/manual settings persistence model shared by the WinForms UI and
+runtime managers. It serializes user preferences; full autopilot may supersede individual toggles
+but must not corrupt their representation. Add compatible defaults and keep live optimizer state
+out of this durable user document.
+*/
 namespace NGUInjector
 {
     [Serializable]

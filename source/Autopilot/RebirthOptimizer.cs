@@ -3,6 +3,14 @@ using System.Collections.Generic;
 using System.Linq;
 using NGUInjector.Managers;
 
+/*
+FILE PURPOSE
+
+RebirthOptimizer searches one-second run ages and named mechanic events, scoring compounded
+persistent growth, bosses, AP, and cap compression. It returns winner/runner-up evidence while
+TimeRebirth mutates the game. Reset-local unfinished work and reachable boss chains must be
+modeled here rather than hidden behind fixed 30/60-minute timers.
+*/
 namespace NGUInjector.Autopilot
 {
     internal sealed class RebirthRecommendation

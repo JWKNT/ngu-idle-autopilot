@@ -1,4 +1,11 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+FILE PURPOSE
+
+This MSBuild project is the manifest for compiled source, legacy UI resources, and game/Unity
+reference assemblies. It targets NGU Idle's Mono-compatible .NET 3.5 surface. New maintained C#
+files must be listed explicitly; generated resources and copied binaries are build inputs only.
+-->
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>

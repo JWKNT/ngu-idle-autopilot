@@ -4,6 +4,13 @@ using System.Linq;
 using System.Text;
 using UnityEngine;
 
+/*
+FILE PURPOSE
+
+WishBP allocates Energy, Magic, and Resource 3 to one permanent Wish while enforcing unlock,
+difficulty, slot, and attainability guards. Impossible serialized requirements must fail closed
+instead of trapping resources forever. Wish ranking belongs to WishManager/planner policy.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class WishBP : BaseBreakpoint

@@ -1,4 +1,10 @@
 #!/bin/zsh
+# FILE PURPOSE
+#
+# This is the reproducible local build boundary. It copies reference assemblies from the installed
+# NGU Idle game, compiles the explicit .NET 3.5 C# project into NGUIdleAutopilot.dll, builds the
+# AppKit monitor, assembles/signs its bundle, and leaves runtime/save data untouched. Compilation
+# success is necessary but live controller/telemetry verification remains a separate gate.
 set -euo pipefail
 
 bot_dir=${0:A:h}

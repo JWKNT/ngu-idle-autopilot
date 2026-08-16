@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+BR is a profile marker carrying the rebirth time visible to allocation breakpoints. It does not
+perform a resource mutation; it lets horizon-sensitive targets reject work that would be erased
+before completion. Rebirth selection itself belongs to RebirthOptimizer/TimeRebirth.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class BR : BaseBreakpoint

@@ -1,3 +1,12 @@
+<!--
+FILE PURPOSE
+
+This is the public repository entrypoint: it explains what the NGU Idle autopilot does, separates
+original source from injector/runtime dependencies, and gives safe build/run orientation. Detailed
+operator behavior lives in README-AUTOPILOT.md; architecture and audited strategy assumptions live
+in their dedicated documents.
+-->
+
 # NGU Idle Autopilot
 
 NGU Idle Autopilot is an adaptive, in-process controller for the Windows Steam build of **NGU Idle**. It reads live Unity game state, continuously evaluates progression choices, and executes actions through the game's own controllers. It does **not** automate mouse movement, screen pixels, or a Computer Use session.

@@ -3,6 +3,15 @@ using System.Collections.Generic;
 using System.Linq;
 using static NGUInjector.Main;
 
+/*
+FILE PURPOSE
+
+ProgressionLoadoutOptimizer selects the best physical equipment objects for the active boss,
+Adventure, Titan, or resource context, including ordered weapons and constrained accessories. It
+executes reference-identity native swap transactions, reclaims allocations before cap-lowering
+gear, verifies the final layout, and rolls back on failure. ID-only equality and direct field
+assignment are unsafe because duplicate copies and saved loadouts have physical identity.
+*/
 namespace NGUInjector.Managers
 {
     // Chooses equipment as a complete progression set.  Native item contribution

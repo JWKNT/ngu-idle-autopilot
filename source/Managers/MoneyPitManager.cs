@@ -4,6 +4,14 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+MoneyPitManager decides when reset-local Gold can be safely tossed, chooses required special
+loadouts/diggers, invokes the native Pit/Spin controllers, and verifies cooldown/reward deltas.
+The Pit consumes all Gold and has cumulative thresholds; callers supply working-capital reserves
+so Augments and other nearer gates are not starved.
+*/
 namespace NGUInjector.Managers
 {
     internal static class MoneyPitManager

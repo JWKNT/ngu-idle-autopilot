@@ -11,6 +11,14 @@ using NGUInjector.Managers;
 using SimpleJSON;
 using UnityEngine;
 
+/*
+FILE PURPOSE
+
+CustomAllocation parses generated/user breakpoint profiles and executes the fast resource sweep.
+It reconciles combined budgets across Basic Training, Augments, Wandoos, Time Machine, NGUs,
+rituals, hacks, and wishes, returning unused resources safely. Allocation calls run on Unity's
+main thread; actual deltas, sync-pair costs, caps, and rebirth horizon must remain authoritative.
+*/
 namespace NGUInjector.AllocationProfiles
 {
     [Serializable]

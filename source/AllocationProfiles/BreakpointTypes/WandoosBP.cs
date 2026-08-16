@@ -3,6 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+/*
+FILE PURPOSE
+
+WandoosBP allocates Energy or Magic to the installed operating-system progress bar through native
+controllers. The planner decides whether its reset-local multiplier can pay before rebirth; this
+class owns cap calculation and mutation only.
+*/
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class WandoosBP : BaseBreakpoint

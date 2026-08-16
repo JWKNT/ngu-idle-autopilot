@@ -2,6 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+/*
+FILE PURPOSE
+
+BeardManager activates and levels unlocked Beards while respecting slot count, banked progress,
+and rebirth-cycle intent. It mutates native Beard controllers from synchronized state. Broader
+Magic allocation and rebirth timing remain planner responsibilities.
+*/
 namespace NGUInjector.Managers
 {
     internal static class BeardManager

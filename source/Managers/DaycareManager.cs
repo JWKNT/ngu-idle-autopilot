@@ -2,6 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+/*
+FILE PURPOSE
+
+DaycareManager rotates persistent item-leveling slots, retrieves completed items, and fills open
+slots with safe high-value candidates. It uses native Daycare state and must preserve unique,
+puzzle, and loadout-critical physical items. General inventory trash/merge policy is separate.
+*/
 namespace NGUInjector.Managers
 {
     internal static class DaycareManager

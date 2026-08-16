@@ -2,6 +2,13 @@ using System;
 using System.IO;
 using UnityEngine;
 
+/*
+FILE PURPOSE
+
+AutopilotConfig is the durable user boundary for modes, reserves, and feature permissions. It
+loads runtime/autopilot.json into conservative defaults; enabling a flag never bypasses gameplay
+synchronization. Add knobs only where live optimization cannot safely derive the choice.
+*/
 namespace NGUInjector.Autopilot
 {
     [Serializable]
