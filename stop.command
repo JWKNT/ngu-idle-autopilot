@@ -2,7 +2,7 @@
 # FILE PURPOSE
 #
 # This script cleanly ejects the exact assembly pointer recorded by run.command and stops only the
-# companion monitor and the exact loopback dashboard bridge PID. It intentionally does not kill
+# companion monitor and the exact loopback dashboard PID. It intentionally does not kill
 # NGU Idle; a full game restart is a separate deployment step used when Mono may retain old
 # assemblies. Never guess an assembly pointer or target unrelated Wine/CrossOver/Python processes.
 set -euo pipefail

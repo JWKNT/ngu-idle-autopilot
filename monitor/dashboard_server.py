@@ -7,9 +7,11 @@ bot's confirmed telemetry to that shell through a small read-only HTTP API.
 
 Mechanism: a loopback-only ThreadingHTTPServer serves the repository's docs/ tree
 and builds /api/state from runtime/decision.json plus a filtered tail of
-runtime/logs/actions.log.  The public jehlp.net copy may request the same endpoint;
-explicit CORS and Private Network Access headers permit that hand-off when the
-browser allows it, while the "Open local client" fallback stays same-origin.
+runtime/logs/actions.log.  The optional daemon mode detaches from the launcher and
+records its own PID for exact lifecycle cleanup.  The public jehlp.net copy may
+request the same endpoint; explicit CORS and Private Network Access headers permit
+that hand-off when the browser allows it, while the "Open local client" fallback
+stays same-origin.
 
 Inputs and outputs: reads generated telemetry and action logs, returns JSON, and
 serves static HTML/CSS/JavaScript.  It never imports the injector, calls a game
@@ -32,6 +34,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from functools import partial
 from http import HTTPStatus
@@ -245,11 +248,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=repository / "docs")
     parser.add_argument("--runtime", type=Path, default=repository / "runtime")
     parser.add_argument("--port", type=int, default=47635)
+    parser.add_argument("--daemon", action="store_true", help="Detach and continue in the background.")
+    parser.add_argument("--pid-file", type=Path, help="Write the detached server's PID here.")
+    parser.add_argument("--log", type=Path, help="Append detached stdout and stderr here.")
     return parser.parse_args()
+
+
+def daemonize(pid_file: Path, log_path: Path) -> None:
+    """Double-fork into a new session and publish only the final server PID."""
+    first = os.fork()
+    if first > 0:
+        os._exit(0)
+    os.setsid()
+    second = os.fork()
+    if second > 0:
+        os._exit(0)
+
+    os.umask(0o077)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    null_input = os.open(os.devnull, os.O_RDONLY)
+    log_output = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.dup2(null_input, sys.stdin.fileno())
+    os.dup2(log_output, sys.stdout.fileno())
+    os.dup2(log_output, sys.stderr.fileno())
+    if null_input > 2:
+        os.close(null_input)
+    if log_output > 2:
+        os.close(log_output)
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(f"{os.getpid()}\n", encoding="ascii")
 
 
 def main() -> None:
     args = parse_args()
+    if args.daemon:
+        if args.pid_file is None or args.log is None:
+            raise SystemExit("--daemon requires --pid-file and --log")
+        daemonize(args.pid_file.resolve(), args.log.resolve())
     root = args.root.resolve(strict=True)
     runtime = args.runtime.resolve(strict=True)
     handler = partial(DashboardHandler, directory=str(root), runtime_dir=runtime)

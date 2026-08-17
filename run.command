@@ -56,8 +56,9 @@ if [[ -d "$monitor_app" ]]; then
 fi
 
 # The public dashboard is a static shell. Its game-state authority is this exact local bridge,
-# which is tracked by PID and validated by command path so lifecycle cleanup cannot kill an
-# unrelated Python process. A bridge failure does not change the already-confirmed injector state.
+# detached into its own process session and tracked by a PID whose full script path is validated,
+# so it survives the invoking terminal while lifecycle cleanup cannot target an unrelated Python
+# process. A bridge failure does not change the already-confirmed injector state.
 dashboard_script="$bot_dir/monitor/dashboard_server.py"
 dashboard_pid_file="$bot_dir/runtime/dashboard-server.pid"
 dashboard_log="$bot_dir/runtime/logs/dashboard-server.log"
@@ -70,9 +71,8 @@ if [[ -f "$dashboard_pid_file" ]]; then
   rm -f "$dashboard_pid_file"
 fi
 
-python3 "$dashboard_script" --root "$bot_dir/docs" --runtime "$bot_dir/runtime" --port 47635 >>"$dashboard_log" 2>&1 &
-dashboard_pid=$!
-print -r -- "$dashboard_pid" > "$dashboard_pid_file"
+python3 "$dashboard_script" --root "$bot_dir/docs" --runtime "$bot_dir/runtime" --port 47635 \
+  --daemon --pid-file "$dashboard_pid_file" --log "$dashboard_log"
 
 dashboard_ready=false
 for _ in {1..20}; do
@@ -86,9 +86,12 @@ if [[ "$dashboard_ready" == true ]]; then
   print "Local dashboard ready at http://127.0.0.1:47635/."
 else
   print -u2 "Dashboard bridge did not become ready; gameplay automation remains active."
-  dashboard_command=$(ps -p "$dashboard_pid" -o command= 2>/dev/null || true)
-  if [[ "$dashboard_command" == *"$dashboard_script"* ]]; then
-    kill "$dashboard_pid" 2>/dev/null || true
+  if [[ -f "$dashboard_pid_file" ]]; then
+    dashboard_pid=$(<"$dashboard_pid_file")
+    dashboard_command=$(ps -p "$dashboard_pid" -o command= 2>/dev/null || true)
+    if [[ "$dashboard_command" == *"$dashboard_script"* ]]; then
+      kill "$dashboard_pid" 2>/dev/null || true
+    fi
+    rm -f "$dashboard_pid_file"
   fi
-  rm -f "$dashboard_pid_file"
 fi
