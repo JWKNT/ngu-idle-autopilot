@@ -8,10 +8,12 @@ using static NGUInjector.Main;
 FILE PURPOSE
 
 ProgressionLoadoutOptimizer selects the best physical equipment objects for the active boss,
-Adventure, Titan, or resource context, including ordered weapons and constrained accessories. It
-executes reference-identity native swap transactions, reclaims allocations before cap-lowering
-gear, verifies the final layout, and rolls back on failure. ID-only equality and direct field
-assignment are unsafe because duplicate copies and saved loadouts have physical identity.
+Adventure, major-unlock, or resource-refill context, including ordered weapons and constrained
+accessories. Goal-specific scoring can accept lower raw combat stats for a proven loot/generation
+ETA improvement, but never below the active target's recovery floor. It executes reference-identity
+native swap transactions, reclaims allocations before cap-lowering gear, verifies the final layout,
+and rolls back on failure. ID-only equality and direct field assignment are unsafe because duplicate
+copies and saved loadouts have physical identity.
 */
 namespace NGUInjector.Managers
 {
@@ -29,6 +31,7 @@ namespace NGUInjector.Managers
         private static Plan _authoritativePlan;
         private static Plan _pendingPlan;
         private static string _authoritativeObjective = string.Empty;
+        private static MajorUnlockTarget _scoreMajorUnlock;
 
         internal static string LastDecision { get; private set; } = "Waiting for an inventory snapshot";
         internal static double LastScoreGain { get; private set; }
@@ -103,7 +106,9 @@ namespace NGUInjector.Managers
             // Rebirth time moves backwards at every reset.  Cadence and retry
             // suppression must use a monotonic process clock instead.
             var now = (double)UnityEngine.Time.realtimeSinceStartup;
-            var objective = Objective(c);
+            var bossObjective = UseBossObjective(c);
+            _scoreMajorUnlock = bossObjective ? null : MajorUnlockPlanner.Evaluate(c);
+            var objective = Objective(c, bossObjective, _scoreMajorUnlock);
             LastObjective = objective;
 
             // Full automation owns the progression loadout just as it owns resource
@@ -536,6 +541,7 @@ namespace NGUInjector.Managers
             var projectedAttack = c.attack * candidateAttackCore / Math.Max(1e-9, currentAttackCore);
             var projectedDefense = c.defense * candidateDefenseCore / Math.Max(1e-9, currentDefenseCore);
             var bossObjective = UseBossObjective(c);
+            var majorUnlock = bossObjective ? null : _scoreMajorUnlock;
             var score = bossObjective
                 ? 7.0 * Math.Log(1.0 + Math.Max(0.0, projectedAttack))
                   + 4.0 * Math.Log(1.0 + Math.Max(0.0, projectedDefense))
@@ -576,34 +582,42 @@ namespace NGUInjector.Managers
                 score += 6.0 * Math.Log(1.0 + Math.Max(0.0, candidateAdvAttack));
                 score += 5.0 * Math.Log(1.0 + Math.Max(0.0, candidateAdvDefense));
 
-                /*
-                NEXT-ZONE THRESHOLD OBJECTIVE
-
-                Raw log stats are smooth, but Adventure progression is not: a set that crosses both
-                manual Power/Toughness requirements unlocks a new loot table immediately. Make that
-                discontinuity primary, then maximize the weaker normalized requirement while below it.
-                This does not equip unfinished Cave armor merely because it is newer; it equips it as
-                soon as its real boosted contribution improves the limiting route to the next zone.
-                */
-                var front = ZoneStatHelper.GetBestZone();
-                ZoneStats frontStats;
-                if (front != null && ZoneStatHelper.UserOverrides.TryGetValue(front.Zone, out frontStats)
-                    && (candidateAdvAttack < frontStats.MPower || candidateAdvDefense < frontStats.MToughness))
+                if (majorUnlock != null)
                 {
-                    // A smoother ratio toward the following zone cannot justify
-                    // giving up the strongest route that is already stat-safe.
-                    score -= 200000000.0;
+                    score += MajorUnlockUtility(c, plan, majorUnlock,
+                        candidateAdvAttack, candidateAdvDefense);
                 }
-                int nextZone;
-                ZoneStats nextStats;
-                if (ZoneStatHelper.TryGetNextUnlockedZone(front == null ? -1 : front.Zone,
-                    out nextZone, out nextStats))
+                else
                 {
-                    var bottleneck = Math.Min(candidateAdvAttack / Math.Max(1.0, nextStats.MPower),
-                        candidateAdvDefense / Math.Max(1.0, nextStats.MToughness));
-                    score += 10000.0 * Math.Min(1.0, Math.Max(0.0, bottleneck));
-                    if (candidateAdvAttack >= nextStats.MPower && candidateAdvDefense >= nextStats.MToughness)
-                        score += 100000000.0;
+                    /*
+                    NEXT-ZONE THRESHOLD OBJECTIVE
+
+                    Raw log stats are smooth, but Adventure progression is not: a set that crosses both
+                    manual Power/Toughness requirements unlocks a new loot table immediately. Make that
+                    discontinuity primary, then maximize the weaker normalized requirement while below it.
+                    This does not equip unfinished Cave armor merely because it is newer; it equips it as
+                    soon as its real boosted contribution improves the limiting route to the next zone.
+                    */
+                    var front = ZoneStatHelper.GetBestZone();
+                    ZoneStats frontStats;
+                    if (front != null && ZoneStatHelper.UserOverrides.TryGetValue(front.Zone, out frontStats)
+                        && (candidateAdvAttack < frontStats.MPower || candidateAdvDefense < frontStats.MToughness))
+                    {
+                        // A smoother ratio toward the following zone cannot justify
+                        // giving up the strongest route that is already stat-safe.
+                        score -= 200000000.0;
+                    }
+                    int nextZone;
+                    ZoneStats nextStats;
+                    if (ZoneStatHelper.TryGetNextUnlockedZone(front == null ? -1 : front.Zone,
+                        out nextZone, out nextStats))
+                    {
+                        var bottleneck = Math.Min(candidateAdvAttack / Math.Max(1.0, nextStats.MPower),
+                            candidateAdvDefense / Math.Max(1.0, nextStats.MToughness));
+                        score += 10000.0 * Math.Min(1.0, Math.Max(0.0, bottleneck));
+                        if (candidateAdvAttack >= nextStats.MPower && candidateAdvDefense >= nextStats.MToughness)
+                            score += 100000000.0;
+                    }
                 }
             }
             else
@@ -631,9 +645,19 @@ namespace NGUInjector.Managers
                    || (CombatHelpers.CanWinCurrentBoss(c, out killSeconds) && killSeconds <= 120.0);
         }
 
-        private static string Objective(Character c)
+        private static string Objective(Character c, bool bossObjective, MajorUnlockTarget major)
         {
-            if (UseBossObjective(c)) return "selected Fight Boss defeat";
+            if (bossObjective) return "selected Fight Boss defeat";
+            if (major != null) return "major unlock: " + major.Mechanic + " via " + major.Goal;
+            var energyFill = c.energyPerSecond() <= 0 ? 0.0
+                : Math.Max(0.0, c.totalCapEnergy() - c.curEnergy) / c.energyPerSecond();
+            var magicFill = c.magicPerSecond() <= 0 ? 0.0
+                : Math.Max(0.0, c.totalCapMagic() - c.magic.curMagic) / c.magicPerSecond();
+            if (Math.Max(energyFill, magicFill) >= 30.0)
+                return "resource refill: minimize time to full Energy and Magic";
+            if (AllocationProfiles.BreakpointTypes.BR.LastDecision.StartsWith("Waiting for another ",
+                    StringComparison.OrdinalIgnoreCase))
+                return "Gold working capital for the next Blood ritual";
             var front = ZoneStatHelper.GetBestZone();
             int nextZone;
             ZoneStats nextStats;
@@ -641,6 +665,37 @@ namespace NGUInjector.Managers
                 out nextZone, out nextStats)
                 ? "Adventure progression toward " + nextStats.Name
                 : "continuous Adventure progression";
+        }
+
+        /*
+        GOAL-SPECIFIC LOADOUT VALUE
+
+        A major unlock is not scored like routine highest-zone farming. First preserve a recoverable
+        combat floor for the exact target. Above that floor, maximize the weaker Power/Toughness
+        ratio; an RNG-gated mechanic additionally values the native aggregate loot multiplier.
+        Guaranteed drops (the first Pissed Off Key) deliberately assign no Drop Chance value.
+        */
+        private static double MajorUnlockUtility(Character c, Plan plan, MajorUnlockTarget target,
+            double candidateAdvAttack, double candidateAdvDefense)
+        {
+            var powerRatio = candidateAdvAttack / Math.Max(1.0, target.MinimumPower);
+            var toughnessRatio = candidateAdvDefense / Math.Max(1.0, target.MinimumToughness);
+            var bottleneck = Math.Min(powerRatio, toughnessRatio);
+            var score = 10000.0 * Math.Min(2.0, Math.Max(0.0, bottleneck));
+            score += bottleneck >= 1.0 ? 100000000.0 : -200000000.0;
+            if (!target.ValuesLoot) return score;
+
+            var controller = c.inventoryController;
+            var candidateLoot = PlanBonus(controller, plan, specType.Looting)
+                                + PlanBonus(controller, plan, specType.Looting2);
+            var currentLoot = controller.bonuses[specType.Looting]
+                              + controller.bonuses[specType.Looting2];
+            var cubeLoot = controller.cubeLootBonus();
+            var ratio = (1.0 + candidateLoot + cubeLoot)
+                        / Math.Max(1e-9, 1.0 + currentLoot + cubeLoot);
+            // Expected attempts to the unlock are inversely proportional to loot
+            // factor. Large scaling is safe only after the combat-floor constraint.
+            return score + 20000.0 * Math.Log(Math.Max(1e-9, ratio));
         }
 
         private static double SpecialUtility(Character c, Equipment e, double slotFactor)
@@ -706,6 +761,14 @@ namespace NGUInjector.Managers
             var controller = c.inventoryController;
             var energySpeedBonus = PlanBonus(controller, plan, specType.EnergySpeed);
             var magicSpeedBonus = PlanBonus(controller, plan, specType.MagicSpeed);
+            var energyBarBonus = PlanBonus(controller, plan, specType.EnergyPerBar)
+                                 + PlanBonus(controller, plan, specType.EnergyPerBar2)
+                                 + PlanBonus(controller, plan, specType.EnergyPerBar3)
+                                 + PlanBonus(controller, plan, specType.AllPerBar);
+            var magicBarBonus = PlanBonus(controller, plan, specType.MagicPerBar)
+                                + PlanBonus(controller, plan, specType.MagicPerBar2)
+                                + PlanBonus(controller, plan, specType.MagicPerBar3)
+                                + PlanBonus(controller, plan, specType.AllPerBar);
             var lootBonus = PlanBonus(controller, plan, specType.Looting)
                             + PlanBonus(controller, plan, specType.Looting2);
 
@@ -713,8 +776,20 @@ namespace NGUInjector.Managers
                 Math.Min(50.0, c.energySpeed * (1.0 + energySpeedBonus)));
             var candidateMagicSpeed = Math.Max(1.0,
                 Math.Min(50.0, c.magic.magicBarSpeed * (1.0 + magicSpeedBonus)));
-            var candidateEnergyRate = DiscreteResourceRate(candidateEnergySpeed, c.totalEnergyBar());
-            var candidateMagicRate = DiscreteResourceRate(candidateMagicSpeed, c.totalMagicBar());
+            var currentEnergyBarBonus = controller.bonuses[specType.EnergyPerBar]
+                                        + controller.bonuses[specType.EnergyPerBar2]
+                                        + controller.bonuses[specType.EnergyPerBar3]
+                                        + controller.bonuses[specType.AllPerBar];
+            var currentMagicBarBonus = controller.bonuses[specType.MagicPerBar]
+                                       + controller.bonuses[specType.MagicPerBar2]
+                                       + controller.bonuses[specType.MagicPerBar3]
+                                       + controller.bonuses[specType.AllPerBar];
+            var candidateEnergyBar = Math.Max(1L, (long)Math.Floor(c.totalEnergyBar()
+                * (1.0 + energyBarBonus) / Math.Max(1e-9, 1.0 + currentEnergyBarBonus)));
+            var candidateMagicBar = Math.Max(1L, (long)Math.Floor(c.totalMagicBar()
+                * (1.0 + magicBarBonus) / Math.Max(1e-9, 1.0 + currentMagicBarBonus)));
+            var candidateEnergyRate = DiscreteResourceRate(candidateEnergySpeed, candidateEnergyBar);
+            var candidateMagicRate = DiscreteResourceRate(candidateMagicSpeed, candidateMagicBar);
             var currentEnergyRate = Math.Max(1e-9, c.energyPerSecond());
             var currentMagicRate = Math.Max(1e-9, c.magicPerSecond());
 
@@ -728,6 +803,46 @@ namespace NGUInjector.Managers
                     (c.magic.curMagic - c.magic.idleMagic) / (double)c.magic.curMagic));
             var utility = 6.0 * energyUse * Math.Log(Math.Max(1e-9, candidateEnergyRate / currentEnergyRate))
                           + 4.0 * magicUse * Math.Log(Math.Max(1e-9, candidateMagicRate / currentMagicRate));
+
+            // During post-rebirth refill, a resource-specialized set can be the
+            // fastest progression set even when its raw Adventure stats are lower.
+            // Price the exact seconds removed from the outstanding refill, capped at
+            // a ten-minute decision horizon; once both pools are full this term is 0
+            // and combat/loot gear immediately regains authority.
+            var missingEnergy = Math.Max(0.0, c.totalCapEnergy() - c.curEnergy);
+            var missingMagic = Math.Max(0.0, c.totalCapMagic() - c.magic.curMagic);
+            var currentEnergyFill = Math.Min(600.0, missingEnergy / currentEnergyRate);
+            var candidateEnergyFill = Math.Min(600.0, missingEnergy / Math.Max(1e-9, candidateEnergyRate));
+            var currentMagicFill = Math.Min(600.0, missingMagic / currentMagicRate);
+            var candidateMagicFill = Math.Min(600.0, missingMagic / Math.Max(1e-9, candidateMagicRate));
+            utility += 20.0 * ((currentEnergyFill - candidateEnergyFill)
+                               + (currentMagicFill - candidateMagicFill));
+
+            // When Blood is waiting on Gold, compare Gold-specialized sets by the
+            // seconds they remove from the actual shortfall. Do not let this compete
+            // with an active major-unlock combat floor; that target is lexicographically
+            // more valuable and owns its own loot-special scoring above.
+            if (_scoreMajorUnlock == null
+                && AllocationProfiles.BreakpointTypes.BR.LastDecision.StartsWith("Waiting for another ",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                var candidateGoldAmount = PlanBonus(controller, plan, specType.GoldDropAmount)
+                                          + PlanBonus(controller, plan, specType.GoldDrop2);
+                var candidateGoldRng = PlanBonus(controller, plan, specType.GoldDropRNG);
+                var currentGoldAmount = controller.bonuses[specType.GoldDropAmount]
+                                        + controller.bonuses[specType.GoldDrop2];
+                var currentGoldRng = controller.bonuses[specType.GoldDropRNG];
+                var goldRateRatio = (1.0 + candidateGoldAmount) * (1.0 + candidateGoldRng)
+                                    / Math.Max(1e-9,
+                                        (1.0 + currentGoldAmount) * (1.0 + currentGoldRng));
+                var currentGoldRate = Math.Max(1e-9, c.grossGoldPerSecond());
+                var shortfall = Math.Max(0.0,
+                    AllocationProfiles.BreakpointTypes.BR.LastGoldShortfall);
+                var currentGoldEta = Math.Min(600.0, shortfall / currentGoldRate);
+                var candidateGoldEta = Math.Min(600.0,
+                    shortfall / Math.Max(1e-9, currentGoldRate * goldRateRatio));
+                utility += 20.0 * (currentGoldEta - candidateGoldEta);
+            }
 
             var currentLootBonus = controller.bonuses[specType.Looting]
                                    + controller.bonuses[specType.Looting2];
@@ -766,8 +881,22 @@ namespace NGUInjector.Managers
             var magicSpeed = Math.Max(0.0, controller.equipSpecBonus(specType.MagicSpeed, e));
             var loot = Math.Max(0.0, controller.equipSpecBonus(specType.Looting, e)
                                       + controller.equipSpecBonus(specType.Looting2, e));
+            var energyBars = Math.Max(0.0, controller.equipSpecBonus(specType.EnergyPerBar, e)
+                + controller.equipSpecBonus(specType.EnergyPerBar2, e)
+                + controller.equipSpecBonus(specType.EnergyPerBar3, e)
+                + controller.equipSpecBonus(specType.AllPerBar, e));
+            var magicBars = Math.Max(0.0, controller.equipSpecBonus(specType.MagicPerBar, e)
+                + controller.equipSpecBonus(specType.MagicPerBar2, e)
+                + controller.equipSpecBonus(specType.MagicPerBar3, e)
+                + controller.equipSpecBonus(specType.AllPerBar, e));
+            var gold = Math.Max(0.0, controller.equipSpecBonus(specType.GoldDropAmount, e)
+                + controller.equipSpecBonus(specType.GoldDrop2, e)
+                + controller.equipSpecBonus(specType.GoldDropRNG, e));
             return 2.0 * Math.Log(1.0 + energySpeed)
-                   + 2.0 * Math.Log(1.0 + magicSpeed) + Math.Log(1.0 + loot);
+                   + 2.0 * Math.Log(1.0 + magicSpeed)
+                   + 2.0 * Math.Log(1.0 + energyBars)
+                   + 2.0 * Math.Log(1.0 + magicBars)
+                   + Math.Log(1.0 + gold) + Math.Log(1.0 + loot);
         }
 
         private static Plan CurrentPlan(Character c, bool includeEmpty = false)

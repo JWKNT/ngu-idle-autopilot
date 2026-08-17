@@ -93,6 +93,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Managers\ZoneStatHelper.cs" />
     <Compile Include="Managers\AdventureCollectionPlanner.cs" />
     <Compile Include="Managers\ZoneHelpers.cs" />
+    <Compile Include="Managers\MajorUnlockPlanner.cs" />
     <Compile Include="Managers\CombatHelpers.cs" />
     <Compile Include="Managers\CombatManager.cs" />
     <Compile Include="Managers\DiggerManager.cs" />

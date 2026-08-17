@@ -32,6 +32,7 @@ namespace NGUInjector.Autopilot
         private DateTime _lastAdventureDecision = DateTime.MinValue;
         private ZoneTarget _adventureTarget;
         private AdventureCollectionTarget _collectionTarget;
+        private MajorUnlockTarget _majorUnlockTarget;
         private int _loggedAdventureZone = int.MinValue;
         private int _loggedAdventureFightType = int.MinValue;
         private bool _loggedTitanAutoKill;
@@ -518,6 +519,15 @@ namespace NGUInjector.Autopilot
         {
             if (!CanExecuteSafe || !Config.ManageAdventure)
                 return false;
+            // A major-unlock target owns Adventure only while its native unlock
+            // condition remains unmet. Clear its cached route before reevaluating
+            // so consuming a key cannot leave a stale Sky target for another cycle.
+            if (_majorUnlockTarget != null)
+            {
+                _majorUnlockTarget = null;
+                _adventureTarget = null;
+                _lastAdventureDecision = DateTime.MinValue;
+            }
             if (!Main.Character.settings.autoKillTitans)
             {
                 Main.Character.settings.autoKillTitans = true;
@@ -575,6 +585,24 @@ namespace NGUInjector.Autopilot
                     _loggedAdventureFightType = 2;
                 }
                 combat.ManualZone(titanZone, true, true, true, true, true);
+                CaptureRecovery(combat);
+                return true;
+            }
+
+            _majorUnlockTarget = MajorUnlockPlanner.Evaluate(Main.Character);
+            if (_majorUnlockTarget != null)
+            {
+                _collectionTarget = null;
+                _adventureTarget = _majorUnlockTarget.AsZoneTarget();
+                if (_loggedAdventureZone != _majorUnlockTarget.Zone
+                    || _loggedAdventureFightType != _majorUnlockTarget.FightType)
+                {
+                    Main.LogAction("PROGRESSION", _majorUnlockTarget.Reason);
+                    _loggedAdventureZone = _majorUnlockTarget.Zone;
+                    _loggedAdventureFightType = _majorUnlockTarget.FightType;
+                }
+                combat.ManualZone(_majorUnlockTarget.Zone, _majorUnlockTarget.BossOnly,
+                    true, true, true, true);
                 CaptureRecovery(combat);
                 return true;
             }
@@ -872,7 +900,10 @@ namespace NGUInjector.Autopilot
                 : adventureTargetZone >= 0 ? "transiting from Safe Zone to " + adventureTargetName
                 : "waiting for the Adventure planner to select a target";
             var collectionReason = _collectionTarget == null
-                ? "Collection planner is waiting for a fightable Adventure target" : _collectionTarget.Reason;
+                ? _majorUnlockTarget == null
+                    ? "Collection planner is waiting for a fightable Adventure target"
+                    : "Deferred while pursuing " + _majorUnlockTarget.Mechanic
+                : _collectionTarget.Reason;
             var collectionMissing = _collectionTarget == null ? "unknown" : _collectionTarget.MissingSummary;
             var collectionSetReward = _collectionTarget == null ? "unresolved" : _collectionTarget.SetReward;
             var inventoryTotalSlots = AdventureCollectionPlanner.TotalInventorySlots(c);
@@ -985,6 +1016,15 @@ namespace NGUInjector.Autopilot
                        + "  \"adventureTargetName\": \"" + escapedAdventureTargetName + "\",\n"
                        + "  \"adventureFightType\": " + adventureFightType + ",\n"
                        + "  \"adventureBossOnlyForSet\": " + adventureBossOnlyForSet.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"majorUnlockActive\": " + (_majorUnlockTarget != null).ToString().ToLowerInvariant() + ",\n"
+                       + "  \"majorUnlockName\": \"" + EscapeJson(_majorUnlockTarget == null ? string.Empty : _majorUnlockTarget.Mechanic) + "\",\n"
+                       + "  \"majorUnlockGoal\": \"" + EscapeJson(_majorUnlockTarget == null ? string.Empty : _majorUnlockTarget.Goal) + "\",\n"
+                       + "  \"majorUnlockReason\": \"" + EscapeJson(_majorUnlockTarget == null ? string.Empty : _majorUnlockTarget.Reason) + "\",\n"
+                       + "  \"majorUnlockItemId\": " + (_majorUnlockTarget == null ? 0 : _majorUnlockTarget.ItemId) + ",\n"
+                       + "  \"majorUnlockGuaranteedDrop\": " + (_majorUnlockTarget != null && _majorUnlockTarget.GuaranteedFirstDrop).ToString().ToLowerInvariant() + ",\n"
+                       + "  \"majorUnlockDropChance\": " + (_majorUnlockTarget == null ? 0.0 : _majorUnlockTarget.DropChance).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"majorUnlockConsecutiveFailures\": " + (_majorUnlockTarget == null ? 0 : _majorUnlockTarget.ConsecutiveFailures) + ",\n"
+                       + "  \"majorUnlockRetryEtaSeconds\": " + (_majorUnlockTarget == null ? 0 : _majorUnlockTarget.RetryEtaSeconds) + ",\n"
                        + "  \"collectionTargetZone\": " + (_collectionTarget == null || _collectionTarget.Target == null ? -1 : _collectionTarget.Target.Zone) + ",\n"
                        + "  \"collectionIsBackfill\": " + (_collectionTarget != null && _collectionTarget.IsBackfill).ToString().ToLowerInvariant() + ",\n"
                        + "  \"collectionRemainingItems\": " + (_collectionTarget == null ? 0 : _collectionTarget.RemainingItems) + ",\n"

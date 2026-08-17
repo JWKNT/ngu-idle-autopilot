@@ -7,7 +7,8 @@ FILE PURPOSE
 
 ZoneHelpers owns native Adventure unlock/reachability checks and Titan spawn/combat gates. It
 mirrors puzzle-item and version-specific invincibility requirements before declaring a Titan
-available. It supplies facts to routing/loadouts and never chooses ordinary collection policy.
+available, and exposes a separately labeled recoverable first-kill gate for major mechanic unlocks.
+It supplies facts to routing/loadouts and never chooses ordinary collection policy.
 */
 namespace NGUInjector.Managers
 {
@@ -54,6 +55,57 @@ namespace NGUInjector.Managers
                     return TitanZones[bossId];
             }
             return -1;
+        }
+
+        /*
+        MAJOR-UNLOCK TITAN PUSH
+
+        The normal selector requires a comfortable <=120 second, <90% HP projection because it is
+        suitable for repeated unattended Titan farming. The first four Titans unlock entire game
+        systems. For those one-time gates, admit a slower recoverable attempt when regular attacks
+        still deal positive damage and the first conservative enemy hit is not lethal. Native
+        combat, spawn, puzzle, and item requirements remain authoritative.
+        */
+        internal static int HighestMajorUnlockTitan(out int titanIndex)
+        {
+            titanIndex = -1;
+            var c = Main.Character;
+            if (c == null || !c.buttons.adventure.IsInteractable()) return -1;
+            var unlocked = new[]
+            {
+                c.settings.nguOn,
+                c.settings.yggdrasilOn,
+                c.settings.diggersOn,
+                c.settings.beardsOn
+            };
+            var reachable = GetMaxReachableZone(true);
+            for (var id = Math.Min(3, TitanZones.Length - 1); id >= 0; id--)
+            {
+                if (unlocked[id] || TitanZones[id] > reachable
+                    || !TitanUnlockedForAttempt(id) || !CheckTitanSpawnTime(id)
+                    || !TitanUnlockAttemptable(id))
+                    continue;
+                titanIndex = id;
+                return TitanZones[id];
+            }
+            return -1;
+        }
+
+        private static bool TitanUnlockAttemptable(int bossId)
+        {
+            var c = Main.Character;
+            var zone = TitanZones[bossId];
+            if (c.adventureController.enemyList == null
+                || zone < 0 || zone >= c.adventureController.enemyList.Count
+                || c.adventureController.enemyList[zone] == null
+                || c.adventureController.enemyList[zone].Count == 0)
+                return false;
+            var enemy = c.adventureController.enemyList[zone][0];
+            var outgoing = .8 * Math.Max(0.0, c.totalAdvAttack() - enemy.defense / 2.0)
+                           * c.regAttackPower();
+            var conservativeHit = 1.2 * Math.Max(enemy.attack * .1,
+                enemy.attack - c.totalAdvDefense() / 2.0);
+            return outgoing > 0 && conservativeHit < c.totalAdvHP() * .95;
         }
 
         private static bool TitanUnlockedForAttempt(int bossId)

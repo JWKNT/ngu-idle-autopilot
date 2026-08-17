@@ -9,9 +9,9 @@ using static NGUInjector.Managers.CombatHelpers;
 FILE PURPOSE
 
 CombatManager executes Adventure movement and active/idle skill rotations through native
-controllers, tracks observed fight timing, and exposes recovery state. It must not fabricate kills
-or abandon special enemies merely to swap gear. Zone policy comes from AutopilotManager; this file
-owns tactical action sequencing and confirmation.
+controllers, tracks observed fight timing, reports confirmed major-unlock attempt outcomes, and
+exposes recovery state. It must not fabricate kills or abandon special enemies merely to swap gear.
+Zone policy comes from AutopilotManager; this file owns tactical action sequencing and confirmation.
 */
 namespace NGUInjector.Managers
 {
@@ -23,6 +23,7 @@ namespace NGUInjector.Managers
         private float _fightTimer = 0;
         private string _enemyName;
         private float _fightStartHP;
+        private int _fightZone = -1;
         private bool _fightWasTitan;
         private float _expectedFightDamage;
         private float _recoveryTargetHP;
@@ -558,6 +559,7 @@ namespace NGUInjector.Managers
                     if (playerDied)
                         Main.LogAction("DEATH", "Adventure defeat by " + _enemyName
                                                    + " [confirmed by HP=0 and enemy-clear state]");
+                    MajorUnlockPlanner.RecordFightResult(_character, _fightZone, playerDied);
 
                     _fightTimer = 0;
                     if (LoadoutManager.CurrentLock == LockType.Gold)
@@ -660,6 +662,7 @@ namespace NGUInjector.Managers
             if (!_isFighting)
             {
                 _fightStartHP = _character.adventure.curHP;
+                _fightZone = zone;
                 var enemyTypeName = _character.adventureController.currentEnemy.enemyType.ToString();
                 _fightWasTitan = ZoneHelpers.ZoneIsTitan(zone)
                                  && (enemyTypeName.Contains("bigBoss") || enemyTypeName.Contains("guardian"));

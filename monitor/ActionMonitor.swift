@@ -387,6 +387,12 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let recoveryETA = number(state, "adventureRecoveryEtaSeconds")
         let adventureControlReason = state["adventureControlReason"] as? String ?? ""
         let adventureSafeZoneSeconds = number(state, "adventureSafeZoneSeconds")
+        let majorUnlockActive = state["majorUnlockActive"] as? Bool ?? false
+        let majorUnlockName = state["majorUnlockName"] as? String ?? "major mechanic"
+        let majorUnlockGoal = state["majorUnlockGoal"] as? String ?? "complete the verified unlock condition"
+        let majorUnlockReason = state["majorUnlockReason"] as? String ?? ""
+        let majorUnlockGuaranteed = state["majorUnlockGuaranteedDrop"] as? Bool ?? false
+        let majorUnlockChance = numberDouble(state, "majorUnlockDropChance")
         let energyCurrent = numberDouble(state, "energyCurrent")
         let energyIdle = numberDouble(state, "energyIdle")
         let energyUtilization = numberDouble(state, "energyUtilization")
@@ -450,6 +456,13 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let adventureStatus: String
         if !adventureUnlocked {
             adventureStatus = "Unlock Adventure by defeating Boss 4. Boss checks run 5 times/second."
+        } else if majorUnlockActive && number(state, "adventureZone") == -1 {
+            let eta = recoveryETA > 0 ? " — ETA \(formatEstimate(recoveryETA))" : ""
+            adventureStatus = "MAJOR UNLOCK — \(majorUnlockName): recovering/pre-casting in Safe Zone for \(majorUnlockGoal) (HP \(shortNumber(currentHP))/\(shortNumber(maxHP)))\(eta)."
+        } else if majorUnlockActive {
+            let drop = majorUnlockGuaranteed ? "the first qualifying kill is guaranteed"
+                : majorUnlockChance > 0 ? "per-kill drop chance \(String(format: "%.2f", 100 * majorUnlockChance))%" : "native unlock fight"
+            adventureStatus = "MAJOR UNLOCK — \(majorUnlockName): \(majorUnlockGoal) in \(zone), ACTIVE fast-manual with between-fight recovery; \(drop). \(majorUnlockReason)"
         } else if number(state, "adventureZone") == -1 {
             let reason = adventureControlReason.isEmpty ? recoveryReason : adventureControlReason
             let eta = recoveryETA > 0 ? " — ETA \(formatEstimate(recoveryETA))" : ""
@@ -467,6 +480,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         var shortTerm: [String] = []
+        if majorUnlockActive {
+            shortTerm.append("Unlock \(majorUnlockName): \(majorUnlockGoal).")
+        }
         if trainingETA >= 0 && trainingETA <= 300 {
             shortTerm.append("\(trainingGoal) — ETA \(formatEstimate(trainingETA)).")
         }
@@ -604,7 +620,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         AT A GLANCE
         ▶ NEXT: \(shortTerm.first ?? "Re-evaluating the next verified action.")
         ◆ BOSS: selected \(selectedBoss) / next record \(nextBoss) — \(bossGlance)
-        ◆ ADVENTURE: \(zone) — \(collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
+        ◆ ADVENTURE: \(zone) — \(majorUnlockActive ? "MAJOR UNLOCK: " + majorUnlockName.uppercased() : collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
         ◆ INVENTORY: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure) PRESSURE
         ◆ REBIRTH: \(rebirthExecutionEnabled && rebirthPreviewMonotonic && rebirthRecoveryResetEfficient ? formatExactDuration(rebirthRemaining) + " remaining — exact target " + formatExactDuration(rebirthTarget) : "ROUTE HOLD — " + rebirthSafetyBlockReason)
 

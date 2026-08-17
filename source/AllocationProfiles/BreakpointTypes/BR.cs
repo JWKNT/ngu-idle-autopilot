@@ -17,6 +17,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
     internal class BR : BaseBreakpoint
     {
         internal static string LastDecision { get; private set; } = "Blood Magic has not been evaluated";
+        internal static double LastGoldShortfall { get; private set; }
         internal int RebirthTime { get; set; }
         protected override bool Unlocked()
         {
@@ -49,6 +50,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         private void CastRituals()
         {
+            LastGoldShortfall = 0.0;
             var allocationLeft = (long)MaxAllocation;
             var allocated = 0L;
             var allocatedTracks = new List<string>();
@@ -126,6 +128,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             }
             else if (goldBlocked > 0 && nearestGoldTrack >= 0)
             {
+                LastGoldShortfall = nearestGoldShortfall;
                 var gps = Math.Max(0.0, Character.grossGoldPerSecond());
                 var eta = gps > 0 ? " (~" + Math.Ceiling(nearestGoldShortfall / gps) + "s at current gross GPS)" : string.Empty;
                 LastDecision = "Waiting for another " + FormatGold(nearestGoldShortfall)

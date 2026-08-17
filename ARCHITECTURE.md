@@ -49,6 +49,7 @@ Notable components:
 - `AutopilotManager.cs`: live snapshot, action coordination, and decision telemetry.
 - `RebirthOptimizer.cs`: exact piecewise time-multiplier candidates, projected boss/training events, AP breakpoints, and sticky near-tie selection.
 - `ProgressionGoalEngine.cs`: source-backed progression gates shown in the monitor.
+- `MajorUnlockPlanner.cs`: one-time Adventure/Titan mechanic pushes with recovery and contextual gear constraints.
 - `AutopilotConfig.cs`: mode and irreversible-action boundaries.
 
 ### Allocation execution
