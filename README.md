@@ -24,7 +24,8 @@ This repository is source-first. It deliberately excludes game saves, live telem
 | `source/AllocationProfiles/` | Energy, Magic, Resource 3, and timed rebirth allocation execution | Derived from and extended beyond NGUInjector |
 | `source/Main.cs` | Unity lifecycle, synchronization gate, control-loop scheduling, and action logging | Modified NGUInjector host |
 | `source/AutopilotLoader.cs` | Minimal public entry point called after injection | Autopilot integration code |
-| `monitor/` | Separate macOS Swift status window; reads JSON/log files and never controls the game | Autopilot-specific code |
+| `monitor/` | Separate macOS Swift status window and loopback dashboard bridge; both are read-only | Autopilot-specific code |
+| `docs/` | Static jehlp.net dashboard client and strategy documentation | Autopilot-specific code |
 | `build.command` | Compiles against the locally installed game's current managed assemblies | Local build tooling |
 | `run.command`, `stop.command`, `status.command` | Injection lifecycle and operator status scripts | Local runtime tooling |
 
@@ -40,6 +41,7 @@ These are intentionally separate concepts:
 - **NGUInjector** is the inherited project substrate. Its allocation/profile framework, settings UI, and manager conventions were used as a base and have been substantially extended.
 - **SharpMonoInjector** is only the transport used by `run.command` and `stop.command` to load or unload the bot DLL in the running Mono process. It does not decide how to play NGU Idle and is not linked into the bot's strategy.
 - **The monitor** is a separate read-only Swift app. It consumes `runtime/decision.json` and `runtime/logs/actions.log`; closing it does not stop automation.
+- **The dashboard** is the same static client on GitHub Pages and at `http://127.0.0.1:47635/`. A loopback-only Python bridge reads those telemetry files and exposes no control methods. The public page contains no save or live state; it connects to the local bridge when browser policy allows, with the loopback page as the reliable fallback.
 
 The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity assemblies. `build.command` copies those locally as compile-time references from an installed game.
 
@@ -53,6 +55,14 @@ The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity a
 6. The monitor renders confirmed actions, holds, ETAs, candidate rebirths, progression goals, and
    a separate sparse Key Events history for victories, significant level boundaries, discoveries,
    MAXX completions, EXP/AP purchases, and major rewards.
+7. The loopback bridge serves the dashboard and a read-only snapshot API on `127.0.0.1`; no game
+   state is uploaded to GitHub Pages or another remote service.
+
+## Dashboard
+
+The public dashboard is published at [jehlp.net/ngu-idle-autopilot](https://jehlp.net/ngu-idle-autopilot/). It follows the shared jehlp.net typography, color tokens, theme control, hairline structure, and content-first layout while presenting NGU-specific telemetry.
+
+`run.command` starts the bridge with the bot. The first viewport reports the calculated rebirth ETA, next modeled boss and ETA, current Adventure route, and the exact named EXP purchase and shortfall. Deeper sections explain allocations, resource holds, combat, equipment, inventory safety, rebirth candidates, Basic Training, and confirmed key events. The API is intentionally read-only and loopback-bound.
 
 ## Build
 

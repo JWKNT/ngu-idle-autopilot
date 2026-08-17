@@ -2,9 +2,11 @@
 # FILE PURPOSE
 #
 # This deployment entrypoint injects the already-built DLL into one running NGUIdle process,
-# records the returned assembly pointer for safe ejection, and launches the separate read-only
-# monitor. It does not start the game or build source. A successful injector pointer is required;
-# gameplay mutation remains paused until the DLL independently verifies active synchronization.
+# records the returned assembly pointer for safe ejection, and launches both read-only views: the
+# native action monitor and the loopback dashboard bridge. It does not start the game or build
+# source. A successful injector pointer is required; gameplay mutation remains paused until the
+# DLL independently verifies active synchronization. The dashboard only reads generated telemetry
+# and binds to 127.0.0.1; it is not a second automation or command channel.
 set -euo pipefail
 
 bot_dir=${0:A:h}
@@ -51,4 +53,42 @@ if [[ -d "$monitor_app" ]]; then
   pkill -f "$monitor_app/Contents/MacOS/NGUActionMonitor" 2>/dev/null || true
   open -n "$monitor_app" --args "$bot_dir/runtime/logs/actions.log" "$bot_dir/runtime/decision.json"
   print "Live action window opened."
+fi
+
+# The public dashboard is a static shell. Its game-state authority is this exact local bridge,
+# which is tracked by PID and validated by command path so lifecycle cleanup cannot kill an
+# unrelated Python process. A bridge failure does not change the already-confirmed injector state.
+dashboard_script="$bot_dir/monitor/dashboard_server.py"
+dashboard_pid_file="$bot_dir/runtime/dashboard-server.pid"
+dashboard_log="$bot_dir/runtime/logs/dashboard-server.log"
+if [[ -f "$dashboard_pid_file" ]]; then
+  old_dashboard_pid=$(<"$dashboard_pid_file")
+  old_dashboard_command=$(ps -p "$old_dashboard_pid" -o command= 2>/dev/null || true)
+  if [[ "$old_dashboard_pid" == <-> && "$old_dashboard_command" == *"$dashboard_script"* ]]; then
+    kill "$old_dashboard_pid" 2>/dev/null || true
+  fi
+  rm -f "$dashboard_pid_file"
+fi
+
+python3 "$dashboard_script" --root "$bot_dir/docs" --runtime "$bot_dir/runtime" --port 47635 >>"$dashboard_log" 2>&1 &
+dashboard_pid=$!
+print -r -- "$dashboard_pid" > "$dashboard_pid_file"
+
+dashboard_ready=false
+for _ in {1..20}; do
+  if curl -fsS "http://127.0.0.1:47635/api/health" >/dev/null 2>&1; then
+    dashboard_ready=true
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$dashboard_ready" == true ]]; then
+  print "Local dashboard ready at http://127.0.0.1:47635/."
+else
+  print -u2 "Dashboard bridge did not become ready; gameplay automation remains active."
+  dashboard_command=$(ps -p "$dashboard_pid" -o command= 2>/dev/null || true)
+  if [[ "$dashboard_command" == *"$dashboard_script"* ]]; then
+    kill "$dashboard_pid" 2>/dev/null || true
+  fi
+  rm -f "$dashboard_pid_file"
 fi

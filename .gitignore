@@ -4,6 +4,8 @@
 .vs/
 *.user
 *.suo
+__pycache__/
+*.pyc
 
 # Compiled bot and monitor artifacts
 *.dll

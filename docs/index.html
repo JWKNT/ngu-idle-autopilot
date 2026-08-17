@@ -1,0 +1,227 @@
+<!--
+FILE PURPOSE
+
+This is the public and loopback-served NGU Idle dashboard shell. It renders only telemetry supplied
+by assets/app.js, uses the shared JWKNT theme before its local dashboard stylesheet, and never
+mutates the game or uploads local state. The same static files are deployed through GitHub Pages
+and served by monitor/dashboard_server.py so the public project and local client stay identical.
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A live local dashboard for the NGU Idle progression autopilot.">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="NGU Idle Dashboard">
+    <meta property="og:description" content="Inspect the bot's current route, resources, combat model, equipment, and verified key events.">
+    <meta property="og:url" content="https://jehlp.net/ngu-idle-autopilot/">
+    <meta name="twitter:card" content="summary">
+    <meta name="theme-color" content="#ffffff">
+    <title>NGU Idle Dashboard</title>
+    <script src="https://jehlp.net/site-theme/v1/theme.js"></script>
+    <link rel="stylesheet" href="https://jehlp.net/site-theme/v1/base.css">
+    <link rel="stylesheet" href="assets/styles.css?v=20260817.1">
+    <script src="assets/app.js?v=20260817.1" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#dashboard">Skip to dashboard</a>
+
+    <header class="site-header">
+      <a class="site-title" href="./">NGU Idle Dashboard</a>
+      <nav aria-label="Site links">
+        <a href="https://jehlp.net/">Projects</a>
+        <a href="https://github.com/JWKNT/ngu-idle-autopilot">Source</a>
+        <button class="theme-toggle" type="button" data-theme-toggle aria-label="Use dark theme">◐</button>
+      </nav>
+    </header>
+
+    <main id="dashboard" class="dashboard-shell">
+      <section class="dashboard-intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Local progression client</p>
+          <h1 id="page-title">Current run</h1>
+          <p id="objective" class="intro-copy">Waiting for the local autopilot state.</p>
+        </div>
+        <div class="connection-block">
+          <p id="connection-state" class="connection-state" data-state="connecting">Connecting locally…</p>
+          <p id="connection-detail">No game data leaves this device.</p>
+          <a id="open-local" class="quiet-action" href="http://127.0.0.1:47635/" hidden>Open local client</a>
+        </div>
+      </section>
+
+      <dl class="headline-metrics" aria-label="Current progression summary">
+        <div>
+          <dt>Rebirth</dt>
+          <dd id="metric-rebirth">—</dd>
+          <dd id="metric-rebirth-note" class="metric-note">waiting for optimizer</dd>
+        </div>
+        <div>
+          <dt id="metric-boss-label">Next boss</dt>
+          <dd id="metric-boss">—</dd>
+          <dd id="metric-boss-note" class="metric-note">waiting for combat model</dd>
+        </div>
+        <div>
+          <dt>Adventure</dt>
+          <dd id="metric-adventure">—</dd>
+          <dd id="metric-adventure-note" class="metric-note">waiting for route</dd>
+        </div>
+        <div>
+          <dt>EXP purchase</dt>
+          <dd id="metric-exp">—</dd>
+          <dd id="metric-exp-note" class="metric-note">waiting for purchase model</dd>
+        </div>
+      </dl>
+
+      <div id="stale-banner" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="section-block" aria-labelledby="route-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Route</p>
+            <h2 id="route-heading">What the bot is doing</h2>
+          </div>
+          <p id="run-stage" class="section-meta">—</p>
+        </div>
+        <div class="route-grid">
+          <div class="route-primary">
+            <h3 id="route-title">Waiting for a synchronized transaction</h3>
+            <p id="route-reason">The dashboard reports confirmed game state, not intended inputs.</p>
+          </div>
+          <dl class="compact-facts">
+            <div><dt>Mode</dt><dd id="fact-mode">—</dd></div>
+            <div><dt>Snapshot</dt><dd id="fact-snapshot">—</dd></div>
+            <div><dt>Run age</dt><dd id="fact-run-age">—</dd></div>
+            <div><dt>Build</dt><dd id="fact-build">—</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="section-block" aria-labelledby="resources-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Resources</p>
+            <h2 id="resources-heading">Allocation and purchasing</h2>
+          </div>
+          <p id="resource-summary" class="section-meta">—</p>
+        </div>
+
+        <div class="allocation-grid">
+          <article class="allocation-row">
+            <div class="allocation-copy">
+              <h3>Energy</h3>
+              <p id="energy-decision">Waiting for a verified allocation sweep.</p>
+            </div>
+            <div class="allocation-value"><strong id="energy-value">—</strong><span id="energy-rate">—</span></div>
+            <div class="meter" aria-hidden="true"><span id="energy-meter"></span></div>
+            <dl class="allocation-parts">
+              <div><dt>Basic Training</dt><dd id="energy-bt">—</dd></div>
+              <div><dt>Other systems</dt><dd id="energy-other">—</dd></div>
+              <div><dt>Idle</dt><dd id="energy-idle">—</dd></div>
+            </dl>
+          </article>
+
+          <article class="allocation-row">
+            <div class="allocation-copy">
+              <h3>Magic</h3>
+              <p id="magic-decision">Waiting for a verified allocation sweep.</p>
+            </div>
+            <div class="allocation-value"><strong id="magic-value">—</strong><span id="magic-rate">—</span></div>
+            <div class="meter" aria-hidden="true"><span id="magic-meter"></span></div>
+            <dl class="allocation-parts">
+              <div><dt>Blood</dt><dd id="magic-blood">—</dd></div>
+              <div><dt>Time Machine</dt><dd id="magic-tm">—</dd></div>
+              <div><dt>Idle</dt><dd id="magic-idle">—</dd></div>
+            </dl>
+          </article>
+        </div>
+
+        <div class="purchase-list" aria-label="Purchase targets">
+          <article>
+            <h3>EXP</h3><strong id="exp-balance">—</strong>
+            <p id="exp-decision">Waiting for purchase model.</p><span id="exp-eta">—</span>
+          </article>
+          <article>
+            <h3>AP</h3><strong id="ap-balance">—</strong>
+            <p id="ap-decision">Waiting for purchase model.</p><span id="ap-eta">—</span>
+          </article>
+          <article>
+            <h3>Gold</h3><strong id="gold-balance">—</strong>
+            <p id="gold-decision">Waiting for horizon model.</p><span id="gold-rate">—</span>
+          </article>
+        </div>
+      </section>
+
+      <div class="two-column">
+        <section class="section-block" aria-labelledby="combat-heading">
+          <div class="section-heading">
+            <div><p class="section-kicker">Combat</p><h2 id="combat-heading">Boss and Adventure</h2></div>
+          </div>
+          <dl class="data-list">
+            <div><dt>Boss target</dt><dd id="combat-boss">—</dd></div>
+            <div><dt>Defeat model</dt><dd id="combat-eta">—</dd></div>
+            <div><dt>Adventure route</dt><dd id="combat-zone">—</dd></div>
+            <div><dt>Power / toughness</dt><dd id="combat-stats">—</dd></div>
+            <div><dt>HP</dt><dd id="combat-hp">—</dd></div>
+            <div><dt>Collection</dt><dd id="combat-collection">—</dd></div>
+          </dl>
+          <p id="combat-reason" class="section-note">Waiting for combat telemetry.</p>
+        </section>
+
+        <section class="section-block" aria-labelledby="inventory-heading">
+          <div class="section-heading">
+            <div><p class="section-kicker">Equipment</p><h2 id="inventory-heading">Loadout and inventory</h2></div>
+          </div>
+          <dl class="data-list">
+            <div><dt>Objective</dt><dd id="gear-objective">—</dd></div>
+            <div><dt>Inventory</dt><dd id="inventory-space">—</dd></div>
+            <div><dt>Pressure</dt><dd id="inventory-pressure">—</dd></div>
+            <div><dt>Boost target</dt><dd id="boost-target">—</dd></div>
+            <div><dt>Trash policy</dt><dd id="trash-policy">—</dd></div>
+          </dl>
+          <p id="gear-decision" class="section-note">Waiting for loadout optimizer.</p>
+        </section>
+      </div>
+
+      <section class="section-block" aria-labelledby="rebirth-heading">
+        <div class="section-heading">
+          <div><p class="section-kicker">Long-run model</p><h2 id="rebirth-heading">Rebirth decision</h2></div>
+          <p id="rebirth-state" class="section-meta">—</p>
+        </div>
+        <p id="rebirth-reason" class="lead-note">Waiting for optimizer evidence.</p>
+        <dl class="rebirth-facts">
+          <div><dt>Current multiplier</dt><dd id="rebirth-current">—</dd></div>
+          <div><dt>Preview multiplier</dt><dd id="rebirth-preview">—</dd></div>
+          <div><dt>Preview ratio</dt><dd id="rebirth-ratio">—</dd></div>
+          <div><dt>Candidate search</dt><dd id="rebirth-candidates">—</dd></div>
+        </dl>
+        <p id="rebirth-safety" class="section-note">No reset will execute without a valid native preview.</p>
+      </section>
+
+      <section class="section-block" aria-labelledby="training-heading">
+        <div class="section-heading">
+          <div><p class="section-kicker">Basic Training</p><h2 id="training-heading">Exact allocation</h2></div>
+          <p id="training-policy" class="section-meta">—</p>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Pair</th><th>Attack</th><th>Defense</th><th>Energy</th><th>Rate</th></tr></thead>
+            <tbody id="training-body"><tr><td colspan="5">Waiting for allocation breakdown.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section-block" aria-labelledby="events-heading">
+        <div class="section-heading">
+          <div><p class="section-kicker">Timeline</p><h2 id="events-heading">Key events</h2></div>
+          <p class="section-meta">bosses, purchases, rare drops, and major milestones</p>
+        </div>
+        <ol id="event-list" class="event-list"><li>Waiting for the local event stream.</li></ol>
+      </section>
+
+      <footer class="dashboard-footer">
+        <p>Read-only local telemetry from <a href="https://github.com/JWKNT/ngu-idle-autopilot">NGU Idle Autopilot</a>. The public page contains no save data and cannot control the game.</p>
+      </footer>
+    </main>
+  </body>
+</html>
