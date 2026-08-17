@@ -1,18 +1,18 @@
 /*
 FILE PURPOSE
 
-This dependency-free client polls the loopback dashboard bridge, validates its telemetry envelope,
-and renders confirmed NGU state into the static dashboard. Online GitHub Pages attempts the fixed
-127.0.0.1 endpoint and otherwise stays visibly disconnected; local mode uses the same origin. It
-does not send commands, persist game data, use analytics, or contact any non-local state service.
+This dependency-free client polls the read-only dashboard bridge, validates its telemetry envelope,
+and renders confirmed NGU state into the static dashboard. The public deployment reads the laptop
+through its fixed HTTPS Funnel endpoint; local and private-host copies use their own origin. It does
+not send commands, persist game data, use analytics, or expose any mutation endpoint.
 */
 (() => {
   "use strict";
 
-  const localHost = ["127.0.0.1", "localhost"].includes(window.location.hostname);
   const publicDashboardHosts = new Set(["jehlp.net", "www.jehlp.net", "jwknt.github.io"]);
-  const endpoint = publicDashboardHosts.has(window.location.hostname)
-    ? "http://127.0.0.1:47635/api/state"
+  const publicFeed = publicDashboardHosts.has(window.location.hostname);
+  const endpoint = publicFeed
+    ? "https://ngu-idle-laptop.tailae7349.ts.net/api/state"
     : "/api/state";
   const pollMs = 1000;
   let lastSequence = -1;
@@ -73,11 +73,11 @@ does not send commands, persist game data, use analytics, or contact any non-loc
   function setConnection(state, detail) {
     const node = byId("connection-state");
     node.dataset.state = state;
-    node.textContent = state === "live" ? "● Local client live"
-      : state === "stale" ? "● Local client stale"
-      : state === "connecting" ? "○ Connecting locally…" : "○ Local client offline";
+    node.textContent = state === "live" ? `● ${publicFeed ? "Laptop feed" : "Local client"} live`
+      : state === "stale" ? `● ${publicFeed ? "Laptop feed" : "Local client"} stale`
+      : state === "connecting" ? `○ Connecting ${publicFeed ? "to laptop" : "locally"}…`
+        : `○ ${publicFeed ? "Laptop feed" : "Local client"} offline`;
     setText("connection-detail", detail);
-    byId("open-local").hidden = localHost || state === "live";
   }
 
   function resourceEta(state, prefix) {
@@ -220,7 +220,7 @@ does not send commands, persist game data, use analytics, or contact any non-loc
   function renderEvents(events) {
     const list = byId("event-list");
     if (!Array.isArray(events) || !events.length) {
-      list.innerHTML = "<li>No key events have been recorded by this local client yet.</li>";
+      list.innerHTML = "<li>No key events have been recorded by the live feed yet.</li>";
       return;
     }
     list.replaceChildren(...events.slice(0, 30).map((event) => {
@@ -240,15 +240,15 @@ does not send commands, persist game data, use analytics, or contact any non-loc
   }
 
   function renderEnvelope(envelope) {
-    if (!envelope || typeof envelope !== "object" || !envelope.state) throw new Error("invalid local telemetry envelope");
+    if (!envelope || typeof envelope !== "object" || !envelope.state) throw new Error("invalid telemetry envelope");
     const s = envelope.state;
     const age = Math.max(0, number(envelope.stateAgeSeconds, 9999));
     const live = s.synced && s.automationTransactionComplete && age <= 5;
     setConnection(live ? "live" : "stale", live
-      ? `Snapshot #${number(s.decisionSequence).toLocaleString()} · ${age.toFixed(1)}s old · local-only`
+      ? `Snapshot #${number(s.decisionSequence).toLocaleString()} · ${age.toFixed(1)}s old · ${publicFeed ? "read-only laptop feed" : "local client"}`
       : `Latest snapshot is ${duration(age)} old or has not completed a synchronized transaction.`);
     byId("stale-banner").hidden = live;
-    byId("stale-banner").textContent = live ? "" : "The latest local snapshot is stale or partial. Values below are retained for diagnosis and are not proof of current actions.";
+    byId("stale-banner").textContent = live ? "" : `The latest ${publicFeed ? "laptop" : "local"} snapshot is stale or partial. Values below are retained for diagnosis and are not proof of current actions.`;
     renderHeadline(s);
     renderRoute(s);
     renderResources(s);
@@ -262,14 +262,14 @@ does not send commands, persist game data, use analytics, or contact any non-loc
   async function poll() {
     try {
       const response = await fetch(endpoint, { cache: "no-store", headers: { Accept: "application/json" } });
-      if (!response.ok) throw new Error(`local client returned ${response.status}`);
+      if (!response.ok) throw new Error(`telemetry feed returned ${response.status}`);
       renderEnvelope(await response.json());
     } catch (error) {
-      setConnection("offline", localHost
-        ? "The bot dashboard bridge is not responding. Start the automation client."
-        : "Start the bot locally, then open or reconnect the loopback client. No data is sent to this site.");
+      setConnection("offline", publicFeed
+        ? "The laptop feed is unavailable. The laptop, game, and dashboard bridge must be running and awake."
+        : "The bot dashboard bridge is not responding. Start the automation client.");
       byId("stale-banner").hidden = false;
-      byId("stale-banner").textContent = "Live game state is unavailable. This public dashboard is only a view; the local bot is the telemetry authority.";
+      byId("stale-banner").textContent = "Live game state is unavailable; the static dashboard remains online. The bot is still the telemetry authority.";
     }
   }
 

@@ -1,17 +1,17 @@
 <!--
 FILE PURPOSE
 
-This is the public and loopback-served NGU Idle dashboard shell. It renders only telemetry supplied
+This is the public and locally served NGU Idle dashboard shell. It renders only telemetry supplied
 by assets/app.js, uses the shared JWKNT theme before its local dashboard stylesheet, and never
-mutates the game or uploads local state. The same static files are deployed through GitHub Pages
-and served by monitor/dashboard_server.py so the public project and local client stay identical.
+mutates the game. The public copy fetches a live read-only snapshot through Tailscale Funnel; the
+same static files are served by monitor/dashboard_server.py so public and local views stay aligned.
 -->
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="A live local dashboard for the NGU Idle progression autopilot.">
+    <meta name="description" content="A live public dashboard for the NGU Idle progression autopilot.">
     <meta property="og:type" content="website">
     <meta property="og:title" content="NGU Idle Dashboard">
     <meta property="og:description" content="Inspect the bot's current route, resources, combat model, equipment, and verified key events.">
@@ -22,7 +22,7 @@ and served by monitor/dashboard_server.py so the public project and local client
     <script src="https://jehlp.net/site-theme/v1/theme.js"></script>
     <link rel="stylesheet" href="https://jehlp.net/site-theme/v1/base.css">
     <link rel="stylesheet" href="assets/styles.css?v=20260817.1">
-    <script src="assets/app.js?v=20260817.2" defer></script>
+    <script src="assets/app.js?v=20260817.3" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#dashboard">Skip to dashboard</a>
@@ -39,14 +39,13 @@ and served by monitor/dashboard_server.py so the public project and local client
     <main id="dashboard" class="dashboard-shell">
       <section class="dashboard-intro" aria-labelledby="page-title">
         <div>
-          <p class="eyebrow">Local progression client</p>
+          <p class="eyebrow">Live progression client</p>
           <h1 id="page-title">Current run</h1>
-          <p id="objective" class="intro-copy">Waiting for the local autopilot state.</p>
+          <p id="objective" class="intro-copy">Waiting for the live autopilot state.</p>
         </div>
         <div class="connection-block">
-          <p id="connection-state" class="connection-state" data-state="connecting">Connecting locally…</p>
-          <p id="connection-detail">No game data leaves this device.</p>
-          <a id="open-local" class="quiet-action" href="http://127.0.0.1:47635/" hidden>Open local client</a>
+          <p id="connection-state" class="connection-state" data-state="connecting">Connecting to laptop…</p>
+          <p id="connection-detail">Live state is served read-only from the laptop.</p>
         </div>
       </section>
 
@@ -216,11 +215,11 @@ and served by monitor/dashboard_server.py so the public project and local client
           <div><p class="section-kicker">Timeline</p><h2 id="events-heading">Key events</h2></div>
           <p class="section-meta">bosses, purchases, rare drops, and major milestones</p>
         </div>
-        <ol id="event-list" class="event-list"><li>Waiting for the local event stream.</li></ol>
+        <ol id="event-list" class="event-list"><li>Waiting for the live event stream.</li></ol>
       </section>
 
       <footer class="dashboard-footer">
-        <p>Read-only local telemetry from NGU Idle Autopilot. The <a href="https://github.com/JWKNT/ngu-idle-dashboard">dashboard source</a> contains no save data and cannot control the game.</p>
+        <p>Read-only live telemetry from NGU Idle Autopilot. The <a href="https://github.com/JWKNT/ngu-idle-dashboard">dashboard source</a> contains no save data and cannot control the game.</p>
       </footer>
     </main>
   </body>
