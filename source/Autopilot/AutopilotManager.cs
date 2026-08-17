@@ -398,7 +398,7 @@ namespace NGUInjector.Autopilot
                         var row = i < 6 ? i : i - 6;
                         var label = attack ? GameNames.AttackTraining(c, row)
                             : GameNames.DefenseTraining(c, row);
-                        Main.LogAction("MILESTONE", label + " Lv " + current[i].ToString("N0"));
+                        Main.LogAction("MILESTONE", label + " Training " + current[i].ToString("N0"));
                     }
                 }
                 _lastObservedTrainingMilestones = current;
@@ -423,11 +423,8 @@ namespace NGUInjector.Autopilot
                     if (augCurrent[i] <= _lastObservedAugmentMilestones[i] || augCurrent[i] <= 0) continue;
                     var pair = i / 2;
                     var upgrade = i % 2 != 0;
-                    Main.LogAction("MILESTONE", GameNames.Augment(c, pair, upgrade) + " ("
-                                                + (upgrade ? "Upgrade" : "Augment") + " row " + (pair + 1)
-                                                + ") reached level "
-                                                + augCurrent[i].ToString("N0")
-                                                + " [confirmed at greatest-place-value boundary]");
+                    Main.LogAction("MILESTONE", GameNames.Augment(c, pair, upgrade) + " "
+                                                + augCurrent[i].ToString("N0"));
                 }
             }
             _lastObservedAugmentMilestones = augCurrent;

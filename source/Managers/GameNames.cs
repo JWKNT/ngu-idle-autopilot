@@ -1,13 +1,13 @@
-using System;
-
 /*
 FILE PURPOSE
 
 GameNames is the single display-name boundary for bot logs and monitor telemetry. Whenever NGU
 Idle exposes a serialized/runtime name, this class reads that native value instead of maintaining
 a second, drift-prone bot vocabulary. The two Basic Training arrays are the only static tables:
-their exact strings come from OffenseTraining/DefenseTraining and those controllers do not expose
-one stable aggregate name table. Fallbacks are deliberately generic and retain an index/ID.
+their exact strings are copied from the native OffenseTraining.unlockedText and
+DefenseTraining.unlockedText switches. Do not read the mutable Text widgets for milestone names:
+the game temporarily replaces them with Locked/Requires text and their render timing is unrelated
+to the backing level arrays. Fallbacks are deliberately generic and retain an index/ID.
 */
 namespace NGUInjector.Managers
 {
@@ -31,21 +31,6 @@ namespace NGUInjector.Managers
 
         internal static string AttackTraining(Character c, int index)
         {
-            try
-            {
-                if (c != null && c.allOffenseController != null && c.allOffenseController.trains != null)
-                {
-                    foreach (var controller in c.allOffenseController.trains)
-                    {
-                        if (controller == null || controller.id != index || controller.nextAttackName == null)
-                            continue;
-                        var rendered = Clean(controller.nextAttackName.text, string.Empty);
-                        if (rendered.Length > 0 && !rendered.StartsWith("Requires", StringComparison.OrdinalIgnoreCase))
-                            return rendered;
-                    }
-                }
-            }
-            catch { }
             return AttackTraining(index);
         }
 
@@ -57,21 +42,6 @@ namespace NGUInjector.Managers
 
         internal static string DefenseTraining(Character c, int index)
         {
-            try
-            {
-                if (c != null && c.allDefenseController != null && c.allDefenseController.trains != null)
-                {
-                    foreach (var controller in c.allDefenseController.trains)
-                    {
-                        if (controller == null || controller.id != index || controller.nextDefenseName == null)
-                            continue;
-                        var rendered = Clean(controller.nextDefenseName.text, string.Empty);
-                        if (rendered.Length > 0 && !rendered.StartsWith("Requires", StringComparison.OrdinalIgnoreCase))
-                            return rendered;
-                    }
-                }
-            }
-            catch { }
             return DefenseTraining(index);
         }
 
