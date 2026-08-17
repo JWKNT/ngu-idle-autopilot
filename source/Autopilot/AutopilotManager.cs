@@ -844,6 +844,7 @@ namespace NGUInjector.Autopilot
                            .ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"exp\": " + c.realExp + ",\n"
                        + "  \"expDecision\": \"" + EscapeJson(expStatus.Decision) + "\",\n"
+                       + "  \"expTargetName\": \"" + EscapeJson(expStatus.TargetName) + "\",\n"
                        + "  \"expState\": \"" + expStatus.State + "\",\n"
                        + "  \"expTarget\": " + expStatus.Target + ",\n"
                        + "  \"expTargetCost\": " + expStatus.TargetCost + ",\n"
@@ -921,6 +922,7 @@ namespace NGUInjector.Autopilot
         {
             internal string State = "saving";
             internal string Decision = string.Empty;
+            internal string TargetName = string.Empty;
             internal double Target;
             internal double TargetCost;
             internal double Shortfall;
@@ -1011,8 +1013,9 @@ namespace NGUInjector.Autopilot
 
         private ResourceStatus GetExpStatus(Character c)
         {
-            if (c.realExp <= Config.ExpReserve)
-                return new ResourceStatus {Decision = "No spendable EXP above the configured reserve", Target = Config.ExpReserve, EtaSeconds = 0};
+            // Always price the next concrete purchase, even at zero spendable EXP.
+            // Returning only the reserve here made telemetry lose the purchase name
+            // and cost precisely while the player was waiting for the next reward.
             var gate = GetGateExpTarget(c);
             if (gate != null)
                 return ExpTargetStatus(c, gate, "progression gate");
@@ -1024,6 +1027,7 @@ namespace NGUInjector.Autopilot
                     : c.energyPurchases.energySpeed10Cost();
                 return new ResourceStatus
                 {
+                    TargetName = "Energy Speed",
                     Decision = speedCost <= c.realExp - Config.ExpReserve
                         ? "Buying the highest-return unowned Energy-speed step toward the effective 50 cap"
                         : "Saving EXP for the next highest-return Energy-speed step toward 50",
@@ -1037,6 +1041,7 @@ namespace NGUInjector.Autopilot
                 if (permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
                     return new ResourceStatus
                     {
+                        TargetName = permanent.Label,
                         Decision = permanent.Cost <= c.realExp - Config.ExpReserve
                             ? "Buying " + permanent.Label + " on this decision cycle: " + permanent.Reason
                             : "Saving EXP for " + permanent.Label + ": " + permanent.Reason,
@@ -1049,6 +1054,7 @@ namespace NGUInjector.Autopilot
             if (permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
                 return new ResourceStatus
                 {
+                    TargetName = permanent.Label,
                     Decision = permanent.Cost <= c.realExp - Config.ExpReserve
                         ? "Buying " + permanent.Label + " on this decision cycle: " + permanent.Reason
                         : "Saving EXP for " + permanent.Label + ": " + permanent.Reason,
@@ -1062,6 +1068,7 @@ namespace NGUInjector.Autopilot
                 var cost = 3L * magicSpeedSteps;
                 return new ResourceStatus
                 {
+                    TargetName = "Magic Speed breakpoint",
                     Decision = cost <= c.realExp - Config.ExpReserve
                         ? "Buying the next productive Magic Speed breakpoint now: "
                           + c.magicPerSecond().ToString("0.###") + " -> " + magicRateAfter.ToString("0.###") + "/s"
@@ -1076,9 +1083,10 @@ namespace NGUInjector.Autopilot
                 return ExpTargetStatus(c, qol, "fallback QoL");
             var preferred = BestMarginalExpCandidate(c);
             if (preferred == null)
-                return new ResourceStatus {Decision = "Held because no unlocked EXP purchase passed game-state validation", Target = 0, EtaSeconds = -1};
+                return new ResourceStatus {TargetName = "next unlocked EXP purchase", Decision = "Held because no unlocked EXP purchase passed game-state validation", Target = 0, EtaSeconds = -1};
             return new ResourceStatus
             {
+                TargetName = preferred.Label,
                 Decision = preferred.Cost <= c.realExp - Config.ExpReserve
                     ? "Buying " + preferred.Label + " now: " + preferred.Reason
                     : "Saving briefly for " + preferred.Label + ": " + preferred.Reason,
@@ -1092,6 +1100,7 @@ namespace NGUInjector.Autopilot
             var funded = target.Cost <= c.realExp - Config.ExpReserve;
             return new ResourceStatus
             {
+                TargetName = target.Label,
                 Decision = (funded ? "Buying " : "Saving EXP for ") + target.Label
                            + (funded ? " now" : string.Empty) + " [" + category + "]: " + target.Reason,
                 Target = target.Cost + Config.ExpReserve,

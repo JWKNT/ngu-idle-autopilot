@@ -273,7 +273,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let exp = numberDouble(state, "exp")
         let expTarget = numberDouble(state, "expTargetCost")
         let expShortfall = numberDouble(state, "expShortfall")
-        let expTargetName = expPurchaseName(state["expDecision"] as? String ?? "")
+        let explicitExpTargetName = (state["expTargetName"] as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let expTargetName = explicitExpTargetName.isEmpty
+            ? expPurchaseName(state["expDecision"] as? String ?? "")
+            : explicitExpTargetName
         let expText: String
         if expTarget <= 0 {
             expText = "XP target: \(expTargetName)"
