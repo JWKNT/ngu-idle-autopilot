@@ -84,8 +84,13 @@ namespace NGUInjector.Managers
                 var first = c.inventory.itemList.itemDropped.Count <= 172
                             || !c.inventory.itemList.itemDropped[172];
                 var key = OrdinaryTarget(c, 4, 172, "THE ITOPOD",
-                    first ? "obtain the guaranteed first Pissed Off Key" : "recover another Pissed Off Key",
+                    first ? "defeat a Sky boss for the guaranteed first Pissed Off Key" : "recover another Pissed Off Key from a Sky boss",
                     first, !first, first ? 1.0 : Math.Min(1.0, .01 * c.lootFactor()));
+                if (key != null)
+                {
+                    key.BossOnly = true;
+                    key.Reason += "; rerolling normal spawns because the native key branch is boss-only";
+                }
                 if (CanAttempt(c, key)) return Remember(key);
             }
 
@@ -97,8 +102,9 @@ namespace NGUInjector.Managers
                 && !c.settings.wandoos98On && !HasPhysicalItem(c, 66))
             {
                 var wandoos = OrdinaryTarget(c, 4, 66, "Wandoos 98",
-                    "obtain and install Wandoos 98", false, true,
+                    "obtain and install Wandoos 98 from a Sky boss", false, true,
                     Math.Min(1.0, .003 * c.lootFactor()));
+                if (wandoos != null) wandoos.BossOnly = true;
                 if (CanAttempt(c, wandoos)) return Remember(wandoos);
             }
 
