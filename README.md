@@ -60,7 +60,7 @@ The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity a
 
 ## Dashboard
 
-The public dashboard is published at [jehlp.net/ngu-idle-autopilot](https://jehlp.net/ngu-idle-autopilot/). It follows the shared jehlp.net typography, color tokens, theme control, hairline structure, and content-first layout while presenting NGU-specific telemetry.
+The public dashboard is published at [jehlp.net/ngu-idle-dashboard](https://jehlp.net/ngu-idle-dashboard/) from its independent [dashboard repository](https://github.com/JWKNT/ngu-idle-dashboard). This repository retains a local mirror because the loopback bridge must serve the identical client beside the running game. The dashboard follows the shared jehlp.net typography, color tokens, theme control, hairline structure, and content-first layout while presenting NGU-specific telemetry.
 
 `run.command` starts the bridge with the bot. The first viewport reports the calculated rebirth ETA, next modeled boss and ETA, current Adventure route, and the exact named EXP purchase and shortfall. Deeper sections explain allocations, resource holds, combat, equipment, inventory safety, rebirth candidates, Basic Training, and confirmed key events. The API is intentionally read-only and loopback-bound.
 
