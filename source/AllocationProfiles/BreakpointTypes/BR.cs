@@ -71,9 +71,13 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 if (tLeft > 3600)
                     continue;
 
+                // Ritual progress and levels reset. The former comparison used
+                // elapsed-tLeft, which answered whether this level could have
+                // finished since run start rather than whether it can finish before
+                // the chosen checkpoint. Admit only a fully realizable Blood gain.
                 if (RebirthTime > 0 && Main.Settings.AutoRebirth)
                 {
-                    if (Character.rebirthTime.totalseconds - tLeft < 0)
+                    if (Character.rebirthTime.totalseconds + tLeft > RebirthTime)
                         continue;
                 }
 
@@ -110,7 +114,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
                 if (RebirthTime > 0 && Main.Settings.AutoRebirth)
                 {
-                    if (Character.rebirthTime.totalseconds - tLeft < 0)
+                    if (Character.rebirthTime.totalseconds + tLeft > RebirthTime)
                         continue;
                 }
 

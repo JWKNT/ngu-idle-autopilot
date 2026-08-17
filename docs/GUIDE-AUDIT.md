@@ -32,6 +32,12 @@ of truth for formulas, unlocks, costs, and mutation verification.
   it becomes eligible only when its corresponding automation subsystem is disabled.
 - The Money Pit preserves gold for its native cumulative one-time thresholds when
   the next threshold is reachable before rebirth.
+- Gold production now has a shared finite-horizon ledger. Native net GPS projects
+  the no-further-investment balance; exact active Augment charges, 50 Hz Blood
+  ritual completions, and reachable permanent Pit/Digger steps form the committed
+  spend. Time Machine Energy/Magic is admitted only for the modeled shortfall.
+  An unlocked Gold sink or a permanent target already funded by baseline GPS is
+  not, by itself, a reason to build reset-local Time Machine levels.
 - Evil cards are restricted to Adventure/Hack/Wish; Sadistic PP/QP and NGU cards
   require the guide's useful tier breakpoints before consuming Mayo.
 - Wishes whose best-case level time exceeds the game's known single-precision
@@ -72,10 +78,12 @@ treated as a prerequisite. The live priority is:
    Digger/Beard slots, and MacGuffin slots only after their native feature is
    unlocked and their cost is no more than 10% of lifetime EXP. Rank admitted
    purchases by weighted cost and reserve only near the funding boundary.
-4. **Magic generation and Yggdrasil.** Buy the smallest number of 3-EXP Magic
-   Speed atoms that crosses the next native discrete generation-rate breakpoint;
-   require Magic to be unlocked, productive, and below its stage share of Energy.
-   Buy permanent fruit unlocks by activation value per EXP.
+4. **Magic generation and Yggdrasil.** Price the smallest number of 3-EXP Magic
+   Speed atoms that crosses the next native discrete generation-rate breakpoint,
+   then amortize its refill-only benefit over the selected run. It is purchased
+   only when that logarithmic gain per EXP beats the best permanent P/C/B atom;
+   a full Magic cap receives no fictitious steady-state speed benefit. Buy
+   permanent fruit unlocks by activation value per EXP.
 5. **Fallback convenience.** Loot Filter, Auto Merge, Inventory Merge, and Basic
    Training Auto Advance qualify only when their matching bot controller is off.
    Native loadout slots and custom-allocation buttons remain unnecessary because

@@ -776,6 +776,8 @@ namespace NGUInjector.Autopilot
             var expStatus = GetExpStatus(c);
             var apStatus = GetApStatus(c);
             var goldStatus = GetGoldStatus(c);
+            var goldHorizon = ResourceHorizonModel.EvaluateGold(c,
+                Math.Max(0, Plan.RebirthSeconds - (int)Math.Floor(c.rebirthTime.totalseconds)));
             CompleteResourceStatus(expStatus, c.realExp, _expPerSecond);
             CompleteResourceStatus(apStatus, c.arbitrary.curArbitraryPoints, _apPerSecond);
             CompleteResourceStatus(goldStatus, c.realGold, _goldPerSecond);
@@ -1047,7 +1049,7 @@ namespace NGUInjector.Autopilot
                        + "  \"expShortfall\": " + expStatus.Shortfall + ",\n"
                        + "  \"expIncomePerSecond\": " + expStatus.IncomePerSecond.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"expEtaSeconds\": " + expStatus.EtaSeconds + ",\n"
-                       + "  \"expPolicyModel\": \"exact progression gate; Energy speed; admitted permanent systems; discrete Magic speed; Ygg permanents; fallback QoL; stage-weighted P/C/B\",\n"
+                       + "  \"expPolicyModel\": \"exact progression gate; Energy speed; admitted permanent systems; amortized Magic refill versus the best permanent P/C/B marginal; contextual Ygg and non-duplicated QoL\",\n"
                        + "  \"expQolPolicy\": \"" + EscapeJson(expQolPolicy) + "\",\n"
                        + "  \"expDeferredPermanentTarget\": \"" + EscapeJson(deferredExpPermanent == null ? "none admitted" : deferredExpPermanent.Label) + "\",\n"
                        + "  \"expDeferredPermanentCost\": " + (deferredExpPermanent == null ? 0L : deferredExpPermanent.Cost) + ",\n"
@@ -1066,7 +1068,10 @@ namespace NGUInjector.Autopilot
                        + "  \"goldTargetCost\": " + goldStatus.TargetCost.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"goldShortfall\": " + goldStatus.Shortfall.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"goldIncomePerSecond\": " + goldStatus.IncomePerSecond.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
-                       + "  \"goldEtaSeconds\": " + goldStatus.EtaSeconds + "\n"
+                       + "  \"goldEtaSeconds\": " + goldStatus.EtaSeconds + ",\n"
+                       + "  \"goldProjectedBaselineAtRebirth\": " + goldHorizon.BaselineAtRebirth.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"goldCommittedBeforeRebirth\": " + goldHorizon.CommittedSpend.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"goldHorizonShortfall\": " + goldHorizon.Shortfall.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "\n"
                        + ",  \"augmentDecision\": \"" + EscapeJson(augmentStatus.Decision) + "\",\n"
                        + "  \"augmentEnergy\": " + augmentStatus.Allocated + ",\n"
                        + "  \"augmentProgress\": " + augmentStatus.Progress.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
@@ -1259,17 +1264,18 @@ namespace NGUInjector.Autopilot
                 };
             int magicSpeedSteps;
             double magicRateAfter;
-            if (TryGetMagicSpeedBreakpoint(c, out magicSpeedSteps, out magicRateAfter))
+            string magicRoiReason;
+            if (MagicSpeedOutranksMarginalGrowth(c, out magicSpeedSteps, out magicRateAfter,
+                    out magicRoiReason))
             {
                 var cost = 3L * magicSpeedSteps;
                 return new ResourceStatus
                 {
-                    TargetName = "Magic Speed breakpoint",
+                    TargetName = "Magic Speed " + c.magic.magicBarSpeed.ToString("0.0")
+                                 + " -> " + (c.magic.magicBarSpeed + .1f * magicSpeedSteps).ToString("0.0"),
                     Decision = cost <= c.realExp - Config.ExpReserve
-                        ? "Buying the next productive Magic Speed breakpoint now: "
-                          + c.magicPerSecond().ToString("0.###") + " -> " + magicRateAfter.ToString("0.###") + "/s"
-                        : "Saving briefly for the next productive Magic Speed breakpoint: "
-                          + c.magicPerSecond().ToString("0.###") + " -> " + magicRateAfter.ToString("0.###") + "/s",
+                        ? "Buying the cross-resource ROI winner now: " + magicRoiReason
+                        : "Saving briefly for the cross-resource ROI winner: " + magicRoiReason,
                     Target = cost + Config.ExpReserve,
                     EtaSeconds = ResourceEta(c.realExp, cost + Config.ExpReserve, _expPerSecond)
                 };
@@ -1382,18 +1388,29 @@ namespace NGUInjector.Autopilot
             if (permanentTierReachable)
                 pitReserve = Math.Max(pitReserve, permanentPitTarget);
             var reserve = pitReady ? Math.Max(pitReserve, augmentReserve) : augmentReserve;
+            var horizon = ResourceHorizonModel.EvaluateGold(c, (int)Math.Ceiling(remaining));
+            if (!pitReady)
+            {
+                return new ResourceStatus
+                {
+                    State = horizon.TimeMachineUseful ? "working-capital"
+                        : horizon.CommittedSpend > 0 ? "funded-horizon" : "no-profitable-sink",
+                    Decision = horizon.Decision + "; projected baseline "
+                               + horizon.BaselineAtRebirth.ToString("0") + " Gold versus "
+                               + horizon.CommittedSpend.ToString("0") + " committed",
+                    TargetName = horizon.TargetName,
+                    Target = augmentReserve,
+                    EtaSeconds = ResourceEta(c.realGold, augmentReserve, _goldPerSecond)
+                };
+            }
             return new ResourceStatus
             {
-                Decision = pitReady
-                    ? (c.realGold < reserve
-                        ? permanentTierReachable && c.realGold < permanentPitTarget
-                            ? "Saving gold for " + permanentPitLabel
-                              + "; a smaller toss would delay this permanent cumulative Pit breakpoint"
-                            : "Saving gold for the ready Money Pit toss while protecting the next Augment charge"
-                        : "Money Pit is ready and funded; toss will execute on the next 0.2-second control tick")
-                    : (augmentReserve > 0
-                        ? "Money Pit is cooling down; reserving only the next active Augment charge and releasing surplus to Time Machine/diggers"
-                        : "Money Pit is cooling down; gold is available only to Time Machine/Blood actions that complete before rebirth or permanent Digger upgrades"),
+                Decision = c.realGold < reserve
+                    ? permanentTierReachable && c.realGold < permanentPitTarget
+                        ? "Saving gold for " + permanentPitLabel
+                          + "; a smaller toss would delay this permanent cumulative Pit breakpoint"
+                        : "Saving gold for the ready Money Pit toss while protecting the next Augment charge"
+                    : "Money Pit is ready and funded; toss will execute on the next 0.2-second control tick",
                 Target = reserve,
                 EtaSeconds = ResourceEta(c.realGold, reserve, _goldPerSecond)
             };
@@ -2231,7 +2248,8 @@ namespace NGUInjector.Autopilot
             var c = Main.Character;
             int steps;
             double projectedRate;
-            if (!TryGetMagicSpeedBreakpoint(c, out steps, out projectedRate))
+            string roiReason;
+            if (!MagicSpeedOutranksMarginalGrowth(c, out steps, out projectedRate, out roiReason))
                 return false;
             var cost = 3L * steps;
             if (cost > c.realExp - Config.ExpReserve)
@@ -2252,10 +2270,66 @@ namespace NGUInjector.Autopilot
                 ? "Bought " + steps + " Magic Speed atoms for " + spent + " EXP: base speed "
                   + speedBefore.ToString("0.0") + " -> " + c.magic.magicBarSpeed.ToString("0.0")
                   + ", generation " + rateBefore.ToString("0.###") + " -> "
-                  + c.magicPerSecond().ToString("0.###") + "/s [confirmed discrete rate breakpoint]"
+                  + c.magicPerSecond().ToString("0.###") + "/s [confirmed discrete rate breakpoint; "
+                  + roiReason + "]"
                 : "Magic Speed breakpoint purchase failed validation: spent=" + spent
                   + ", rate " + rateBefore.ToString("0.###") + " -> " + c.magicPerSecond().ToString("0.###"));
             return confirmed;
+        }
+
+        /*
+        CROSS-RESOURCE EXP COMPARISON
+
+        Magic Speed changes refill time; it does not increase progress after the Magic cap is full.
+        Therefore its multi-run value is the discrete refill-rate gain multiplied by the fraction
+        of a representative run spent filling Magic and by the share of progression currently
+        supplied by persistent Magic systems. Compare that amortized logarithmic gain per EXP with
+        the next balanced permanent P/C/B atom. This prevents an attractive-looking rate breakpoint
+        from preempting an Energy cap/power gain that works for the entire current and future runs.
+        */
+        private static bool MagicSpeedOutranksMarginalGrowth(Character c, out int steps,
+            out double projectedRate, out string reason)
+        {
+            reason = string.Empty;
+            if (!TryGetMagicSpeedBreakpoint(c, out steps, out projectedRate))
+                return false;
+            var currentRate = Math.Max(1e-9, c.magicPerSecond());
+            var horizon = 3600.0;
+            if (Main.Autopilot != null && Main.Autopilot.Plan != null
+                && Main.Autopilot.Plan.RebirthSeconds > 0)
+                horizon = Math.Max(60.0, Main.Autopilot.Plan.RebirthSeconds);
+            var persistentMagicWeight = c.settings.rebirthDifficulty != difficulty.normal ? .50
+                : c.settings.nguOn || c.settings.beardsOn ? 1.0 / 3.0
+                : c.settings.yggdrasilOn ? .20
+                : .10;
+            var currentIntegral = IntegratedRefill(c.magic.curMagic, currentRate, horizon);
+            var projectedIntegral = IntegratedRefill(c.magic.curMagic, projectedRate, horizon);
+            var integratedGain = currentIntegral <= 0 ? 0.0
+                : Math.Max(0.0, projectedIntegral / currentIntegral - 1.0);
+            var magicScore = Math.Log(1.0 + integratedGain) * persistentMagicWeight
+                             / Math.Max(1L, 3L * steps);
+
+            var competing = BestMarginalExpCandidate(c);
+            var competingScore = competing == null ? 0.0
+                : Math.Log(1.0 + competing.NormalizedStep
+                           / Math.Max(1e-9, competing.NormalizedLevel))
+                  / Math.Max(1L, competing.Cost);
+            reason = "Magic generation " + currentRate.ToString("0.###") + " -> "
+                     + projectedRate.ToString("0.###") + "/s, integrated run throughput +"
+                     + (integratedGain * 100.0).ToString("0.###") + "%, amortized ROI "
+                     + magicScore.ToString("0.000000") + "/EXP versus "
+                     + (competing == null ? "no P/C/B candidate" : competing.Label + " at "
+                        + competingScore.ToString("0.000000") + "/EXP");
+            return magicScore > competingScore;
+        }
+
+        private static double IntegratedRefill(double cap, double rate, double horizon)
+        {
+            if (cap <= 0 || rate <= 0 || horizon <= 0) return 0;
+            var fillTime = cap / rate;
+            if (horizon <= fillTime)
+                return .5 * rate * horizon * horizon;
+            return cap * horizon - .5 * cap * fillTime;
         }
 
         private static bool TryGetMagicSpeedBreakpoint(Character c, out int steps, out double projectedRate)

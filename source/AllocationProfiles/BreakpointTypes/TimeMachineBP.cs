@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using NGUInjector.Autopilot;
 
 /*
 FILE PURPOSE
@@ -16,6 +17,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
     {
         internal static string LastHorizonDecision { get; private set; }
             = "Time Machine reset-horizon value has not been evaluated yet";
+        internal static double LastBaselineGold { get; private set; }
+        internal static double LastCommittedGold { get; private set; }
+        internal static double LastGoldShortfall { get; private set; }
 
         protected override bool Unlocked()
         {
@@ -48,52 +52,12 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 return false;
             }
 
-            // An allocated Augment/Upgrade can charge again on a later completion;
-            // preserving its working capital is a concrete pre-reset use of gold.
-            if (Character.augments != null && Character.augments.augs != null
-                && Character.augments.augs.Any(x => x.augEnergy > 0 || x.upgradeEnergy > 0))
-            {
-                LastHorizonDecision = "Allowed: active Augment/Upgrade work can consume gold before the selected rebirth";
-                return true;
-            }
-
-            if (Character.settings.pitUnlocked && Character.pitController != null)
-            {
-                var pitWait = Character.pitController.currentPitTime() - Character.pit.pitTime.totalseconds;
-                if (pitWait <= remaining)
-                {
-                    LastHorizonDecision = "Allowed: Money Pit becomes available before rebirth, converting reset-local gold into persistent rewards";
-                    return true;
-                }
-            }
-
-            if (Character.buttons.bloodMagic.interactable && Character.bloodMagicController != null
-                && Character.bloodMagicController.ritualsUnlocked() > 0)
-            {
-                LastHorizonDecision = "Allowed: unlocked Blood Magic rituals convert gold into blood/spells before rebirth";
-                return true;
-            }
-
-            if (Character.allDiggers != null && Character.diggers != null
-                && Character.diggers.diggers != null)
-            {
-                var projectedBaselineGold = Character.realGold
-                                            + Math.Max(0.0, Character.grossGoldPerSecond()) * remaining;
-                for (var i = 0; i < Character.diggers.diggers.Count; i++)
-                {
-                    if (Character.diggers.diggers[i].maxLevel >= Character.allDiggers.hardCapLevel(i))
-                        continue;
-                    var cost = Character.allDiggers.upgradeCost(i);
-                    if (cost > 0 && cost <= projectedBaselineGold)
-                    {
-                        LastHorizonDecision = "Allowed: projected pre-reset gold reaches a permanent Digger max-level upgrade";
-                        return true;
-                    }
-                }
-            }
-
-            LastHorizonDecision = "Blocked: no Augment charge, Money Pit toss, or reachable permanent Digger upgrade exists before rebirth; Time Machine levels and unspent gold would reset";
-            return false;
+            var evaluation = ResourceHorizonModel.EvaluateGold(Character, remaining);
+            LastBaselineGold = evaluation.BaselineAtRebirth;
+            LastCommittedGold = evaluation.CommittedSpend;
+            LastGoldShortfall = evaluation.Shortfall;
+            LastHorizonDecision = evaluation.Decision;
+            return evaluation.TimeMachineUseful;
         }
 
         internal override bool Allocate()
