@@ -496,18 +496,17 @@ namespace NGUInjector.Managers
                     }
 
                     // Waiting for every cooldown after every trash kill destroys
-                    // Adventure uptime.  Only a high-risk fast/manual target (Titans)
-                    // waits for a complete pre-cast package. Routine push combat casts
-                    // whatever is ready and immediately resumes fighting.
+                    // Adventure uptime. A high-risk target may wait only for the two
+                    // effects the native game actually allows us to pre-cast here.
+                    // An already-active Charge/Parry satisfies the gate even though
+                    // its button remains on cooldown; combat-only buffs are cast by
+                    // DoCombat after an enemy exists and must never pin Safe Zone.
                     if (highRiskPrecast)
                     {
                         RecoveryReason = "Waiting for the high-risk target's pre-cast package";
                         _recoveryTargetHP = _character.totalAdvHP() * .95f;
-                        if (ChargeUnlocked() && !ChargeReady()) return;
-                        if (ParryUnlocked() && !ParryReady()) return;
-                        if (MegaBuffUnlocked() && !MegaBuffReady()) return;
-                        if (UltimateBuffUnlocked() && !UltimateBuffReady()) return;
-                        if (DefensiveBuffUnlocked() && !DefensiveBuffReady()) return;
+                        if (ChargeUnlocked() && !ChargeActive() && !ChargeReady()) return;
+                        if (ParryUnlocked() && !ParryActive() && !ParryReady()) return;
                         if (_character.adventure.curHP < _recoveryTargetHP)
                         {
                             RecoveryReason = "Recovering to 95% HP for the high-risk Titan window";
