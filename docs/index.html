@@ -3,7 +3,7 @@ FILE PURPOSE
 
 This is the public and locally served NGU Idle dashboard shell. It renders only telemetry supplied
 by assets/app.js, uses the shared JWKNT theme before its local dashboard stylesheet, and never
-mutates the game. The public copy fetches a live read-only snapshot through Tailscale Funnel; the
+mutates the game. The public copy fetches a live read-only snapshot through a supervised tunnel; the
 same static files are served by monitor/dashboard_server.py so public and local views stay aligned.
 -->
 <!doctype html>
@@ -22,7 +22,7 @@ same static files are served by monitor/dashboard_server.py so public and local 
     <script src="https://jehlp.net/site-theme/v1/theme.js"></script>
     <link rel="stylesheet" href="https://jehlp.net/site-theme/v1/base.css">
     <link rel="stylesheet" href="assets/styles.css?v=20260817.1">
-    <script src="assets/app.js?v=20260817.3" defer></script>
+    <script src="assets/app.js?v=20260817.4" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#dashboard">Skip to dashboard</a>

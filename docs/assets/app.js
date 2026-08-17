@@ -1,19 +1,20 @@
 /*
 FILE PURPOSE
 
-This dependency-free client polls the read-only dashboard bridge, validates its telemetry envelope,
-and renders confirmed NGU state into the static dashboard. The public deployment reads the laptop
-through its fixed HTTPS Funnel endpoint; local and private-host copies use their own origin. It does
-not send commands, persist game data, use analytics, or expose any mutation endpoint.
+This dependency-free client discovers and polls the laptop's current read-only public tunnel,
+validates its telemetry envelope, and renders confirmed NGU state into the static dashboard. Local
+and private-host copies use their own origin. The discovery record contains only the tunnel URL;
+this client sends no commands, persists no game data, and exposes no mutation endpoint.
 */
 (() => {
   "use strict";
 
   const publicDashboardHosts = new Set(["jehlp.net", "www.jehlp.net", "jwknt.github.io"]);
   const publicFeed = publicDashboardHosts.has(window.location.hostname);
-  const endpoint = publicFeed
-    ? "https://ngu-idle-laptop.tailae7349.ts.net/api/state"
-    : "/api/state";
+  const endpointDiscoveryUrl = "https://api.github.com/gists/574be4aaf834537b70c62e4505f5ea31";
+  const endpointDiscoveryFile = "ngu-dashboard-endpoint.json";
+  let endpoint = publicFeed ? "" : "/api/state";
+  let nextEndpointDiscovery = 0;
   const pollMs = 1000;
   let lastSequence = -1;
 
@@ -68,6 +69,26 @@ not send commands, persist game data, use analytics, or expose any mutation endp
     const result = text(value, "");
     if (!result) return "—";
     return /[.!?]$/.test(result) ? result : `${result}.`;
+  }
+
+  async function discoverEndpoint() {
+    if (!publicFeed) return endpoint;
+    if (endpoint) return endpoint;
+    if (Date.now() < nextEndpointDiscovery) return "";
+    nextEndpointDiscovery = Date.now() + 30000;
+    const response = await fetch(endpointDiscoveryUrl, {
+      cache: "no-store",
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!response.ok) throw new Error(`endpoint discovery returned ${response.status}`);
+    const gist = await response.json();
+    const content = gist?.files?.[endpointDiscoveryFile]?.content;
+    const apiBase = JSON.parse(content || "{}").apiBase || "";
+    if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(apiBase)) {
+      throw new Error("endpoint discovery returned an invalid tunnel URL");
+    }
+    endpoint = `${apiBase}/api/state`;
+    return endpoint;
   }
 
   function setConnection(state, detail) {
@@ -261,10 +282,13 @@ not send commands, persist game data, use analytics, or expose any mutation endp
 
   async function poll() {
     try {
-      const response = await fetch(endpoint, { cache: "no-store", headers: { Accept: "application/json" } });
+      const requestEndpoint = await discoverEndpoint();
+      if (!requestEndpoint) throw new Error("waiting for endpoint discovery retry");
+      const response = await fetch(requestEndpoint, { cache: "no-store", headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error(`telemetry feed returned ${response.status}`);
       renderEnvelope(await response.json());
     } catch (error) {
+      if (publicFeed && Date.now() >= nextEndpointDiscovery) endpoint = "";
       setConnection("offline", publicFeed
         ? "The laptop feed is unavailable. The laptop, game, and dashboard bridge must be running and awake."
         : "The bot dashboard bridge is not responding. Start the automation client.");

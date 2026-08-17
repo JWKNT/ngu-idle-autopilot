@@ -41,7 +41,7 @@ These are intentionally separate concepts:
 - **NGUInjector** is the inherited project substrate. Its allocation/profile framework, settings UI, and manager conventions were used as a base and have been substantially extended.
 - **SharpMonoInjector** is only the transport used by `run.command` and `stop.command` to load or unload the bot DLL in the running Mono process. It does not decide how to play NGU Idle and is not linked into the bot's strategy.
 - **The monitor** is a separate read-only Swift app. It consumes `runtime/decision.json` and `runtime/logs/actions.log`; closing it does not stop automation.
-- **The dashboard** is the same static client on GitHub Pages and at `http://127.0.0.1:47635/`. A loopback Python bridge reads those telemetry files and exposes no control methods. The public page contains no save or history; it fetches the current read-only snapshot through a Tailscale Funnel hosted by the laptop, while the loopback page remains the local fallback.
+- **The dashboard** is the same static client on GitHub Pages and at `http://127.0.0.1:47635/`. A loopback Python bridge reads those telemetry files and exposes no control methods. The public page contains no save or history; it discovers a supervised Cloudflare Quick Tunnel that exposes the current read-only snapshot, while the loopback page remains the local fallback.
 
 The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity assemblies. `build.command` copies those locally as compile-time references from an installed game.
 
@@ -62,7 +62,7 @@ The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity a
 
 The public dashboard is published at [jehlp.net/ngu-idle-dashboard](https://jehlp.net/ngu-idle-dashboard/) from its independent [dashboard repository](https://github.com/JWKNT/ngu-idle-dashboard). This repository retains a local mirror because the loopback bridge must serve the identical client beside the running game. The dashboard follows the shared jehlp.net typography, color tokens, theme control, hairline structure, and content-first layout while presenting NGU-specific telemetry.
 
-`run.command` starts the bridge with the bot. The first viewport reports the calculated rebirth ETA, next modeled boss and ETA, current Adventure route, and the exact named EXP purchase and shortfall. Deeper sections explain allocations, resource holds, combat, equipment, inventory safety, rebirth candidates, Basic Training, and confirmed key events. The API is intentionally read-only; the bridge remains loopback-bound and Tailscale Funnel supplies the public HTTPS transport.
+`run.command` starts the bridge with the bot. The first viewport reports the calculated rebirth ETA, next modeled boss and ETA, current Adventure route, and the exact named EXP purchase and shortfall. Deeper sections explain allocations, resource holds, combat, equipment, inventory safety, rebirth candidates, Basic Training, and confirmed key events. The API is intentionally read-only; the bridge remains loopback-bound and `monitor/run_dashboard_public_tunnel.command` supplies the restart-safe public HTTPS transport.
 
 ## Build
 
