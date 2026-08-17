@@ -200,7 +200,7 @@ namespace NGUInjector.Autopilot
                 if (!BuyAtomicExpUpgrade() && !BuyEarlyAdventureStatAtom()
                     && !BuyStrategicPermanentExpUpgrade() && !BuyDaycareUnlock()
                     && !BuyBestYggPermanent())
-                    BuyBestExpPackage();
+                    BuyBestMarginalExpUpgrade();
             }
             if (CanExecuteIrreversible && Config.AllowApSpending)
                 SpendBestApUpgrade();
@@ -803,6 +803,9 @@ namespace NGUInjector.Autopilot
                        + "  \"energyCurrent\": " + c.curEnergy + ",\n"
                        + "  \"energyIdle\": " + c.idleEnergy + ",\n"
                        + "  \"energyAllocated\": " + Math.Max(0L, c.curEnergy - c.idleEnergy) + ",\n"
+                       + "  \"energyBasePower\": " + c.energyPower.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"energyBaseCap\": " + c.capEnergy + ",\n"
+                       + "  \"energyBaseBars\": " + c.energyBars + ",\n"
                        + "  \"energyIncomePerSecond\": " + energyIncome.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"energySweepBound\": " + energySweepBound + ",\n"
                        + "  \"energyIdleReason\": \"" + energyIdleReason + "\",\n"
@@ -1016,7 +1019,7 @@ namespace NGUInjector.Autopilot
             if (c.highestBoss < 17)
             {
                 var earlyAtom = EarlyAdventureAtomIndex(c);
-                if (earlyAtom < 0 && permanent != null)
+                if (earlyAtom < 0 && permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
                     return new ResourceStatus
                     {
                         Decision = permanent.Cost <= c.realExp - Config.ExpReserve
@@ -1025,21 +1028,20 @@ namespace NGUInjector.Autopilot
                         Target = permanent.Cost + Config.ExpReserve,
                         EtaSeconds = ResourceEta(c.realExp, permanent.Cost + Config.ExpReserve, _expPerSecond)
                     };
-                return new ResourceStatus
-                {
-                    State = earlyAtom < 0 ? "saving" : string.Empty,
-                    Decision = earlyAtom < 0
-                        ? "Saving EXP for permanent Energy packages at Boss 17; an Adventure-stat atom does not immediately open a new zone"
-                        : c.realExp - Config.ExpReserve >= 3
+                if (earlyAtom >= 0)
+                    return new ResourceStatus
+                    {
+                        Decision = c.realExp - Config.ExpReserve >= 3
                             ? "Buying one Adventure " + (earlyAtom == 0 ? "Power" : "Toughness")
                               + " atom because it immediately crosses the next-zone threshold"
                             : "Saving for the exact 3-EXP Adventure atom that immediately opens the next zone",
-                    Target = earlyAtom < 0 ? 0 : 3 + Config.ExpReserve,
-                    EtaSeconds = earlyAtom < 0 ? -1
-                        : ResourceEta(c.realExp, 3 + Config.ExpReserve, _expPerSecond)
-                };
+                        Target = 3 + Config.ExpReserve,
+                        EtaSeconds = ResourceEta(c.realExp, 3 + Config.ExpReserve, _expPerSecond)
+                    };
+                // Fixed Energy Power/Bar atoms remain legal before the Boss 17
+                // custom-input unlock, so fall through to the marginal selector.
             }
-            if (permanent != null)
+            if (permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
                 return new ResourceStatus
                 {
                     Decision = permanent.Cost <= c.realExp - Config.ExpReserve
@@ -1048,25 +1050,22 @@ namespace NGUInjector.Autopilot
                     Target = permanent.Cost + Config.ExpReserve,
                     EtaSeconds = ResourceEta(c.realExp, permanent.Cost + Config.ExpReserve, _expPerSecond)
                 };
-            if (!c.purchases.hasDaycare && 250 <= Math.Max(1.0, c.stats.totalExp) * .10)
+            if (!c.purchases.hasDaycare && c.realExp - Config.ExpReserve >= 250
+                                           && 250 <= Math.Max(1.0, c.stats.totalExp) * .10)
                 return new ResourceStatus
                 {
-                    Decision = c.realExp >= 250 ? "Buying Item Daycare on this decision cycle" : "Saving EXP for Item Daycare",
+                    Decision = "Buying Item Daycare on this decision cycle because the admitted one-time unlock is already funded",
                     Target = 250,
                     EtaSeconds = ResourceEta(c.realExp, 250, _expPerSecond)
                 };
-            if (c.highestBoss < 17)
-                return new ResourceStatus {Decision = "Held for the Boss 17 custom power/cap/bars unlock", Target = 0, EtaSeconds = -1};
-
-            var candidates = BuildExpCandidates(c);
-            var preferred = candidates.OrderBy(x => x.Score).FirstOrDefault();
+            var preferred = BestMarginalExpCandidate(c);
             if (preferred == null)
                 return new ResourceStatus {Decision = "Held because no unlocked EXP purchase passed game-state validation", Target = 0, EtaSeconds = -1};
             return new ResourceStatus
             {
                 Decision = preferred.Cost <= c.realExp - Config.ExpReserve
-                    ? "Buying the marginally best " + preferred.Name + " power/cap/bars package"
-                    : "Saving EXP for the marginally best " + preferred.Name + " power/cap/bars package",
+                    ? "Buying " + preferred.Label + " now: " + preferred.Reason
+                    : "Saving briefly for " + preferred.Label + ": " + preferred.Reason,
                 Target = preferred.Cost + Config.ExpReserve,
                 EtaSeconds = ResourceEta(c.realExp, preferred.Cost + Config.ExpReserve, _expPerSecond)
             };
@@ -1604,54 +1603,154 @@ namespace NGUInjector.Autopilot
             return levelsPerSecond <= 0 ? -1 : (int)Math.Ceiling(remainingLevels / levelsPerSecond);
         }
 
-        private void BuyBestExpPackage()
+        private void BuyBestMarginalExpUpgrade()
         {
             var c = Main.Character;
-            if (c.highestBoss < 17 || c.realExp <= Config.ExpReserve)
+            if (c.realExp <= Config.ExpReserve)
                 return;
 
-            var candidates = BuildExpCandidates(c);
-            // Select before testing affordability.  Buying a locally affordable
-            // runner-up can delay the higher-return permanent package and increase
-            // total progression time; in that case saving is the actual action.
-            var best = candidates.Where(x => x.Cost > 0).OrderBy(x => x.Score).FirstOrDefault();
+            var best = BestMarginalExpCandidate(c);
             if (best == null || best.Cost > c.realExp - Config.ExpReserve)
                 return;
 
-            SetPurchaseRatio(best.Controller, best.Power, best.Cap, best.Bars);
-            var method = best.Controller.GetType().GetMethod("buyCustomAll", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var oldPower = GetInputText(best.Controller, "powerInput");
+            var oldCap = GetInputText(best.Controller, "capInput");
+            var oldBars = GetInputText(best.Controller, "barInput");
+            if (best.UsesCustomInput)
+                SetPurchaseRatio(best.Controller, best.Power, best.Cap, best.Bars);
+            var method = best.Controller.GetType().GetMethod(best.Method,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (method == null)
                 return;
             var expBefore = c.realExp;
-            method.Invoke(best.Controller, null);
+            var statBefore = best.ReadValue();
+            try
+            {
+                method.Invoke(best.Controller, null);
+            }
+            finally
+            {
+                if (best.UsesCustomInput)
+                {
+                    SetInputText(best.Controller, "powerInput", oldPower);
+                    SetInputText(best.Controller, "capInput", oldCap);
+                    SetInputText(best.Controller, "barInput", oldBars);
+                    InvokePurchaseInputUpdate(best.Controller, "updateCustomPowerInput");
+                    InvokePurchaseInputUpdate(best.Controller, "updateCustomCapInput");
+                    InvokePurchaseInputUpdate(best.Controller, "updateCustomBarInput");
+                }
+            }
             var spent = expBefore - c.realExp;
-            Main.LogAction(spent > 0 ? "PURCHASE" : "REJECTED",
-                spent > 0
-                    ? "Bought " + best.Name + " EXP package (" + best.Power + "/" + best.Cap + "/" + best.Bars
-                      + ") for " + spent + " EXP [confirmed by EXP delta]"
-                    : "EXP purchase for " + best.Name + " produced no EXP delta");
+            var statAfter = best.ReadValue();
+            var confirmed = spent == best.Cost && statAfter > statBefore;
+            Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
+                confirmed
+                    ? "Bought " + best.Label + " for " + spent
+                      + " EXP [confirmed by exact EXP and permanent-stat deltas]; " + best.Reason
+                    : best.Label + " purchase failed validation: spent=" + spent
+                      + ", stat " + statBefore.ToString("0.###") + " -> " + statAfter.ToString("0.###"));
         }
 
-        private static List<PurchaseCandidate> BuildExpCandidates(Character c)
+        private static MarginalExpCandidate BestMarginalExpCandidate(Character c)
         {
-            var candidates = new List<PurchaseCandidate>();
-            var currentDifficulty = c.settings.rebirthDifficulty;
-            var energyWeight = currentDifficulty == difficulty.normal ? 3.0 : 2.0;
-            var magicWeight = 1.0;
-            var r3Weight = currentDifficulty == difficulty.normal ? 0.0 : currentDifficulty == difficulty.evil ? 1.5 : 2.0;
-            var packagePower = currentDifficulty == difficulty.normal ? 5 : 4;
-            var packageCap = currentDifficulty == difficulty.normal ? 160000 : 150000;
-            var packageBars = currentDifficulty == difficulty.normal ? 4 : 1;
+            if (c == null || c.energyPurchases == null)
+                return null;
 
-            AddCandidate(candidates, c.energyPurchases, "Energy", c.energyPower / energyWeight,
-                packagePower, packageCap, packageBars);
-            if (c.highestBoss >= 37)
-                AddCandidate(candidates, c.magicPurchases, "Magic", c.magic.magicPower / magicWeight,
-                    packagePower, packageCap, packageBars);
-            if (c.res3.res3On && r3Weight > 0)
-                AddCandidate(candidates, c.res3Purchases, "Resource 3", c.res3.res3Power / r3Weight,
-                    packagePower, packageCap, packageBars);
-            return candidates;
+            /*
+             * EXP RESOURCE POLICY
+             *
+             * Native customAllCost is exactly powerCost + capCost + barCost; there
+             * is no bundle discount.  Consequently a partially funded ratio bundle
+             * is weakly dominated by buying its useful atoms as soon as they are
+             * affordable.  We keep P/C/B near the stage-appropriate long-horizon
+             * ratio, but execute only the currently lagging dimension.  This gives
+             * the player its permanent benefit immediately and re-evaluates after
+             * every purchase instead of waiting for an arbitrary round package.
+             */
+            var earlyNormal = c.settings.rebirthDifficulty == difficulty.normal && c.highestBoss < 58;
+            var ratioPower = earlyNormal ? 1.0 : c.settings.rebirthDifficulty == difficulty.normal ? 5.0 : 4.0;
+            var ratioCap = earlyNormal ? 37500.0 : c.settings.rebirthDifficulty == difficulty.normal ? 160000.0 : 150000.0;
+            var ratioBars = earlyNormal ? 1.0 : c.settings.rebirthDifficulty == difficulty.normal ? 4.0 : 1.0;
+
+            // Early Normal is overwhelmingly Energy constrained.  Magic becomes a
+            // candidate only after the first-Titan progression region; R3 only when
+            // the game has actually enabled it.  Later resource shares retain the
+            // existing 3:1-ish Energy preference through their normalized power.
+            object controller = c.energyPurchases;
+            var resource = "Energy";
+            var basePower = (double)c.energyPower;
+            var baseCap = (double)c.capEnergy;
+            var baseBars = (double)c.energyBars;
+            Func<double> readPower = () => c.energyPower;
+            Func<double> readCap = () => c.capEnergy;
+            Func<double> readBars = () => c.energyBars;
+            var costScale = 1L;
+            if (!earlyNormal && c.highestBoss >= 37 && c.magicPurchases != null
+                && c.magic.magicPower < c.energyPower / 3.0f)
+            {
+                controller = c.magicPurchases;
+                resource = "Magic";
+                basePower = c.magic.magicPower;
+                baseCap = c.magic.capMagic;
+                baseBars = c.magic.magicPerBar;
+                readPower = () => c.magic.magicPower;
+                readCap = () => c.magic.capMagic;
+                readBars = () => c.magic.magicPerBar;
+                costScale = 3L;
+            }
+            if (c.res3.res3On && c.settings.rebirthDifficulty != difficulty.normal
+                && c.res3Purchases != null && c.res3.res3Power < basePower / 2.0)
+            {
+                controller = c.res3Purchases;
+                resource = "Resource 3";
+                basePower = c.res3.res3Power;
+                baseCap = c.res3.capRes3;
+                baseBars = c.res3.res3PerBar;
+                readPower = () => c.res3.res3Power;
+                readCap = () => c.res3.capRes3;
+                readBars = () => c.res3.res3PerBar;
+                costScale = 100000L;
+            }
+
+            var candidates = new List<MarginalExpCandidate>();
+            if (resource == "Energy")
+            {
+                candidates.Add(new MarginalExpCandidate(controller, resource + " Power +0.1",
+                    "buyEnergyPower01", 15, readPower, basePower / ratioPower,
+                    "Power is the lagging balanced-growth dimension and accelerates every power-sensitive Energy system",
+                    false, 0, 0, 0, .1 / ratioPower));
+            }
+            else
+            {
+                candidates.Add(new MarginalExpCandidate(controller, resource + " Power +1",
+                    "buyCustomPower", 150L * costScale, readPower, basePower / ratioPower,
+                    "Power is the lagging balanced-growth dimension and accelerates this resource's power-sensitive systems",
+                    true, 1, 0, 0, 1.0 / ratioPower));
+            }
+
+            // Custom cap is unlocked at Boss 17 and costs exactly one Energy EXP
+            // per 250 cap (scaled for Magic/R3).  Before then, fixed buttons—not a
+            // reflected private custom purchase—must remain authoritative.
+            if (c.highestBoss >= 17 && baseCap >= 100000)
+                candidates.Add(new MarginalExpCandidate(controller, resource + " Cap +250",
+                    "buyCustomCap", costScale, readCap, baseCap / ratioCap,
+                    c.idleEnergy <= 0
+                        ? "all generated Energy is productive, so permanent allocation headroom is the current cap bottleneck"
+                        : "cap is the lagging long-horizon P/C/B dimension",
+                    true, 0, 250, 0, 250.0 / ratioCap));
+            var barMethod = resource == "Energy" ? "buyEnergyBar1" : "buyCustomBar";
+            var barUsesCustomInput = resource != "Energy";
+            candidates.Add(new MarginalExpCandidate(controller, resource + " Bar +1",
+                barMethod, 80L * costScale, readBars, baseBars / ratioBars,
+                "bars are the lagging P/C/B dimension and permanently shorten resource refill time in this and future rebirths",
+                barUsesCustomInput, 0, 0, 1, 1.0 / ratioBars));
+
+            // First lift the smallest normalized P/C/B dimension.  At exact ties,
+            // prefer the atom that advances one normalized ratio unit most cheaply.
+            return candidates.Where(x => x.Cost > 0)
+                .OrderBy(x => x.NormalizedLevel)
+                .ThenBy(x => x.Cost / Math.Max(1e-12, x.NormalizedStep))
+                .FirstOrDefault();
         }
 
         private static void OpenExpBoxes()
@@ -1821,10 +1920,8 @@ namespace NGUInjector.Autopilot
             var target = GetStrategicPermanentExpTarget(c);
             if (target == null)
                 return false;
-            // Returning true while saving is deliberate: buying a smaller resource
-            // package would push the permanent unlock farther away.
             if (target.Cost > c.realExp - Config.ExpReserve)
-                return true;
+                return ShouldReserveForPermanentExpTarget(c, target);
             var expBefore = c.realExp;
             var stateBefore = target.State();
             var method = target.Controller.GetType().GetMethod(target.Method,
@@ -1841,6 +1938,36 @@ namespace NGUInjector.Autopilot
                   + " EXP [confirmed by EXP and ownership/stat deltas]"
                 : target.Label + " purchase produced no verified ownership/stat transition");
             return true;
+        }
+
+        private bool ShouldReserveForPermanentExpTarget(Character c, PermanentExpTarget target)
+        {
+            if (c == null || target == null)
+                return false;
+            var available = Math.Max(0L, c.realExp - Config.ExpReserve);
+            if (available >= target.Cost)
+                return true;
+
+            /*
+             * A one-time unlock can justify a reserve because it cannot be bought
+             * fractionally.  That does not justify freezing EXP for an entire long
+             * accumulation, however.  Enter a short funding window only when the
+             * admitted upgrade is close; until then permanent resource atoms earn
+             * returns and are re-priced every second.  Accessory slots get the
+             * longest window because they improve every contextual loadout.
+             */
+            var reserveWindow = target.Label.IndexOf("Accessory", StringComparison.OrdinalIgnoreCase) >= 0 ? 180.0
+                : target.Label.IndexOf("Boost Recycling", StringComparison.OrdinalIgnoreCase) >= 0 ? 120.0
+                : target.Label.IndexOf("Digger", StringComparison.OrdinalIgnoreCase) >= 0
+                  || target.Label.IndexOf("Beard", StringComparison.OrdinalIgnoreCase) >= 0 ? 120.0
+                : 60.0;
+            var shortfall = target.Cost - available;
+            if (_expPerSecond > 0 && shortfall / _expPerSecond <= reserveWindow)
+                return true;
+            // With no stable income estimate, reserve only the final 2%; this avoids
+            // an infinite or multi-hour hold while still preventing a near-funded
+            // discrete purchase from being delayed by one atom.
+            return shortfall <= Math.Max(3L, (long)Math.Ceiling(target.Cost * .02));
         }
 
         private static PermanentExpTarget GetStrategicPermanentExpTarget(Character c)
@@ -2357,41 +2484,6 @@ namespace NGUInjector.Autopilot
             return best;
         }
 
-        private static void AddCandidate(ICollection<PurchaseCandidate> list, object controller, string name, double score,
-            int power, int cap, int bars)
-        {
-            var oldPower = GetInputText(controller, "powerInput");
-            var oldCap = GetInputText(controller, "capInput");
-            var oldBars = GetInputText(controller, "barInput");
-            try
-            {
-                SetPurchaseRatio(controller, power, cap, bars);
-                var costMethod = controller.GetType().GetMethod("customAllCost", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (costMethod == null) return;
-                var raw = costMethod.Invoke(controller, null);
-                var cost = Convert.ToInt64(raw);
-                list.Add(new PurchaseCandidate
-                {
-                    Controller = controller, Name = name,
-                    // currentPower/difficultyWeight is the inverse first-order
-                    // fractional power gain. Multiplying by exact package cost makes
-                    // this cost per weighted permanent marginal—not merely whichever
-                    // resource is currently smallest.
-                    Score = Math.Max(1L, cost) * score, Cost = cost,
-                    Power = power, Cap = cap, Bars = bars
-                });
-            }
-            finally
-            {
-                SetInputText(controller, "powerInput", oldPower);
-                SetInputText(controller, "capInput", oldCap);
-                SetInputText(controller, "barInput", oldBars);
-                InvokePurchaseInputUpdate(controller, "updateCustomPowerInput");
-                InvokePurchaseInputUpdate(controller, "updateCustomCapInput");
-                InvokePurchaseInputUpdate(controller, "updateCustomBarInput");
-            }
-        }
-
         private static string GetInputText(object controller, string fieldName)
         {
             var field = controller.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
@@ -2431,15 +2523,38 @@ namespace NGUInjector.Autopilot
             if (input != null) input.text = value.ToString();
         }
 
-        private sealed class PurchaseCandidate
+        private sealed class MarginalExpCandidate
         {
-            internal object Controller;
-            internal string Name;
-            internal double Score;
-            internal long Cost;
-            internal int Power;
-            internal int Cap;
-            internal int Bars;
+            internal readonly object Controller;
+            internal readonly string Label;
+            internal readonly string Method;
+            internal readonly long Cost;
+            internal readonly Func<double> ReadValue;
+            internal readonly double NormalizedLevel;
+            internal readonly string Reason;
+            internal readonly bool UsesCustomInput;
+            internal readonly int Power;
+            internal readonly int Cap;
+            internal readonly int Bars;
+            internal readonly double NormalizedStep;
+
+            internal MarginalExpCandidate(object controller, string label, string method, long cost,
+                Func<double> readValue, double normalizedLevel, string reason, bool usesCustomInput,
+                int power, int cap, int bars, double normalizedStep)
+            {
+                Controller = controller;
+                Label = label;
+                Method = method;
+                Cost = cost;
+                ReadValue = readValue;
+                NormalizedLevel = normalizedLevel;
+                Reason = reason;
+                UsesCustomInput = usesCustomInput;
+                Power = power;
+                Cap = cap;
+                Bars = bars;
+                NormalizedStep = normalizedStep;
+            }
         }
 
         private sealed class PermanentExpTarget

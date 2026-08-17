@@ -23,8 +23,9 @@ of truth for formulas, unlocks, costs, and mutation verification.
   exact maturity boundary. The 24-hour post-T4 cycle is tied to beard conversion,
   mature fruit, and Titan events rather than presented as an unexplained timer.
 - Permanent EXP unlocks use the guide's 10%-of-lifetime-EXP idea as an admission
-  test. The bot then applies its own opportunity-cost order and will save rather
-  than buy a weaker affordable package.
+  test. Native P/C/B bundles have no discount, so the bot buys the lagging 1-EXP
+  Cap, 15-EXP Power, or 80-EXP Bar atom as soon as useful. It reserves only when
+  a higher-value discrete unlock enters a short, modeled funding window.
 - The Money Pit preserves gold for its native cumulative one-time thresholds when
   the next threshold is reachable before rebirth.
 - Evil cards are restricted to Adventure/Hack/Wish; Sadistic PP/QP and NGU cards
