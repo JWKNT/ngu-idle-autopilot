@@ -792,12 +792,12 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func expPurchaseName(_ decision: String) -> String {
-        let prefixes = ["Saving EXP for ", "Saving for ", "Held for ", "Buying ",
+        let prefixes = ["Saving briefly for ", "Saving EXP for ", "Saving for ", "Held for ", "Buying ",
                         "No spendable EXP above the "]
         for prefix in prefixes {
             guard let range = decision.range(of: prefix, options: .caseInsensitive) else { continue }
             var label = String(decision[range.upperBound...])
-            for stop in [":", ";", " on this decision cycle", " because ", " toward ", " at Boss "] {
+            for stop in [":", ";", " now", " on this decision cycle", " because ", " toward ", " at Boss "] {
                 if let stopRange = label.range(of: stop, options: .caseInsensitive),
                    stopRange.lowerBound > label.startIndex {
                     label = String(label[..<stopRange.lowerBound])
