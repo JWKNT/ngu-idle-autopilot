@@ -13,9 +13,10 @@ using UnityEngine.UI;
 FILE PURPOSE
 
 AutopilotManager is the live policy coordinator: it reloads plans, routes bosses/Adventure,
-executes verified purchases and spells, separates persistent from reset-local spending, and emits
-decision.json for the read-only monitor. Irreversible actions require full mode plus a confirmed
-post-state delta. New mechanics should expose focused managers instead of duplicating authority.
+executes verified purchases and spells, separates persistent from reset-local spending, emits
+decision.json, and records sparse verified progression events for the read-only monitor. Irreversible
+actions require full mode plus a confirmed post-state delta. New mechanics should expose focused
+managers instead of duplicating authority.
 */
 namespace NGUInjector.Autopilot
 {
@@ -54,6 +55,11 @@ namespace NGUInjector.Autopilot
         private int _lastObservedHighestBoss = -1;
         private int _lastObservedSelectedBoss = -1;
         private string _lastBossTransition = "No boss transition observed in this process yet";
+        private bool[] _lastObservedItemDropped;
+        private bool[] _lastObservedItemMaxxed;
+        private int[] _lastObservedTitanKills;
+        private long[] _lastObservedTrainingMilestones;
+        private long[] _lastObservedAugmentMilestones;
 
         internal AutopilotConfig Config { get; private set; }
         internal AutopilotPlan Plan { get; private set; }
@@ -178,6 +184,7 @@ namespace NGUInjector.Autopilot
             Plan = AutopilotPlanner.Build(Main.Character, Config);
             var signature = Plan.Signature();
             ObserveBossTransitions(Main.Character);
+            ObserveKeyEvents(Main.Character);
 
             if (signature != _lastPlanSignature)
             {
@@ -263,6 +270,149 @@ namespace NGUInjector.Autopilot
             }
             _lastObservedHighestBoss = highest;
             _lastObservedSelectedBoss = selected;
+        }
+
+        /*
+        SPARSE KEY-EVENT OBSERVER
+
+        The full action log intentionally records high-frequency control work. The monitor's Key
+        Events tab instead needs transitions that remain meaningful hours later. Snapshot native
+        persistent/counter fields here and log only confirmed deltas: Titan kill counters, first
+        Item List discovery/MAXX flags, and the highest-place-value level boundary (for example
+        200,000 rather than 123,456). The first observation is a silent baseline so injection never
+        invents historical events. Counter/level decreases after rebirth reset the baseline without
+        producing a false milestone.
+        */
+        private void ObserveKeyEvents(Character c)
+        {
+            if (c == null || c.adventure == null || c.inventory == null
+                || c.inventory.itemList == null)
+                return;
+
+            ObserveTitanKills(c);
+            ObserveItemListTransitions(c);
+            ObserveLevelMilestones(c);
+        }
+
+        private void ObserveTitanKills(Character c)
+        {
+            var current = new[]
+            {
+                c.adventure.titan1Kills, c.adventure.titan2Kills, c.adventure.titan3Kills,
+                c.adventure.titan4Kills, c.adventure.titan5Kills, c.adventure.titan6Kills,
+                c.adventure.titan7Kills, c.adventure.titan8Kills, c.adventure.titan9Kills,
+                c.adventure.titan10Kills, c.adventure.titan11Kills, c.adventure.titan12Kills
+            };
+            if (_lastObservedTitanKills == null)
+            {
+                _lastObservedTitanKills = current;
+                return;
+            }
+            for (var i = 0; i < current.Length; i++)
+            {
+                if (current[i] > _lastObservedTitanKills[i])
+                    Main.LogAction("TITAN", "Defeated " + TitanNames[i] + " — native kill count "
+                                            + current[i] + " [confirmed by Titan counter delta]");
+            }
+            _lastObservedTitanKills = current;
+        }
+
+        private void ObserveItemListTransitions(Character c)
+        {
+            var list = c.inventory.itemList;
+            var dropped = list.itemDropped;
+            var maxxed = list.itemMaxxed;
+            if (dropped == null || maxxed == null)
+                return;
+            var count = Math.Min(dropped.Count, maxxed.Count);
+            if (_lastObservedItemDropped == null || _lastObservedItemDropped.Length != count)
+            {
+                _lastObservedItemDropped = Enumerable.Range(0, count).Select(i => dropped[i]).ToArray();
+                _lastObservedItemMaxxed = Enumerable.Range(0, count).Select(i => maxxed[i]).ToArray();
+                return;
+            }
+            for (var id = 1; id < count; id++)
+            {
+                var becameMaxxed = maxxed[id] && !_lastObservedItemMaxxed[id];
+                var firstDrop = dropped[id] && !_lastObservedItemDropped[id];
+                if (becameMaxxed)
+                    Main.LogAction("COLLECTION", "MAXXED " + SafeItemName(c, id)
+                                                     + " (Item ID " + id + ") [confirmed by Item List flag]");
+                else if (firstDrop)
+                    Main.LogAction("DISCOVERY", "First obtained " + SafeItemName(c, id)
+                                                    + " (Item ID " + id + ") [confirmed by Item List flag]");
+                _lastObservedItemDropped[id] = dropped[id];
+                _lastObservedItemMaxxed[id] = maxxed[id];
+            }
+        }
+
+        private void ObserveLevelMilestones(Character c)
+        {
+            if (c.training != null && c.training.attackTraining != null
+                && c.training.defenseTraining != null)
+            {
+                var current = new long[12];
+                for (var i = 0; i < 6; i++)
+                {
+                    current[i] = GreatestPlaceMilestone(c.training.attackTraining[i]);
+                    current[i + 6] = GreatestPlaceMilestone(c.training.defenseTraining[i]);
+                }
+                if (_lastObservedTrainingMilestones != null)
+                {
+                    for (var i = 0; i < current.Length; i++)
+                    {
+                        if (current[i] <= _lastObservedTrainingMilestones[i] || current[i] <= 0) continue;
+                        var label = i < 6 ? AttackTrainingNames[i] : DefenseTrainingNames[i - 6];
+                        Main.LogAction("MILESTONE", label + " reached level " + current[i].ToString("N0")
+                                                    + " [confirmed at greatest-place-value boundary]");
+                    }
+                }
+                _lastObservedTrainingMilestones = current;
+            }
+
+            if (c.augments == null || c.augments.augs == null)
+                return;
+            var tracks = Math.Min(AugmentNames.Length, c.augments.augs.Length);
+            var augCurrent = new long[tracks * 2];
+            for (var i = 0; i < tracks; i++)
+            {
+                augCurrent[2 * i] = GreatestPlaceMilestone(c.augments.augs[i].augLevel);
+                augCurrent[2 * i + 1] = GreatestPlaceMilestone(c.augments.augs[i].upgradeLevel);
+            }
+            if (_lastObservedAugmentMilestones != null
+                && _lastObservedAugmentMilestones.Length == augCurrent.Length)
+            {
+                for (var i = 0; i < augCurrent.Length; i++)
+                {
+                    if (augCurrent[i] <= _lastObservedAugmentMilestones[i] || augCurrent[i] <= 0) continue;
+                    var pair = i / 2;
+                    var kind = i % 2 == 0 ? "Augment" : "Upgrade";
+                    Main.LogAction("MILESTONE", AugmentNames[pair] + " " + kind + " reached level "
+                                                + augCurrent[i].ToString("N0")
+                                                + " [confirmed at greatest-place-value boundary]");
+                }
+            }
+            _lastObservedAugmentMilestones = augCurrent;
+        }
+
+        private static long GreatestPlaceMilestone(long level)
+        {
+            if (level <= 0) return 0;
+            var place = 1L;
+            while (place <= level / 10 && place <= long.MaxValue / 10)
+                place *= 10;
+            return level / place * place;
+        }
+
+        private static string SafeItemName(Character c, int id)
+        {
+            try
+            {
+                if (c.itemInfo != null && c.itemInfo.itemName != null && id < c.itemInfo.itemName.Length)
+                    return (c.itemInfo.itemName[id] ?? "item " + id).Replace("\r", " ").Replace("\n", " ").Trim();
+            }
+            catch { }
+            return "item " + id;
         }
 
         private void ManageBloodSpell()
@@ -1273,6 +1423,14 @@ namespace NGUInjector.Autopilot
         {
             "Safety Scissors", "Milk Infusion", "Cannon Implant", "Shoulder Mounted",
             "Actual Ammunition", "The Final Stand", "Buster"
+        };
+
+        private static readonly string[] TitanNames =
+        {
+            "GRB / Titan 1", "Grand Corrupted Tree / Titan 2", "Jake / Titan 3",
+            "UUG / Titan 4", "Walderp / Titan 5", "The Beast / Titan 6",
+            "Greasy Nerd / Titan 7", "Godmother / Titan 8", "Exile / Titan 9",
+            "IT HUNGERS / Titan 10", "Rock Lobster / Titan 11", "AMALGAMATE / Titan 12"
         };
 
         private static string NextTitanName(Character c)

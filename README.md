@@ -50,7 +50,9 @@ The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity a
 3. `Main.cs` finds the live `Character` and waits for a verified, fully loaded gameplay state.
 4. `AutopilotManager` snapshots the game, creates a stage plan, writes transparent telemetry, and installs the generated allocation profile.
 5. Fast routines allocate resources and execute only through native game controllers.
-6. The monitor renders confirmed actions, holds, ETAs, candidate rebirths, and progression goals.
+6. The monitor renders confirmed actions, holds, ETAs, candidate rebirths, progression goals, and
+   a separate sparse Key Events history for victories, significant level boundaries, discoveries,
+   MAXX completions, EXP/AP purchases, and major rewards.
 
 ## Build
 

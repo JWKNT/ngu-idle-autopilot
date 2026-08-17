@@ -3,8 +3,9 @@ FILE PURPOSE
 
 ActionMonitor is a separate read-only macOS AppKit process. It tails confirmed actions and
 schema-validated decision.json, rejects stale/build/PID/out-of-order telemetry, and renders status,
-ETAs, collection debt, inventory pressure, and holds. It has no game handle or mutation path;
-display features should follow explicit truthful producer fields.
+ETAs, collection debt, inventory pressure, holds, and a sparse Key Events history. It has no game
+handle or mutation path; display features should follow explicit truthful producer fields. The
+Live Actions presentation is the visual baseline and should not be restyled by goal/event changes.
 */
 import AppKit
 
@@ -22,6 +23,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow!
     private var textView: NSTextView!
     private var goalsTextView: NSTextView!
+    private var keyEventsTextView: NSTextView!
+    private var keyEventRemainder = ""
     private var statusLabel: NSTextField!
     private var summaryLabel: NSTextField!
     private var timer: Timer?
@@ -93,6 +96,16 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         goalsTab.view = goalsScroll
         tabs.addTabViewItem(goalsTab)
 
+        let keyEventsTab = NSTabViewItem(identifier: "key-events")
+        keyEventsTab.label = "Key Events"
+        let keyEventsScroll = makeScrollView(frame: tabs.contentRect)
+        keyEventsTextView = makeTextView(frame: keyEventsScroll.bounds)
+        keyEventsTextView.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        keyEventsTextView.textStorage?.setAttributedString(keyEventsHeader())
+        keyEventsScroll.documentView = keyEventsTextView
+        keyEventsTab.view = keyEventsScroll
+        tabs.addTabViewItem(keyEventsTab)
+
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         poll()
@@ -142,6 +155,18 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             storage.deleteCharacters(in: NSRange(location: 0, length: min(150_000, storage.length)))
                         }
                         textView.scrollToEndOfDocument(nil)
+                        let keyChunk = keyEventChunk(chunk)
+                        if !keyChunk.isEmpty {
+                            keyEventsTextView.textStorage?.append(coloredLog(keyChunk))
+                            if let storage = keyEventsTextView.textStorage, storage.length > 500_000 {
+                                let headerLength = keyEventsHeader().length
+                                let removable = max(0, min(100_000, storage.length - headerLength))
+                                if removable > 0 {
+                                    storage.deleteCharacters(in: NSRange(location: headerLength, length: removable))
+                                }
+                            }
+                            keyEventsTextView.scrollToEndOfDocument(nil)
+                        }
                     }
                 } catch { }
                 try? handle.close()
@@ -669,7 +694,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if category == "[REBIRTH]" || category == "[PROGRESSION]" || category == "[SYNC]" { return .systemPurple }
         if category == "[BOSS]" || category == "[COMBAT]" || category == "[TITAN]" { return .systemPink }
         if category == "[PURCHASE]" || category == "[LOOT]" || category == "[TRASH]"
-            || category == "[INVENTORY]" || category == "[GEAR]" || category == "[COLLECTION]" { return .systemTeal }
+            || category == "[INVENTORY]" || category == "[GEAR]" || category == "[COLLECTION]"
+            || category == "[DISCOVERY]" { return .systemTeal }
+        if category == "[MILESTONE]" { return .systemYellow }
+        if category == "[YGG]" || category == "[MACGUFFIN]" { return .systemGreen }
+        if category == "[QUEST]" || category == "[CHALLENGE]" { return .systemPurple }
         if category == "[ALLOC]" { return .systemBlue }
         if category == "[REWARD]" { return .systemYellow }
         return NSColor(calibratedWhite: 0.78, alpha: 1)
@@ -681,46 +710,128 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let upper = line.uppercased()
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 2
-            paragraph.paragraphSpacing = trimmed.isEmpty ? 3 : 0
-            var color = NSColor(calibratedWhite: 0.9, alpha: 1)
+            paragraph.lineSpacing = 3
+            paragraph.paragraphSpacing = trimmed.isEmpty ? 5 : 1
+            let isSection = !trimmed.isEmpty && trimmed == upper
+                && !trimmed.hasPrefix("•") && !trimmed.hasPrefix("◆")
+            if isSection { paragraph.paragraphSpacingBefore = 8 }
+
+            var color = NSColor(calibratedWhite: 0.88, alpha: 1)
             var weight: NSFont.Weight = .regular
             var size: CGFloat = 13
-            if !trimmed.isEmpty && trimmed == upper && !trimmed.hasPrefix("•") {
+            if isSection {
                 color = .systemPurple; weight = .bold; size = 14
             } else if trimmed.hasPrefix("▶") {
                 color = .systemGreen; weight = .semibold; size = 13.5
             } else if trimmed.hasPrefix("◆") {
                 color = .systemCyan; weight = .medium
-            } else if upper.contains("REBIRTH") || upper.contains("OPTIMIZER") || upper.contains("ETA") {
-                color = .systemYellow; weight = .medium
+            } else if upper.contains("BLOCKED") || upper.contains("REJECTED")
+                || upper.contains("NO FINITE") || upper.contains("ROUTE HOLD") {
+                color = .systemOrange; weight = .medium
             }
-            if upper.contains("BLOCKED") || upper.contains("MISSES") || upper.contains("NO FINITE") || upper.contains("REJECTED") {
-                color = .systemOrange; weight = .semibold
-            } else if upper.contains("WINNER") || upper.contains("ADVANTAGE") {
-                color = .systemGreen; weight = .semibold
-            } else if upper.contains("RUNNER-UP") || upper.contains("SEARCH:") {
-                color = .systemBlue; weight = .medium
-            } else if upper.contains("WHY THE ROUND NUMBER") || upper.contains("TARGET RUN AGE") || upper.contains("EXPECTED EXECUTION") {
-                color = .systemYellow; weight = .semibold
-            } else if upper.contains("READY NOW") || upper.contains("SYNCED") || upper.contains("COMPLETE") || upper.contains("FULLY-ALLOCATED") {
-                color = .systemGreen; weight = .medium
-            } else if upper.contains("EXP ") || upper.contains("AP ") || upper.contains("GOLD ") || upper.contains("ENERGY:") || upper.contains("MAGIC:") || upper.contains("AUGMENTATION:") {
-                color = .systemTeal
-            } else if upper.contains("INVENTORY") || upper.contains("COLLECTION") || upper.contains("MAXX") {
-                color = upper.contains("CRITICAL") || upper.contains("HIGH PRESSURE") ? .systemOrange : .systemCyan
-            } else if upper.contains("YGGDRASIL") || upper.contains("SEEDS:") {
-                color = .systemGreen
-            } else if upper.contains("BOSS") || upper.contains("ADVENTURE") || upper.contains("TITAN") {
-                color = .systemPink
-            }
-            output.append(NSAttributedString(string: line + "\n", attributes: [
+            let row = NSMutableAttributedString(string: line + "\n", attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: size, weight: weight),
                 .foregroundColor: color,
                 .paragraphStyle: paragraph
-            ]))
+            ])
+
+            // Keep prose in one stable neutral color. Only the structural marker or
+            // label receives an accent, avoiding the previous every-other-line rainbow.
+            let nsLine = line as NSString
+            if !isSection && !trimmed.hasPrefix("▶") && !trimmed.hasPrefix("◆") {
+                let bullet = nsLine.range(of: "•")
+                if bullet.location != NSNotFound && bullet.location <= 3 {
+                    row.addAttributes([.foregroundColor: NSColor.systemCyan,
+                                       .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)],
+                                      range: bullet)
+                } else if let colon = line.firstIndex(of: ":") {
+                    let prefixLength = line.distance(from: line.startIndex, to: colon) + 1
+                    if prefixLength <= 42 {
+                        row.addAttributes([.foregroundColor: NSColor(calibratedWhite: 0.72, alpha: 1),
+                                           .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)],
+                                          range: NSRange(location: 0, length: prefixLength))
+                    }
+                } else if let dot = line.firstIndex(of: "."),
+                          line[..<dot].allSatisfy({ $0.isNumber }) {
+                    let markerLength = line.distance(from: line.startIndex, to: dot) + 1
+                    row.addAttribute(.font,
+                                     value: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold),
+                                     range: NSRange(location: 0, length: markerLength))
+                }
+            }
+            output.append(row)
         }
         goalsTextView.textStorage?.setAttributedString(output)
+    }
+
+    /*
+    KEY EVENTS FILTER
+
+    actions.log remains the durable source. This view admits only confirmed, low-frequency
+    transitions: victories, significant-digit levels, first/MAXX item discoveries, EXP/AP
+    purchases, rebirths, major rewards, and completed progression. It deliberately rejects
+    attempts, allocation churn, ordinary drops, merges, recovery ticks, and routing narration.
+    */
+    private func keyEventChunk(_ chunk: String) -> String {
+        let combined = keyEventRemainder + chunk
+        var lines = combined.components(separatedBy: "\n")
+        if combined.hasSuffix("\n") {
+            keyEventRemainder = ""
+            if lines.last?.isEmpty == true { lines.removeLast() }
+        } else {
+            keyEventRemainder = lines.popLast() ?? ""
+        }
+        let selected = lines.filter(isKeyEventLine)
+        return selected.isEmpty ? "" : selected.joined(separator: "\n") + "\n"
+    }
+
+    private func isKeyEventLine(_ line: String) -> Bool {
+        let nsLine = line as NSString
+        let match = logLineRegex.firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length))
+        guard let parsed = match else { return false }
+        let category = nsLine.substring(with: parsed.range(at: 2)).uppercased()
+        let message = nsLine.substring(with: parsed.range(at: 4)).lowercased()
+        switch category {
+        case "[TITAN]", "[MILESTONE]", "[DISCOVERY]", "[REBIRTH]", "[CHALLENGE]",
+             "[MACGUFFIN]", "[REWARD]", "[DEATH]":
+            return true
+        case "[BOSS]":
+            return message.contains("after native controller victory")
+                || message.contains("record fight boss")
+        case "[PURCHASE]":
+            return message.range(of: #"\b(exp|ap)\b"#, options: .regularExpression) != nil
+                || message.contains("arbitrary point")
+        case "[COLLECTION]":
+            return message.contains("maxxed") || message.contains("set complete")
+        case "[PROGRESSION]":
+            return message.contains("confirmed") || message.contains("completed")
+                || message.contains("unlocked") || message.contains("consumed progression")
+        case "[QUEST]":
+            return message.contains("completed") || message.contains("turned in")
+        case "[YGG]":
+            return message.contains("harvest") || message.contains("activated")
+                || message.contains("permanent")
+        case "[LOOT]":
+            return message.contains("ultra rare") || message.contains("legendary")
+                || message.contains("macguffin") || message.contains("heart")
+        default:
+            return false
+        }
+    }
+
+    private func keyEventsHeader() -> NSAttributedString {
+        let output = NSMutableAttributedString(string: "KEY EVENTS\n", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .bold),
+            .foregroundColor: NSColor.systemGreen
+        ])
+        output.append(NSAttributedString(
+            string: "Verified victories • significant level milestones • first/MAXX items • XP/AP purchases • major progression\n\n",
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular),
+                .foregroundColor: NSColor(calibratedWhite: 0.58, alpha: 1)
+            ]
+        ))
+        return output
     }
 
     private func appendResourceGoal(_ goals: inout [String], state: [String: Any], amountKey: String,

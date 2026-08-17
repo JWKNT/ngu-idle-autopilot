@@ -65,7 +65,7 @@ Notable components:
 
 ### Monitor
 
-`monitor/ActionMonitor.swift` has no reference to the game process and no input mechanism. It verifies telemetry schema/build/process/sequence fields and color-codes confirmed actions, warnings, resource holds, combat, progression, and ETAs.
+`monitor/ActionMonitor.swift` has no reference to the game process and no input mechanism. It verifies telemetry schema/build/process/sequence fields and presents three read-only views: the complete color-coded Live Actions stream, a semantically grouped Strategy & Goals page, and a sparse Key Events history filtered from durable confirmed action records.
 
 ## What is not source
 
