@@ -59,6 +59,7 @@ namespace NGUInjector.Autopilot
         private bool[] _lastObservedItemMaxxed;
         private int[] _lastObservedTitanKills;
         private long[] _lastObservedTrainingMilestones;
+        private bool[] _lastObservedCombatAbilityUnlocks;
         private long[] _lastObservedAugmentMilestones;
 
         internal AutopilotConfig Config { get; private set; }
@@ -352,26 +353,72 @@ namespace NGUInjector.Autopilot
                 && c.training.defenseTraining != null)
             {
                 var current = new long[12];
+                var abilityUnlocked = new bool[12];
                 for (var i = 0; i < 6; i++)
                 {
                     current[i] = GreatestPlaceMilestone(c.training.attackTraining[i]);
                     current[i + 6] = GreatestPlaceMilestone(c.training.defenseTraining[i]);
+                    abilityUnlocked[i] = AdventureAbilityUnlocked(true, i, c.training.attackTraining[i]);
+                    abilityUnlocked[i + 6] = AdventureAbilityUnlocked(false, i,
+                        c.training.defenseTraining[i]);
+                }
+
+                /*
+                TRAINING ROWS ARE NOT COMBAT-ABILITY UNLOCKS
+
+                The native Basic Training row is available before the Adventure move carrying
+                the same label is available. For example, attack row 3 is labelled "Parry", but
+                Parry remains locked until that row reaches 15,000. Keep the two state machines
+                separate: row milestones describe the indexed training value, while a distinct
+                PROGRESSION event is emitted only for the actual native move threshold.
+                */
+                var newlyUnlocked = new bool[12];
+                if (_lastObservedCombatAbilityUnlocks != null
+                    && _lastObservedCombatAbilityUnlocks.Length == abilityUnlocked.Length)
+                {
+                    for (var i = 0; i < abilityUnlocked.Length; i++)
+                    {
+                        newlyUnlocked[i] = abilityUnlocked[i] && !_lastObservedCombatAbilityUnlocks[i];
+                        if (!newlyUnlocked[i]) continue;
+                        var attack = i < 6;
+                        var row = attack ? i : i - 6;
+                        var level = attack ? c.training.attackTraining[row]
+                            : c.training.defenseTraining[row];
+                        var source = attack ? "Attack Training" : "Defense Training";
+                        var label = attack ? GameNames.AttackTraining(c, row)
+                            : GameNames.DefenseTraining(c, row);
+                        Main.LogAction("PROGRESSION", label + " unlocked in Adventure from "
+                                                      + source + " row " + (row + 1)
+                                                      + " reaching " + level.ToString("N0")
+                                                      + " (native requirement "
+                                                      + AdventureAbilityUnlockLevel(attack, row).ToString("N0")
+                                                      + ")");
+                    }
                 }
                 if (_lastObservedTrainingMilestones != null)
                 {
                     for (var i = 0; i < current.Length; i++)
                     {
                         if (current[i] <= _lastObservedTrainingMilestones[i] || current[i] <= 0) continue;
+                        if (newlyUnlocked[i]) continue;
+                        var attack = i < 6;
                         var row = i < 6 ? i : i - 6;
-                        var label = i < 6 ? GameNames.AttackTraining(c, row)
+                        var label = attack ? GameNames.AttackTraining(c, row)
                             : GameNames.DefenseTraining(c, row);
-                        var source = i < 6 ? "Attack Training" : "Defense Training";
-                        Main.LogAction("MILESTONE", label + " (" + source + " row " + (row + 1)
-                                                    + ") reached level " + current[i].ToString("N0")
+                        var source = attack ? "Attack Training" : "Defense Training";
+                        var abilityState = abilityUnlocked[i]
+                            ? "; Adventure ability \"" + label + "\" is unlocked"
+                            : "; working toward Adventure ability \"" + label
+                              + "\" (locked until "
+                              + AdventureAbilityUnlockLevel(attack, row).ToString("N0") + ")";
+                        Main.LogAction("MILESTONE", source + " row " + (row + 1)
+                                                    + " reached level " + current[i].ToString("N0")
+                                                    + abilityState
                                                     + " [confirmed at greatest-place-value boundary]");
                     }
                 }
                 _lastObservedTrainingMilestones = current;
+                _lastObservedCombatAbilityUnlocks = abilityUnlocked;
             }
 
             if (c.augments == null || c.augments.augs == null || c.augmentsController == null
@@ -409,6 +456,20 @@ namespace NGUInjector.Autopilot
             while (place <= level / 10 && place <= long.MaxValue / 10)
                 place *= 10;
             return level / place * place;
+        }
+
+        private static long AdventureAbilityUnlockLevel(bool attack, int row)
+        {
+            // Regular Attack, Idle Attack, and Block are available independently of their Basic
+            // Training rows. The remaining native Adventure moves follow the row's exact
+            // 5,000-level step: Strong Attack 10k, Parry 15k, Defensive Buff 5k, and so on.
+            if ((attack && row == 0) || row == 5) return 0L;
+            return 5000L * (row + 1L);
+        }
+
+        private static bool AdventureAbilityUnlocked(bool attack, int row, long level)
+        {
+            return level >= AdventureAbilityUnlockLevel(attack, row);
         }
 
         private static string SafeItemName(Character c, int id)
