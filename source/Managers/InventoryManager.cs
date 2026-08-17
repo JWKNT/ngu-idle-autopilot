@@ -145,7 +145,8 @@ namespace NGUInjector.Managers
         private ih[] GetBoostSlots(ih[] ci, bool includeSpeculativeLockedItems)
         {
             var result = new List<ih>();
-            //First, find items in our priority list
+            // Explicit user priorities remain an intentional override of the
+            // optimizer. Full automation leaves this list empty by default.
             foreach (var id in Settings.PriorityBoosts)
             {
                 if (Settings.BoostBlacklist.Contains(id))
@@ -156,25 +157,18 @@ namespace NGUInjector.Managers
                     result.Add(f);
             }
 
-            //Next, get equipped items that aren't in our priority list and aren't blacklisted
-            var equipped = Main.Character.inventory.GetConvertedEquips()
-                .Where(x => !Settings.PriorityBoosts.Contains(x.id) && !Settings.BoostBlacklist.Contains(x.id));
-            result = result.Concat(equipped).ToList();
-
             /*
-            PROVEN FUTURE-GEAR BOOST TIER
+            OBJECTIVE-ORDERED BOOST ROUTING
 
-            The old queue admitted unequipped items only when the player manually locked them. Full
-            automation therefore sent every boost to the Cube while a higher-tier set could remain
-            permanently below the currently equipped set. Admit an unequipped object only when a fully
-            boosted calculation copy at its current merge level, evaluated inside the complete loadout
-            with native boss scaling, improves the active objective. Ordering by gain per remaining boost
-            concentrates work on the nearest useful hump. A still-leveling item can therefore become
-            useful before MAXX, while hypothetical level-100 stats and obsolete collection pieces cannot
-            steal boosts. These proven objects run before the Cube softcap.
+            Equipped-first is not a value model: an obsolete equipped pendant could absorb every compatible
+            boost before a Cave armor piece which actually opens the next zone. Rank equipped and unequipped
+            objects together by complete-loadout score gained per remaining point of the boost categories
+            physically available right now. FullyBoostedLoadoutGain uses real current merge level, native
+            boss scaling, next-zone thresholds, and saturation-aware production rates. This also prevents a
+            Power-only drop from being blamed for skipping an armor piece which only accepts Toughness.
             */
-            var development = GetProgressionDevelopmentSlots(ci).ToArray();
-            result = result.Concat(development).ToList();
+            var optimized = GetProgressionBoostSlots(ci).ToArray();
+            result.AddRange(optimized);
 
             // Locked, unequipped gear can be useful later but is speculative. The
             // caller gives active/explicit gear first claim, then brings the always-
@@ -192,38 +186,84 @@ namespace NGUInjector.Managers
                 .GroupBy(x => x.equipment).Select(x => x.First()).ToArray();
         }
 
-        private IEnumerable<ih> GetProgressionDevelopmentSlots(IEnumerable<ih> convertedInventory)
+        private sealed class BoostRoute
+        {
+            internal ih Item;
+            internal BoostsNeeded Needed;
+            internal double Gain;
+            internal double RelevantNeed;
+            internal double Score;
+        }
+
+        private IEnumerable<ih> GetProgressionBoostSlots(IEnumerable<ih> convertedInventory)
         {
             var c = _character;
             if (c == null || c.inventory == null || c.inventory.itemList == null)
                 return Enumerable.Empty<ih>();
-            var candidates = convertedInventory.Where(x => x != null && x.equipment != null
+
+            var inventory = convertedInventory.ToArray();
+            var powerAvailable = inventory.Any(x => x != null && x.equipment != null
+                && !x.locked && x.equipment.type == part.atkBoost);
+            var toughnessAvailable = inventory.Any(x => x != null && x.equipment != null
+                && !x.locked && x.equipment.type == part.defBoost);
+            var specialAvailable = inventory.Any(x => x != null && x.equipment != null
+                && !x.locked && x.equipment.type == part.specBoost);
+            var anyBoost = powerAvailable || toughnessAvailable || specialAvailable;
+
+            var candidates = c.inventory.GetConvertedEquips().Concat(inventory)
+                .Where(x => x != null && x.equipment != null
                 && x.id > 0 && x.equipment.isEquipment() && !Settings.BoostBlacklist.Contains(x.id)
                 && !Settings.PriorityBoosts.Contains(x.id))
-                .Select(x => new
+                .GroupBy(x => x.equipment).Select(x => x.First())
+                .Select(x =>
                 {
-                    Item = x,
-                    Needed = x.equipment.GetNeededBoosts().Total(),
-                    Gain = ProgressionLoadoutOptimizer.FullyBoostedLoadoutGain(c, x.equipment)
+                    var needed = x.equipment.GetNeededBoosts();
+                    var relevant = anyBoost
+                        ? (powerAvailable ? needed.Power : 0m)
+                          + (toughnessAvailable ? needed.Toughness : 0m)
+                          + (specialAvailable ? needed.Special : 0m)
+                        : needed.Total();
+                    var gain = ProgressionLoadoutOptimizer.FullyBoostedLoadoutGain(c, x.equipment);
+                    return new BoostRoute
+                    {
+                        Item = x,
+                        Needed = needed,
+                        Gain = gain,
+                        RelevantNeed = (double)relevant,
+                        Score = relevant > 0 ? gain / (double)relevant : 0.0
+                    };
                 })
-                .Where(x => x.Needed > 0 && x.Gain > 1e-7)
-                .OrderByDescending(x => x.Gain / (double)x.Needed)
+                .Where(x => x.Needed.Total() > 0 && x.Gain > 1e-7
+                            && (!anyBoost || x.RelevantNeed > 0.0))
+                .OrderByDescending(x => x.Score)
                 .ThenByDescending(x => x.Item.equipment.bossRequired)
                 .ThenBy(x => x.Item.id).ToArray();
             if (candidates.Length == 0)
             {
                 _developmentTarget = null;
-                LastBoostDecision = "No unequipped owned item has a proven current-level boost path to improve the complete loadout; active gear and the Infinity Cube retain priority";
+                LastBoostDecision = anyBoost
+                    ? "No item with a proven complete-loadout gain accepts the currently available boost categories; preserving them for the Infinity Cube/conversion policy"
+                    : "No owned item has a proven current-level boost path to improve the complete loadout";
                 return Enumerable.Empty<ih>();
             }
-            // Finish a proven hump instead of spreading compatible boosts across
-            // several future pieces when their close scores reorder by tiny amounts.
-            var first = candidates.FirstOrDefault(x => ReferenceEquals(x.Item.equipment, _developmentTarget))
-                        ?? candidates[0];
+
+            // Hysteresis prevents tiny floating-point changes from fragmenting two
+            // nearly equal humps, but never preserves a target more than 5% below
+            // the newly best compatible objective gain per point.
+            var best = candidates[0];
+            var retained = candidates.FirstOrDefault(x => ReferenceEquals(x.Item.equipment, _developmentTarget));
+            var first = retained != null && retained.Score >= best.Score * 0.95 ? retained : best;
             _developmentTarget = first.Item.equipment;
-            LastBoostDecision = "Developing " + SanitizeName(first.Item.name) + " across a "
-                                + first.Needed.ToString("0.##") + "-boost hump; its completed boss-scaled copy improves the full "
-                                + ProgressionLoadoutOptimizer.LastObjective + " loadout";
+            var kinds = string.Join("/", new[]
+            {
+                powerAvailable ? "Power" : string.Empty,
+                toughnessAvailable ? "Toughness" : string.Empty,
+                specialAvailable ? "Special" : string.Empty
+            }.Where(x => x.Length > 0).ToArray());
+            LastBoostDecision = "Routing " + (kinds.Length == 0 ? "the next compatible boost" : kinds)
+                                + " to " + SanitizeName(first.Item.name) + ": "
+                                + first.RelevantNeed.ToString("0.##") + " relevant points complete a proven "
+                                + ProgressionLoadoutOptimizer.LastObjective + " loadout gain";
             return new[] {first}.Concat(candidates.Where(x => !ReferenceEquals(x.Item.equipment, first.Item.equipment)))
                 .Select(x => x.Item);
         }

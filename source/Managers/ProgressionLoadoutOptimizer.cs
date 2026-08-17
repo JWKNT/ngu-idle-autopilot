@@ -347,7 +347,8 @@ namespace NGUInjector.Managers
             var attack = c.inventoryController.equipAttackBonus(e);
             var defense = c.inventoryController.equipDefenseBonus(e);
             return 4.0 * Math.Log(1.0 + Math.Max(0, attack))
-                   + 3.0 * Math.Log(1.0 + Math.Max(0, defense)) + SpecialUtility(c, e, 1.0);
+                   + 3.0 * Math.Log(1.0 + Math.Max(0, defense)) + SpecialUtility(c, e, 1.0)
+                   + ProductionTrimUtility(c, e);
         }
 
         /*
@@ -612,6 +613,7 @@ namespace NGUInjector.Managers
                 score += 0.3 * Math.Log(1.0 + Math.Max(0.0, candidateAdvAttack));
                 score += 0.3 * Math.Log(1.0 + Math.Max(0.0, candidateAdvDefense));
             }
+            score += ProductionRateUtility(c, plan);
             foreach (var item in scoringItems) score += SpecialUtility(c, item, 1.0);
             if (plan.Weapon2 != null && plan.Weapon2.id > 0)
                 score += SpecialUtility(c, plan.Weapon2, weapon2Factor);
@@ -654,6 +656,14 @@ namespace NGUInjector.Managers
             var weight = 0.35;
             switch (type)
             {
+                // These bonuses are evaluated once across the complete loadout by
+                // ProductionRateUtility. Per-item logs would value Energy Speed
+                // beyond its native 50 cap and would miss discrete generation ticks.
+                case specType.EnergySpeed:
+                case specType.MagicSpeed:
+                case specType.Looting:
+                case specType.Looting2:
+                    return 0.0;
                 case specType.EnergyPower:
                 case specType.EnergyPower2:
                 case specType.EnergyPower3:
@@ -667,8 +677,6 @@ namespace NGUInjector.Managers
                 case specType.AllCap:
                     weight = 1.4;
                     break;
-                case specType.Looting:
-                case specType.Looting2:
                 case specType.Respawn:
                 case specType.Augs:
                 case specType.AdvTraining:
@@ -681,6 +689,85 @@ namespace NGUInjector.Managers
                     break;
             }
             return weight * Math.Log(1.0 + amount);
+        }
+
+        /*
+        COMPLETE-LOADOUT PRODUCTION VALUE
+
+        Special percentages are not interchangeable raw stats. Energy and Magic generation use a
+        discrete 50 Hz bar formula and Energy Speed hard-caps at 50; Drop Chance multiplies the whole
+        loot factor. Evaluate those native outcomes after aggregating the candidate set. This makes an
+        80% Energy Speed accessory worth exactly zero when the player is already speed-capped, while
+        still crediting its Magic and loot effects when productive resource sinks or collection/boost
+        debt exist. Other special systems retain their separate horizon-aware policy weights above.
+        */
+        private static double ProductionRateUtility(Character c, Plan plan)
+        {
+            var controller = c.inventoryController;
+            var energySpeedBonus = PlanBonus(controller, plan, specType.EnergySpeed);
+            var magicSpeedBonus = PlanBonus(controller, plan, specType.MagicSpeed);
+            var lootBonus = PlanBonus(controller, plan, specType.Looting)
+                            + PlanBonus(controller, plan, specType.Looting2);
+
+            var candidateEnergySpeed = Math.Max(1.0,
+                Math.Min(50.0, c.energySpeed * (1.0 + energySpeedBonus)));
+            var candidateMagicSpeed = Math.Max(1.0,
+                Math.Min(50.0, c.magic.magicBarSpeed * (1.0 + magicSpeedBonus)));
+            var candidateEnergyRate = DiscreteResourceRate(candidateEnergySpeed, c.totalEnergyBar());
+            var candidateMagicRate = DiscreteResourceRate(candidateMagicSpeed, c.totalMagicBar());
+            var currentEnergyRate = Math.Max(1e-9, c.energyPerSecond());
+            var currentMagicRate = Math.Max(1e-9, c.magicPerSecond());
+
+            // A rate which only grows an already-idle pool has little immediate
+            // value. It is not zero because caps and allocations can change later
+            // in the same run; fully utilized resources get the full shadow price.
+            var energyUse = c.curEnergy <= 0 ? 0.25
+                : Math.Max(0.25, Math.Min(1.0, (c.curEnergy - c.idleEnergy) / (double)c.curEnergy));
+            var magicUse = c.magic.curMagic <= 0 ? 0.25
+                : Math.Max(0.25, Math.Min(1.0,
+                    (c.magic.curMagic - c.magic.idleMagic) / (double)c.magic.curMagic));
+            var utility = 6.0 * energyUse * Math.Log(Math.Max(1e-9, candidateEnergyRate / currentEnergyRate))
+                          + 4.0 * magicUse * Math.Log(Math.Max(1e-9, candidateMagicRate / currentMagicRate));
+
+            var currentLootBonus = controller.bonuses[specType.Looting]
+                                   + controller.bonuses[specType.Looting2];
+            var cubeLoot = controller.cubeLootBonus();
+            var lootRatio = (1.0 + lootBonus + cubeLoot)
+                            / Math.Max(1e-9, 1.0 + currentLootBonus + cubeLoot);
+            // Loot is a persistent throughput input for collection, boosts, EXP and AP.
+            // Do not query AdventureCollectionPlanner here: that planner itself asks
+            // this scorer about future gear and would create a recursive evaluation.
+            utility += 2.5 * Math.Log(Math.Max(1e-9, lootRatio));
+            return utility;
+        }
+
+        private static double PlanBonus(InventoryController controller, Plan plan, specType type)
+        {
+            var total = plan.PrimaryItems().Where(x => x != null && x.id > 0)
+                .Sum(x => (double)controller.equipSpecBonus(type, x));
+            if (plan.Weapon2 != null && plan.Weapon2.id > 0)
+                total += controller.equipSpecBonus(type, plan.Weapon2) * controller.weapon2Factor();
+            return Math.Max(0.0, total);
+        }
+
+        private static double DiscreteResourceRate(double speed, long perBar)
+        {
+            return 50.0 / Math.Max(1.0, Math.Ceiling(50.0 / Math.Max(1.0, speed)))
+                   * Math.Max(1L, perBar);
+        }
+
+        // Candidate trimming must retain production accessories before the full
+        // plan is available. This is only a generous upper-bound ranking; final
+        // selection always uses the complete, saturation-aware calculation above.
+        private static double ProductionTrimUtility(Character c, Equipment e)
+        {
+            var controller = c.inventoryController;
+            var energySpeed = Math.Max(0.0, controller.equipSpecBonus(specType.EnergySpeed, e));
+            var magicSpeed = Math.Max(0.0, controller.equipSpecBonus(specType.MagicSpeed, e));
+            var loot = Math.Max(0.0, controller.equipSpecBonus(specType.Looting, e)
+                                      + controller.equipSpecBonus(specType.Looting2, e));
+            return 2.0 * Math.Log(1.0 + energySpeed)
+                   + 2.0 * Math.Log(1.0 + magicSpeed) + Math.Log(1.0 + loot);
         }
 
         private static Plan CurrentPlan(Character c, bool includeEmpty = false)
