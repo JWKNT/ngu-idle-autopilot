@@ -57,7 +57,62 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             LastCommittedGold = evaluation.CommittedSpend;
             LastGoldShortfall = evaluation.Shortfall;
             LastHorizonDecision = evaluation.Decision;
-            return evaluation.TimeMachineUseful;
+            if (!evaluation.TimeMachineUseful)
+                return false;
+
+            /*
+            COMPLETION GATE
+
+            Time Machine levels and partial bar progress reset. A Gold shortfall alone therefore
+            cannot justify an allocation: at least the very next level must finish inside the real
+            remaining horizon. Use the exact native hypothetical-rate overload and the profile's
+            actual cap budget. This prevents a late-run 40% reservation from doing literally
+            nothing while a Blood ritual (or another persistent sink) can still use the resource.
+            */
+            double completionSeconds;
+            if (!NextLevelCompletesBeforeRebirth(remaining, out completionSeconds))
+            {
+                var resource = Type == ResourceType.Energy ? "Energy" : "Magic";
+                LastHorizonDecision = "Blocked: the next Time Machine "
+                                      + (Type == ResourceType.Energy ? "speed" : "gold-multiplier")
+                                      + " level needs " + FormatDuration(completionSeconds)
+                                      + " at the profile's " + resource + " budget, beyond the "
+                                      + remaining + "s rebirth horizon; partial progress resets";
+                return false;
+            }
+            LastHorizonDecision += "; next Time Machine level completes in "
+                                   + FormatDuration(completionSeconds);
+            return true;
+        }
+
+        private bool NextLevelCompletesBeforeRebirth(int remainingSeconds, out double seconds)
+        {
+            var total = Type == ResourceType.Energy ? Character.curEnergy : Character.magic.curMagic;
+            var budget = IsCap
+                ? (long)Math.Ceiling(Math.Max(0L, total) * CapPercent)
+                : Math.Max(0L, total);
+            budget = Math.Max(1L, Math.Min(Math.Max(0L, total), budget));
+            var progress = Type == ResourceType.Energy
+                ? Character.machine.speedProgress : Character.machine.goldMultiProgress;
+            var perTick = Type == ResourceType.Energy
+                ? Character.timeMachineController.speedProgressPerTick(budget)
+                : Character.timeMachineController.goldMultiProgressPerTick(budget);
+            if (perTick <= 0)
+            {
+                seconds = double.PositiveInfinity;
+                return false;
+            }
+            var remainingProgress = Math.Max(0.0, 1.0 - Math.Max(0.0, progress));
+            seconds = Math.Ceiling(remainingProgress / perTick) / 50.0;
+            return seconds <= remainingSeconds;
+        }
+
+        private static string FormatDuration(double seconds)
+        {
+            if (double.IsInfinity(seconds) || double.IsNaN(seconds)) return "an unbounded time";
+            if (seconds >= 3600) return (seconds / 3600.0).ToString("0.##") + "h";
+            if (seconds >= 60) return (seconds / 60.0).ToString("0.##") + "m";
+            return seconds.ToString("0.##") + "s";
         }
 
         internal override bool Allocate()
