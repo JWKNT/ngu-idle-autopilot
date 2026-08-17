@@ -23,9 +23,13 @@ of truth for formulas, unlocks, costs, and mutation verification.
   exact maturity boundary. The 24-hour post-T4 cycle is tied to beard conversion,
   mature fruit, and Titan events rather than presented as an unexplained timer.
 - Permanent EXP unlocks use the guide's 10%-of-lifetime-EXP idea as an admission
-  test. Native P/C/B bundles have no discount, so the bot buys the lagging 1-EXP
-  Cap, 15-EXP Power, or 80-EXP Bar atom as soon as useful. It reserves only when
-  a higher-value discrete unlock enters a short, modeled funding window.
+  test. Native P/C/B bundles have no discount, so the bot buys the lagging 40-EXP
+  minimum custom Cap, 15-EXP Power, or 80-EXP Bar purchase as soon as useful. It
+  reserves only when a higher-value discrete unlock enters a short modeled funding
+  window. Adventure/Fight-Boss stats may preempt generation only when the exact
+  purchase crosses a verified zone or combat gate. QoL that duplicates the active
+  bot (filtering, merging, loadouts, custom buttons, Auto Advance) is deferred;
+  it becomes eligible only when its corresponding automation subsystem is disabled.
 - The Money Pit preserves gold for its native cumulative one-time thresholds when
   the next threshold is reachable before rebirth.
 - Evil cards are restricted to Adventure/Hack/Wish; Sadistic PP/QP and NGU cards
@@ -51,6 +55,39 @@ of truth for formulas, unlocks, costs, and mutation verification.
   inventory spaces receive dynamic pressure-based priority.
 - Fight Boss readiness uses the game's discrete damage, regeneration, and death
   ordering rather than static recommended-stat tables.
+
+## EXP purchase taxonomy
+
+EXP is re-priced after every successful purchase; a round-number package is never
+treated as a prerequisite. The live priority is:
+
+1. **Exact progression gates.** Buy the smallest Adventure Power/Toughness atom
+   that opens the selected zone, a Fight Boss percentage atom only when it changes
+   a discrete loss into a short win, recovery Regen only when its measured time
+   saving beats its funding delay, or one inventory slot when loot-loss risk is
+   immediate.
+2. **Energy generation.** Reach the native effective Energy-speed cap because it
+   compounds nearly every early system and costs only tiny atomic purchases.
+3. **Real permanent systems.** Admit Boost Recycling, Daycare, accessory slots,
+   Digger/Beard slots, and MacGuffin slots only after their native feature is
+   unlocked and their cost is no more than 10% of lifetime EXP. Rank admitted
+   purchases by weighted cost and reserve only near the funding boundary.
+4. **Magic generation and Yggdrasil.** Buy the smallest number of 3-EXP Magic
+   Speed atoms that crosses the next native discrete generation-rate breakpoint;
+   require Magic to be unlocked, productive, and below its stage share of Energy.
+   Buy permanent fruit unlocks by activation value per EXP.
+5. **Fallback convenience.** Loot Filter, Auto Merge, Inventory Merge, and Basic
+   Training Auto Advance qualify only when their matching bot controller is off.
+   Native loadout slots and custom-allocation buttons remain unnecessary because
+   the bot directly owns those operations. Even eligible convenience waits only
+   inside a short funding window and never displaces a concrete gate.
+6. **P/C/B growth.** Spend the remainder on the currently lagging permanent
+   Power/Cap/Bar dimension using executable native purchase sizes and the current
+   difficulty's resource mix.
+
+The old repeatable Boost Combine purchase is deliberately excluded: current save
+migration code resets/refunds that retired field, so invoking its leftover private
+method would not represent a supported shop choice.
 
 ## Heuristics intentionally not copied
 

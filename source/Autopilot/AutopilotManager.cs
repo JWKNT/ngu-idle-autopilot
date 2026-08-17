@@ -197,9 +197,9 @@ namespace NGUInjector.Autopilot
             if (CanExecuteIrreversible && Config.AllowExpSpending)
             {
                 OpenExpBoxes();
-                if (!BuyAtomicExpUpgrade() && !BuyEarlyAdventureStatAtom()
-                    && !BuyStrategicPermanentExpUpgrade() && !BuyDaycareUnlock()
-                    && !BuyBestYggPermanent())
+                if (!BuyGateExpUpgrade() && !BuyAtomicExpUpgrade()
+                    && !BuyStrategicPermanentExpUpgrade() && !BuyMagicSpeedBreakpoint()
+                    && !BuyBestYggPermanent() && !BuyQolExpUpgrade())
                     BuyBestMarginalExpUpgrade();
             }
             if (CanExecuteIrreversible && Config.AllowApSpending)
@@ -681,6 +681,10 @@ namespace NGUInjector.Autopilot
             var inventoryTotalSlots = AdventureCollectionPlanner.TotalInventorySlots(c);
             var inventoryFreeSlots = AdventureCollectionPlanner.FreeInventorySlots(c);
             var inventoryPressure = AdventureCollectionPlanner.InventoryPressure(c, _collectionTarget);
+            var deferredExpPermanent = GetStrategicPermanentExpTarget(c);
+            var expQolPolicy = Config.ManageInventory && Config.ManageAllocations
+                ? "deferred: Loot Filter, Auto Merge, Inventory Merge, loadouts, custom buttons, and Auto Advance duplicate active bot controllers"
+                : "eligible only for the disabled matching bot subsystem and only below 0.5% of lifetime EXP";
             var nextTitanName = NextTitanName(c);
             var escapedNextTitanName = nextTitanName.Replace("\\", "\\\\").Replace("\"", "\\\"");
             var json = "{\n"
@@ -819,6 +823,10 @@ namespace NGUInjector.Autopilot
                        + "  \"magicIdle\": " + c.magic.idleMagic + ",\n"
                        + "  \"magicAllocated\": " + Math.Max(0L, c.magic.curMagic - c.magic.idleMagic) + ",\n"
                        + "  \"magicIncomePerSecond\": " + magicIncome.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"magicBaseSpeed\": " + c.magic.magicBarSpeed.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"magicBasePower\": " + c.magic.magicPower.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"magicBaseCap\": " + c.magic.capMagic + ",\n"
+                       + "  \"magicBaseBars\": " + c.magic.magicPerBar + ",\n"
                        + "  \"magicTimeMachineAllocated\": " + c.machine.goldMultiMagic + ",\n"
                        + "  \"magicBloodAllocated\": " + (c.bloodMagic == null || c.bloodMagic.ritual == null ? 0L : c.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic))) + ",\n"
                        + "  \"magicWandoosAllocated\": " + c.wandoos98.wandoosMagic + ",\n"
@@ -842,6 +850,10 @@ namespace NGUInjector.Autopilot
                        + "  \"expShortfall\": " + expStatus.Shortfall + ",\n"
                        + "  \"expIncomePerSecond\": " + expStatus.IncomePerSecond.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"expEtaSeconds\": " + expStatus.EtaSeconds + ",\n"
+                       + "  \"expPolicyModel\": \"exact progression gate; Energy speed; admitted permanent systems; discrete Magic speed; Ygg permanents; fallback QoL; stage-weighted P/C/B\",\n"
+                       + "  \"expQolPolicy\": \"" + EscapeJson(expQolPolicy) + "\",\n"
+                       + "  \"expDeferredPermanentTarget\": \"" + EscapeJson(deferredExpPermanent == null ? "none admitted" : deferredExpPermanent.Label) + "\",\n"
+                       + "  \"expDeferredPermanentCost\": " + (deferredExpPermanent == null ? 0L : deferredExpPermanent.Cost) + ",\n"
                        + "  \"ap\": " + c.arbitrary.curArbitraryPoints + ",\n"
                        + "  \"apDecision\": \"" + EscapeJson(apStatus.Decision) + "\",\n"
                        + "  \"apState\": \"" + apStatus.State + "\",\n"
@@ -1001,6 +1013,9 @@ namespace NGUInjector.Autopilot
         {
             if (c.realExp <= Config.ExpReserve)
                 return new ResourceStatus {Decision = "No spendable EXP above the configured reserve", Target = Config.ExpReserve, EtaSeconds = 0};
+            var gate = GetGateExpTarget(c);
+            if (gate != null)
+                return ExpTargetStatus(c, gate, "progression gate");
             if (c.energySpeed < 49.91f)
             {
                 var speedCost = !c.settings.special1Bought ? 1
@@ -1016,19 +1031,10 @@ namespace NGUInjector.Autopilot
                     EtaSeconds = ResourceEta(c.realExp, speedCost + Config.ExpReserve, _expPerSecond)
                 };
             }
-            if (c.highestBoss < 4)
-                return new ResourceStatus
-                {
-                    State = "feature-locked",
-                    Decision = "Adventure-stat atoms are feature-locked until Fight Boss 4; retaining EXP",
-                    Target = 0,
-                    EtaSeconds = -1
-                };
             var permanent = GetStrategicPermanentExpTarget(c);
             if (c.highestBoss < 17)
             {
-                var earlyAtom = EarlyAdventureAtomIndex(c);
-                if (earlyAtom < 0 && permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
+                if (permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
                     return new ResourceStatus
                     {
                         Decision = permanent.Cost <= c.realExp - Config.ExpReserve
@@ -1036,16 +1042,6 @@ namespace NGUInjector.Autopilot
                             : "Saving EXP for " + permanent.Label + ": " + permanent.Reason,
                         Target = permanent.Cost + Config.ExpReserve,
                         EtaSeconds = ResourceEta(c.realExp, permanent.Cost + Config.ExpReserve, _expPerSecond)
-                    };
-                if (earlyAtom >= 0)
-                    return new ResourceStatus
-                    {
-                        Decision = c.realExp - Config.ExpReserve >= 3
-                            ? "Buying one Adventure " + (earlyAtom == 0 ? "Power" : "Toughness")
-                              + " atom because it immediately crosses the next-zone threshold"
-                            : "Saving for the exact 3-EXP Adventure atom that immediately opens the next zone",
-                        Target = 3 + Config.ExpReserve,
-                        EtaSeconds = ResourceEta(c.realExp, 3 + Config.ExpReserve, _expPerSecond)
                     };
                 // Fixed Energy Power/Bar atoms remain legal before the Boss 17
                 // custom-input unlock, so fall through to the marginal selector.
@@ -1059,14 +1055,25 @@ namespace NGUInjector.Autopilot
                     Target = permanent.Cost + Config.ExpReserve,
                     EtaSeconds = ResourceEta(c.realExp, permanent.Cost + Config.ExpReserve, _expPerSecond)
                 };
-            if (!c.purchases.hasDaycare && c.realExp - Config.ExpReserve >= 250
-                                           && 250 <= Math.Max(1.0, c.stats.totalExp) * .10)
+            int magicSpeedSteps;
+            double magicRateAfter;
+            if (TryGetMagicSpeedBreakpoint(c, out magicSpeedSteps, out magicRateAfter))
+            {
+                var cost = 3L * magicSpeedSteps;
                 return new ResourceStatus
                 {
-                    Decision = "Buying Item Daycare on this decision cycle because the admitted one-time unlock is already funded",
-                    Target = 250,
-                    EtaSeconds = ResourceEta(c.realExp, 250, _expPerSecond)
+                    Decision = cost <= c.realExp - Config.ExpReserve
+                        ? "Buying the next productive Magic Speed breakpoint now: "
+                          + c.magicPerSecond().ToString("0.###") + " -> " + magicRateAfter.ToString("0.###") + "/s"
+                        : "Saving briefly for the next productive Magic Speed breakpoint: "
+                          + c.magicPerSecond().ToString("0.###") + " -> " + magicRateAfter.ToString("0.###") + "/s",
+                    Target = cost + Config.ExpReserve,
+                    EtaSeconds = ResourceEta(c.realExp, cost + Config.ExpReserve, _expPerSecond)
                 };
+            }
+            var qol = GetQolExpTarget(c);
+            if (qol != null && ShouldReserveForPermanentExpTarget(c, qol))
+                return ExpTargetStatus(c, qol, "fallback QoL");
             var preferred = BestMarginalExpCandidate(c);
             if (preferred == null)
                 return new ResourceStatus {Decision = "Held because no unlocked EXP purchase passed game-state validation", Target = 0, EtaSeconds = -1};
@@ -1077,6 +1084,18 @@ namespace NGUInjector.Autopilot
                     : "Saving briefly for " + preferred.Label + ": " + preferred.Reason,
                 Target = preferred.Cost + Config.ExpReserve,
                 EtaSeconds = ResourceEta(c.realExp, preferred.Cost + Config.ExpReserve, _expPerSecond)
+            };
+        }
+
+        private ResourceStatus ExpTargetStatus(Character c, PermanentExpTarget target, string category)
+        {
+            var funded = target.Cost <= c.realExp - Config.ExpReserve;
+            return new ResourceStatus
+            {
+                Decision = (funded ? "Buying " : "Saving EXP for ") + target.Label
+                           + (funded ? " now" : string.Empty) + " [" + category + "]: " + target.Reason,
+                Target = target.Cost + Config.ExpReserve,
+                EtaSeconds = ResourceEta(c.realExp, target.Cost + Config.ExpReserve, _expPerSecond)
             };
         }
 
@@ -1737,16 +1756,17 @@ namespace NGUInjector.Autopilot
                     true, 1, 0, 0, 1.0 / ratioPower));
             }
 
-            // Custom cap is unlocked at Boss 17 and costs exactly one Energy EXP
-            // per 250 cap (scaled for Magic/R3).  Before then, fixed buttons—not a
-            // reflected private custom purchase—must remain authoritative.
+            // Native cost is linear at one Energy EXP per 250 cap, but the custom
+            // input validator enforces a 10,000-cap minimum. Therefore 40 EXP is the
+            // smallest executable Energy cap purchase (scaled for Magic/R3); a
+            // theoretical +250 atom would be rejected by the controller.
             if (c.highestBoss >= 17 && baseCap >= 100000)
-                candidates.Add(new MarginalExpCandidate(controller, resource + " Cap +250",
-                    "buyCustomCap", costScale, readCap, baseCap / ratioCap,
+                candidates.Add(new MarginalExpCandidate(controller, resource + " Cap +10,000",
+                    "buyCustomCap", 40L * costScale, readCap, baseCap / ratioCap,
                     c.idleEnergy <= 0
                         ? "all generated Energy is productive, so permanent allocation headroom is the current cap bottleneck"
                         : "cap is the lagging long-horizon P/C/B dimension",
-                    true, 0, 250, 0, 250.0 / ratioCap));
+                    true, 0, 10000, 0, 10000.0 / ratioCap));
             var barMethod = resource == "Energy" ? "buyEnergyBar1" : "buyCustomBar";
             var barUsesCustomInput = resource != "Energy";
             candidates.Add(new MarginalExpCandidate(controller, resource + " Bar +1",
@@ -1846,45 +1866,217 @@ namespace NGUInjector.Autopilot
             return confirmed;
         }
 
-        private bool BuyEarlyAdventureStatAtom()
+        private bool BuyGateExpUpgrade()
+        {
+            var target = GetGateExpTarget(Main.Character);
+            if (target == null)
+                return false;
+            if (target.Cost > Main.Character.realExp - Config.ExpReserve)
+                return true;
+            return BuyExpTarget(target, "progression-gate");
+        }
+
+        private PermanentExpTarget GetGateExpTarget(Character c)
+        {
+            if (c == null || c.adventurePurchases == null)
+                return null;
+
+            // Inventory space is not cosmetic: with two or fewer free slots, one
+            // multi-drop kill can lose an un-MAXXED item before the next merge/trash
+            // sweep. Buy the native slot before any throughput stat in that state.
+            var freeSlots = AdventureCollectionPlanner.FreeInventorySlots(c);
+            if (freeSlots <= 2)
+            {
+                var costMethod = c.adventurePurchases.GetType().GetMethod("invSpaceCost",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var cost = costMethod == null ? 0L : Convert.ToInt64(costMethod.Invoke(c.adventurePurchases, null));
+                if (cost > 0)
+                    return new PermanentExpTarget(c.adventurePurchases, "buyInventorySpace",
+                        "Inventory Space +1", cost, () => c.inventory.spaces,
+                        "only " + freeSlots + " slots remain, so another slot prevents otherwise-valid loot from being dropped");
+            }
+
+            // An Adventure atom wins only when that exact atom crosses the next
+            // configured zone threshold. Broad speculative Adventure-stat buying is
+            // intentionally rejected in favor of compounding resource generation.
+            var adventureAtom = EarlyAdventureAtomIndex(c);
+            if (adventureAtom == 0)
+                return new PermanentExpTarget(c.adventurePurchases, "buy1Attack",
+                    "Adventure Power +1", 3, () => c.adventure.attack,
+                    "this exact atom opens the next otherwise-unfightable Adventure zone");
+            if (adventureAtom == 1)
+                return new PermanentExpTarget(c.adventurePurchases, "buy1Defense",
+                    "Adventure Toughness +1", 3, () => c.adventure.defense,
+                    "this exact atom opens the next otherwise-unfightable Adventure zone");
+
+            // Regen is a throughput stat only while recovery is actually delaying
+            // Adventure. Compare the measured current recovery interval with the
+            // modeled interval after +1 regen, and include the EXP acquisition wait.
+            if (c.adventure.zone == -1 && _adventureRecoveryEtaSeconds >= 60)
+            {
+                var regen = Math.Max(.001, c.totalAdvHPRegen());
+                var projectedEta = _adventureRecoveryEtaSeconds * regen / (regen + 1.0);
+                var secondsSaved = _adventureRecoveryEtaSeconds - projectedEta;
+                var available = Math.Max(0L, c.realExp - Config.ExpReserve);
+                var fundingWait = available >= 50 ? 0.0
+                    : _expPerSecond > 0 ? (50.0 - available) / _expPerSecond : double.PositiveInfinity;
+                if (secondsSaved >= 15.0 && secondsSaved > fundingWait
+                    && 50 <= Math.Max(1.0, c.stats.totalExp) * .02)
+                    return new PermanentExpTarget(c.adventurePurchases, "buy1HPRegen",
+                        "Adventure HP Regen +1", 50, () => c.adventure.regen,
+                        "measured Safe-Zone recovery falls from about " + _adventureRecoveryEtaSeconds
+                        + "s to " + Math.Ceiling(projectedEta) + "s, repaying faster than its EXP funding delay");
+            }
+
+            // Fight-Boss percentage stats are normally worse than resource growth.
+            // Promote one only if the native discrete combat model changes from a
+            // loss to a <=120-second win immediately, including death-before-hit.
+            if (c.statBoostPurchases != null && c.bossController != null
+                && !c.bossController.isFighting && !c.bossController.nukeBoss)
+            {
+                double currentKill;
+                var currentlyViable = CombatHelpers.CanWinCurrentBoss(c, out currentKill);
+                if (!currentlyViable)
+                {
+                    var attackRatio = (Math.Max(.0001, c.attackBoost) + .1) / Math.Max(.0001, c.attackBoost);
+                    var defenseRatio = (Math.Max(.0001, c.defenseBoost) + .1) / Math.Max(.0001, c.defenseBoost);
+                    double attackKill;
+                    double attackSurvival;
+                    var boostedAttack = c.attack * attackRatio;
+                    var attackWins = CombatHelpers.EvaluateFixedBossFight(c, boostedAttack, c.defense,
+                        Math.Max(c.curHP, 10.0 + boostedAttack * 10.0), c.bossCurHP,
+                        out attackKill, out attackSurvival) && attackKill <= 120.0;
+                    double defenseKill;
+                    double defenseSurvival;
+                    var boostedDefense = c.defense * defenseRatio;
+                    var defenseWins = CombatHelpers.EvaluateFixedBossFight(c, c.attack, boostedDefense,
+                        Math.Max(c.curHP, c.maxHP), c.bossCurHP,
+                        out defenseKill, out defenseSurvival) && defenseKill <= 120.0;
+                    if (attackWins && (!defenseWins || attackKill <= defenseKill))
+                        return new PermanentExpTarget(c.statBoostPurchases, "buyAttack10",
+                            "Fight Boss Attack +10%", 30, () => c.attackBoost,
+                            "the discrete combat projection changes from a loss to a "
+                            + Math.Ceiling(attackKill) + "s win against selected Boss " + (c.bossID + 1));
+                    if (defenseWins)
+                        return new PermanentExpTarget(c.statBoostPurchases, "buyDefense10",
+                            "Fight Boss Defense +10%", 30, () => c.defenseBoost,
+                            "the discrete combat projection changes from a loss to a "
+                            + Math.Ceiling(defenseKill) + "s win against selected Boss " + (c.bossID + 1));
+                }
+            }
+            return null;
+        }
+
+        private bool BuyQolExpUpgrade()
+        {
+            var target = GetQolExpTarget(Main.Character);
+            if (target == null)
+                return false;
+            if (target.Cost > Main.Character.realExp - Config.ExpReserve)
+                return ShouldReserveForPermanentExpTarget(Main.Character, target);
+            return BuyExpTarget(target, "fallback-qol");
+        }
+
+        private bool BuyMagicSpeedBreakpoint()
         {
             var c = Main.Character;
-            if (c.highestBoss < 4 || c.highestBoss >= 17 || c.adventurePurchases == null
-                || c.realExp - Config.ExpReserve < 3)
+            int steps;
+            double projectedRate;
+            if (!TryGetMagicSpeedBreakpoint(c, out steps, out projectedRate))
                 return false;
-
-            var best = EarlyAdventureAtomIndex(c);
-            if (best < 0) return false;
-            var current = new[]
-            {
-                Math.Max(1.0, Convert.ToDouble(c.adventure.attack)),
-                Math.Max(1.0, Convert.ToDouble(c.adventure.defense))
-            };
-            var methods = new[] {"buy1Attack", "buy1Defense"};
-            var labels = new[] {"Adventure Power", "Adventure Toughness"};
-
-            var method = c.adventurePurchases.GetType().GetMethod(methods[best],
+            var cost = 3L * steps;
+            if (cost > c.realExp - Config.ExpReserve)
+                return true;
+            var method = c.magicPurchases.GetType().GetMethod("buy10MagicSpeed",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (method == null)
                 return false;
             var expBefore = c.realExp;
-            var statBefore = current[best];
-            method.Invoke(c.adventurePurchases, null);
-            var statAfter = best == 0 ? Convert.ToDouble(c.adventure.attack)
-                : best == 1 ? Convert.ToDouble(c.adventure.defense)
-                : Convert.ToDouble(c.adventure.maxHP);
-            var confirmed = c.realExp < expBefore && statAfter > statBefore;
-            Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
-                confirmed
-                    ? "Bought +1 " + labels[best] + " for "
-                      + (expBefore - c.realExp) + " EXP [confirmed by EXP/stat deltas]"
-                    : labels[best] + " atomic purchase produced no verified EXP/stat transition");
+            var speedBefore = c.magic.magicBarSpeed;
+            var rateBefore = c.magicPerSecond();
+            for (var i = 0; i < steps; i++)
+                method.Invoke(c.magicPurchases, null);
+            var spent = expBefore - c.realExp;
+            var confirmed = spent == cost && c.magic.magicBarSpeed > speedBefore
+                            && c.magicPerSecond() > rateBefore;
+            Main.LogAction(confirmed ? "PURCHASE" : "REJECTED", confirmed
+                ? "Bought " + steps + " Magic Speed atoms for " + spent + " EXP: base speed "
+                  + speedBefore.ToString("0.0") + " -> " + c.magic.magicBarSpeed.ToString("0.0")
+                  + ", generation " + rateBefore.ToString("0.###") + " -> "
+                  + c.magicPerSecond().ToString("0.###") + "/s [confirmed discrete rate breakpoint]"
+                : "Magic Speed breakpoint purchase failed validation: spent=" + spent
+                  + ", rate " + rateBefore.ToString("0.###") + " -> " + c.magicPerSecond().ToString("0.###"));
             return confirmed;
+        }
+
+        private static bool TryGetMagicSpeedBreakpoint(Character c, out int steps, out double projectedRate)
+        {
+            steps = 0;
+            projectedRate = 0;
+            if (c == null || c.magicPurchases == null || c.magic == null || c.magic.capMagic < 1000
+                || c.magic.magicBarSpeed >= 49.91f)
+                return false;
+            var currentRate = Math.Max(0.0, c.magicPerSecond());
+            var energyRate = Math.Max(0.0, c.energyPerSecond());
+            // Before Titan 1, Magic supports Blood/TM but Energy still drives nearly
+            // every immediate system. Later Normal raises the floor to one-third;
+            // Evil/Sadistic allow Magic to approach parity through normal P/C/B.
+            var desiredShare = c.settings.rebirthDifficulty == difficulty.normal
+                ? c.highestBoss < 58 ? .10 : 1.0 / 3.0
+                : .50;
+            if (currentRate >= energyRate * desiredShare || c.magic.idleMagic > Math.Max(2L,
+                    (long)Math.Ceiling(currentRate * .25)))
+                return false;
+
+            var baseSpeed = Math.Max(.1, c.magic.magicBarSpeed);
+            var totalSpeed = Math.Max(.1, c.totalMagicSpeed());
+            var speedMultiplier = totalSpeed / baseSpeed;
+            var bars = Math.Max(1L, c.totalMagicBar());
+            for (var n = 1; n <= 10 && baseSpeed + .1 * n <= 50.001; n++)
+            {
+                var futureSpeed = Math.Min(50.0, totalSpeed + .1 * n * speedMultiplier);
+                var futureRate = 50.0 / Math.Ceiling(50.0 / futureSpeed) * bars;
+                if (futureRate <= currentRate + 1e-6) continue;
+                steps = n;
+                projectedRate = futureRate;
+                return true;
+            }
+            return false;
+        }
+
+        private PermanentExpTarget GetQolExpTarget(Character c)
+        {
+            if (c == null || c.adventurePurchases == null || c.miscPurchases == null)
+                return null;
+            var lifetime = Math.Max(1.0, c.stats.totalExp);
+
+            // These buttons duplicate active bot subsystems and therefore remove no
+            // progression time in full mode. They become valid only if the matching
+            // subsystem was deliberately disabled, and even then must be trivial
+            // relative to lifetime EXP so convenience cannot starve real growth.
+            if (!Config.ManageInventory && !c.purchases.hasFilter && 20 <= lifetime * .005)
+                return new PermanentExpTarget(c.adventurePurchases, "buyFilter",
+                    "Loot Filter", 20, () => c.purchases.hasFilter ? 1.0 : 0.0,
+                    "inventory automation is disabled, so the native filter now prevents manual loot overflow");
+            if (!Config.ManageInventory && !c.purchases.hasAutoMerge && 200 <= lifetime * .005)
+                return new PermanentExpTarget(c.adventurePurchases, "buyAutoMerge",
+                    "Auto Merge", 200, () => c.purchases.hasAutoMerge ? 1.0 : 0.0,
+                    "inventory automation is disabled, so native merging now preserves collection throughput");
+            if (!Config.ManageInventory && c.purchases.hasAutoMerge && !c.purchases.hasInvMerge
+                && 1000 <= lifetime * .005)
+                return new PermanentExpTarget(c.adventurePurchases, "buyInvMergeUnlock",
+                    "Inventory Auto-Merge", 1000, () => c.purchases.hasInvMerge ? 1.0 : 0.0,
+                    "inventory automation is disabled and native inventory merging can replace repeated manual merges");
+            if (!Config.ManageAllocations && !c.purchases.hasAutoAdvance && 300 <= lifetime * .005)
+                return new PermanentExpTarget(c.miscPurchases, "buyAutoAdvance",
+                    "Basic Training Auto Advance", 300, () => c.purchases.hasAutoAdvance ? 1.0 : 0.0,
+                    "allocation automation is disabled, so native excess transfer prevents capped Basic Training waste");
+            return null;
         }
 
         private static int EarlyAdventureAtomIndex(Character c)
         {
-            if (c == null || ZoneStatHelper.UserOverrides == null || c.highestBoss < 4 || c.highestBoss >= 17)
+            if (c == null || ZoneStatHelper.UserOverrides == null || c.highestBoss < 4)
                 return -1;
             var power = c.totalAdvAttack();
             var toughness = c.totalAdvDefense();
@@ -1902,27 +2094,6 @@ namespace NGUInjector.Autopilot
             return -1;
         }
 
-        private bool BuyDaycareUnlock()
-        {
-            var c = Main.Character;
-            if (c.highestBoss < 17 || c.adventurePurchases == null)
-                return false;
-            var available = c.realExp - Config.ExpReserve;
-            if (available <= 0)
-                return false;
-
-            var lifetime = Math.Max(1.0, c.stats.totalExp);
-            if (!c.purchases.hasDaycare && available >= 250 && 250 <= lifetime * .10)
-                return TryBuyDaycare("buyDaycare", "Item Daycare", c.purchases.hasDaycare);
-            if (c.purchases.hasDaycare && !c.purchases.hasDaycareSlot2
-                && available >= 25000 && 25000 <= lifetime * .10)
-                return TryBuyDaycare("buyDaycareSlot2", "Daycare slot 2", c.purchases.hasDaycareSlot2);
-            if (c.purchases.hasDaycare && !c.purchases.hasDaycareSlot3
-                && available >= 500000 && 500000 <= lifetime * .10)
-                return TryBuyDaycare("buyDaycareSlot3", "Daycare slot 3", c.purchases.hasDaycareSlot3);
-            return false;
-        }
-
         private bool BuyStrategicPermanentExpUpgrade()
         {
             var c = Main.Character;
@@ -1931,6 +2102,15 @@ namespace NGUInjector.Autopilot
                 return false;
             if (target.Cost > c.realExp - Config.ExpReserve)
                 return ShouldReserveForPermanentExpTarget(c, target);
+            BuyExpTarget(target, "permanent-system");
+            return true;
+        }
+
+        private bool BuyExpTarget(PermanentExpTarget target, string category)
+        {
+            var c = Main.Character;
+            if (c == null || target == null || target.Cost > c.realExp - Config.ExpReserve)
+                return false;
             var expBefore = c.realExp;
             var stateBefore = target.State();
             var method = target.Controller.GetType().GetMethod(target.Method,
@@ -1938,15 +2118,15 @@ namespace NGUInjector.Autopilot
             if (method == null)
             {
                 Main.LogAction("REJECTED", target.Label + " purchase API was not found");
-                return true;
+                return false;
             }
             method.Invoke(target.Controller, null);
             var confirmed = c.realExp < expBefore && target.State() != stateBefore;
             Main.LogAction(confirmed ? "PURCHASE" : "REJECTED", confirmed
                 ? "Bought " + target.Label + " for " + (expBefore - c.realExp)
-                  + " EXP [confirmed by EXP and ownership/stat deltas]"
+                  + " EXP [" + category + "; confirmed by EXP and ownership/stat deltas] — " + target.Reason
                 : target.Label + " purchase produced no verified ownership/stat transition");
-            return true;
+            return confirmed;
         }
 
         private bool ShouldReserveForPermanentExpTarget(Character c, PermanentExpTarget target)
@@ -1993,54 +2173,47 @@ namespace NGUInjector.Autopilot
             if (c.highestBoss >= 4 && c.purchases.boost < .5f)
                 targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyRecycleBoost",
                     "Boost Recycling", 100, () => c.purchases.boost,
-                    "permanently recovers more boost value into gear and the Infinity Cube"));
+                    "permanently recovers more boost value into gear and the Infinity Cube", 5.0));
+            if (c.highestBoss >= 17 && !c.purchases.hasDaycare)
+                targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyDaycare",
+                    "Item Daycare", 250, () => c.purchases.hasDaycare ? 1.0 : 0.0,
+                    "creates a parallel permanent MAXX stream for slow, rare, and temporarily unfarmable equipment", 2.0));
             if (c.highestBoss >= 4 && !c.purchases.hasAcc3)
                 targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyAcc3",
                     "Accessory slot 3", 3000, () => c.purchases.hasAcc3 ? 1.0 : 0.0,
-                    "an additional equipped special compounds every combat and resource loadout"));
+                    "an additional equipped special compounds every combat and resource loadout", 10.0));
+            if (c.purchases.hasDaycare && !c.purchases.hasDaycareSlot2)
+                targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyDaycareSlot2",
+                    "Daycare slot 2", 25000, () => c.purchases.hasDaycareSlot2 ? 1.0 : 0.0,
+                    "doubles parallel item leveling when the collection planner still has un-MAXXED equipment debt", 2.0));
+            if (c.purchases.hasDaycare && c.purchases.hasDaycareSlot2 && !c.purchases.hasDaycareSlot3)
+                targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyDaycareSlot3",
+                    "Daycare slot 3", 500000, () => c.purchases.hasDaycareSlot3 ? 1.0 : 0.0,
+                    "adds a third parallel item-leveling stream for late rare items, Hearts, and MacGuffins", 2.0));
             if (c.settings.diggersOn && !c.purchases.hasDiggerSlot1)
                 targets.Add(new PermanentExpTarget(c.miscPurchases, "buydigger1",
                     "Digger slot", 25000, () => c.purchases.hasDiggerSlot1 ? 1.0 : 0.0,
-                    "parallel permanent digger bonuses remove repeated gold/Adventure bottlenecks"));
+                    "parallel permanent digger bonuses remove repeated gold/Adventure bottlenecks", 8.0));
             if (c.settings.beardsOn && !c.purchases.hasBeardSlot1)
                 targets.Add(new PermanentExpTarget(c.miscPurchases, "buybeard1",
                     "Beard slot", 50000, () => c.purchases.hasBeardSlot1 ? 1.0 : 0.0,
-                    "a second permanent beard conversion stream repays across every long rebirth"));
+                    "a second permanent beard conversion stream repays across every long rebirth", 8.0));
             if (c.highestBoss >= 4 && c.purchases.hasAcc3 && !c.purchases.hasAcc5)
                 targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyAcc5",
                     "Accessory slot 5", 30000, () => c.purchases.hasAcc5 ? 1.0 : 0.0,
-                    "an additional equipped special compounds every contextual loadout"));
+                    "an additional equipped special compounds every contextual loadout", 10.0));
             if (c.inventory.macguffins != null && c.inventory.macguffins.Count > 0
                 && !c.purchases.hasMacguffinSlot1)
                 targets.Add(new PermanentExpTarget(c.miscPurchases, "buyMacguffin1",
                     "MacGuffin slot", 10000000, () => c.purchases.hasMacguffinSlot1 ? 1.0 : 0.0,
-                    "banks another permanent MacGuffin bonus on every rebirth"));
+                    "banks another permanent MacGuffin bonus on every rebirth", 4.0));
 
             // The guide's 10%-of-lifetime rule is used only as an opportunity-cost
             // admission test.  Within admitted upgrades we still use a progression
             // order, and we save rather than buying an inferior affordable package.
-            return targets.FirstOrDefault(x => x.Cost <= lifetime * .10);
-        }
-
-        private static bool TryBuyDaycare(string methodName, string label, bool flagBefore)
-        {
-            var c = Main.Character;
-            var expBefore = c.realExp;
-            var method = c.adventurePurchases.GetType().GetMethod(methodName,
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            if (method == null)
-                return false;
-            method.Invoke(c.adventurePurchases, null);
-            var flagAfter = methodName == "buyDaycare" ? c.purchases.hasDaycare
-                : methodName == "buyDaycareSlot2" ? c.purchases.hasDaycareSlot2
-                : c.purchases.hasDaycareSlot3;
-            var confirmed = !flagBefore && flagAfter && c.realExp < expBefore;
-            Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
-                confirmed
-                    ? "Bought " + label + " for " + (expBefore - c.realExp)
-                      + " EXP [confirmed by unlock and EXP delta]"
-                    : label + " purchase produced no verified unlock/EXP transition");
-            return confirmed;
+            return targets.Where(x => x.Cost <= lifetime * .10)
+                .OrderBy(x => x.Cost / Math.Max(.01, x.UtilityWeight))
+                .FirstOrDefault();
         }
 
         private bool BuyBestYggPermanent()
@@ -2574,9 +2747,10 @@ namespace NGUInjector.Autopilot
             internal readonly long Cost;
             internal readonly Func<double> State;
             internal readonly string Reason;
+            internal readonly double UtilityWeight;
 
             internal PermanentExpTarget(object controller, string method, string label,
-                long cost, Func<double> state, string reason)
+                long cost, Func<double> state, string reason, double utilityWeight = 1.0)
             {
                 Controller = controller;
                 Method = method;
@@ -2584,6 +2758,7 @@ namespace NGUInjector.Autopilot
                 Cost = cost;
                 State = state;
                 Reason = reason;
+                UtilityWeight = Math.Max(.01, utilityWeight);
             }
         }
     }

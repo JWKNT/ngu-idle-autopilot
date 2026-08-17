@@ -487,6 +487,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         var resourceDecisions: [String] = []
         appendResourceGoal(&resourceDecisions, state: state, amountKey: "exp", decisionKey: "expDecision", etaKey: "expEtaSeconds", label: "EXP")
+        if let expQolPolicy = state["expQolPolicy"] as? String, !expQolPolicy.isEmpty {
+            resourceDecisions.append("EXP QoL: \(expQolPolicy).")
+        }
         appendResourceGoal(&resourceDecisions, state: state, amountKey: "ap", decisionKey: "apDecision", etaKey: "apEtaSeconds", label: "AP")
         appendResourceGoal(&resourceDecisions, state: state, amountKey: "gold", decisionKey: "goldDecision", etaKey: "goldEtaSeconds", label: "gold")
         if state["magicAllocationDecision"] != nil {
