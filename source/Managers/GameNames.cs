@@ -4,10 +4,11 @@ FILE PURPOSE
 GameNames is the single display-name boundary for bot logs and monitor telemetry. Whenever NGU
 Idle exposes a serialized/runtime name, this class reads that native value instead of maintaining
 a second, drift-prone bot vocabulary. The two Basic Training arrays are the only static tables:
-their exact strings are copied from the native OffenseTraining.unlockedText and
-DefenseTraining.unlockedText switches. Do not read the mutable Text widgets for milestone names:
-the game temporarily replaces them with Locked/Requires text and their render timing is unrelated
-to the backing level arrays. Fallbacks are deliberately generic and retain an index/ID.
+their exact ordering is derived from the native training arrays and their next-unlock switches.
+The nextAttackName/nextDefenseName widgets name the move earned by completing the current slot;
+they do not name the current slot. Keeping current-training and next-unlock tables separate avoids
+the one-place rotation where Ultimate Attack was reported as Idle Attack (and Ultimate Buff as
+Block). Fallbacks are deliberately generic and retain an index/ID.
 */
 namespace NGUInjector.Managers
 {
@@ -15,12 +16,22 @@ namespace NGUInjector.Managers
     {
         private static readonly string[] AttackTrainingNames =
         {
-            "Regular Attack", "Strong Attack", "Parry", "Piercing Attack", "Ultimate Attack", "Idle Attack"
+            "Idle Attack", "Regular Attack", "Strong Attack", "Parry", "Piercing Attack", "Ultimate Attack"
         };
 
         private static readonly string[] DefenseTrainingNames =
         {
-            "Defensive Buff", "Heal", "Offensive Buff", "Charge", "Ultimate Buff", "Block"
+            "Block", "Defensive Buff", "Heal", "Offensive Buff", "Charge", "Ultimate Buff"
+        };
+
+        private static readonly string[] AttackUnlockNames =
+        {
+            "Regular Attack", "Strong Attack", "Parry", "Piercing Attack", "Ultimate Attack"
+        };
+
+        private static readonly string[] DefenseUnlockNames =
+        {
+            "Defensive Buff", "Heal", "Offensive Buff", "Charge", "Ultimate Buff"
         };
 
         internal static string AttackTraining(int index)
@@ -43,6 +54,18 @@ namespace NGUInjector.Managers
         internal static string DefenseTraining(Character c, int index)
         {
             return DefenseTraining(index);
+        }
+
+        internal static string AttackUnlock(int trainingIndex)
+        {
+            return trainingIndex >= 0 && trainingIndex < AttackUnlockNames.Length
+                ? AttackUnlockNames[trainingIndex] : "Attack ability " + (trainingIndex + 1);
+        }
+
+        internal static string DefenseUnlock(int trainingIndex)
+        {
+            return trainingIndex >= 0 && trainingIndex < DefenseUnlockNames.Length
+                ? DefenseUnlockNames[trainingIndex] : "Defense ability " + (trainingIndex + 1);
         }
 
         internal static string Item(Character c, int id)

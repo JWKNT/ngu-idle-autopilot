@@ -358,19 +358,19 @@ namespace NGUInjector.Autopilot
                 {
                     current[i] = GreatestPlaceMilestone(c.training.attackTraining[i]);
                     current[i + 6] = GreatestPlaceMilestone(c.training.defenseTraining[i]);
-                    abilityUnlocked[i] = AdventureAbilityUnlocked(true, i, c.training.attackTraining[i]);
-                    abilityUnlocked[i + 6] = AdventureAbilityUnlocked(false, i,
+                    abilityUnlocked[i] = AdventureUnlockEarned(i, c.training.attackTraining[i]);
+                    abilityUnlocked[i + 6] = AdventureUnlockEarned(i,
                         c.training.defenseTraining[i]);
                 }
 
                 /*
                 TRAINING ROWS ARE NOT COMBAT-ABILITY UNLOCKS
 
-                The native Basic Training entry is available before the Adventure move carrying
-                the same label is available. For example, Parry training can advance while Parry
-                itself remains locked until 15,000. Locked moves do not belong in the achievement
-                ledger. Emit one compact unlock event at the actual native threshold, then use the
-                game's native move name for later significant-place training milestones.
+                Each Basic Training slot is named for the move currently being trained, while the
+                native nextAttackName/nextDefenseName widget names the following move earned at the
+                slot's threshold. For example, Strong Attack training is index 2, and reaching 15K
+                there unlocks Parry. Emit unlocks from the separate next-move mapping; milestones
+                always use the current-slot mapping.
                 */
                 var newlyUnlocked = new bool[12];
                 if (_lastObservedCombatAbilityUnlocks != null
@@ -382,8 +382,8 @@ namespace NGUInjector.Autopilot
                         if (!newlyUnlocked[i]) continue;
                         var attack = i < 6;
                         var row = attack ? i : i - 6;
-                        var label = attack ? GameNames.AttackTraining(c, row)
-                            : GameNames.DefenseTraining(c, row);
+                        var label = attack ? GameNames.AttackUnlock(row)
+                            : GameNames.DefenseUnlock(row);
                         Main.LogAction("PROGRESSION", label + " unlocked");
                     }
                 }
@@ -393,7 +393,6 @@ namespace NGUInjector.Autopilot
                     {
                         if (current[i] <= _lastObservedTrainingMilestones[i] || current[i] <= 0) continue;
                         if (newlyUnlocked[i]) continue;
-                        if (!abilityUnlocked[i]) continue;
                         var attack = i < 6;
                         var row = i < 6 ? i : i - 6;
                         var label = attack ? GameNames.AttackTraining(c, row)
@@ -439,18 +438,18 @@ namespace NGUInjector.Autopilot
             return level / place * place;
         }
 
-        private static long AdventureAbilityUnlockLevel(bool attack, int row)
+        private static long AdventureAbilityUnlockLevel(int row)
         {
-            // Regular Attack, Idle Attack, and Block are available independently of their Basic
-            // Training rows. The remaining native Adventure moves follow the row's exact
-            // 5,000-level step: Strong Attack 10k, Parry 15k, Defensive Buff 5k, and so on.
-            if ((attack && row == 0) || row == 5) return 0L;
+            // Slots 0-4 each unlock the following Adventure move at a 5K step. Slot 5 is the
+            // terminal Ultimate training and has no subsequent move to unlock.
+            if (row < 0 || row >= 5) return -1L;
             return 5000L * (row + 1L);
         }
 
-        private static bool AdventureAbilityUnlocked(bool attack, int row, long level)
+        private static bool AdventureUnlockEarned(int row, long level)
         {
-            return level >= AdventureAbilityUnlockLevel(attack, row);
+            var requirement = AdventureAbilityUnlockLevel(row);
+            return requirement > 0 && level >= requirement;
         }
 
         private static string SafeItemName(Character c, int id)
