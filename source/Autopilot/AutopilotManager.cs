@@ -1849,7 +1849,12 @@ namespace NGUInjector.Autopilot
                 return null;
             var lifetime = Math.Max(1.0, c.stats.totalExp);
             var targets = new List<PermanentExpTarget>();
-            if (c.highestBoss >= 4 && c.purchases.boost < .999f)
+            // Native AdventurePurchases disables this button at purchases.boost
+            // >= 0.5 and buyRecycleBoost clamps the field to exactly 0.5. Basic
+            // Challenge completions are added only to the displayed percentage;
+            // they do not raise the purchasable cap. Testing against 0.999 made a
+            // MAX button look perpetually unowned to both the buyer and monitor.
+            if (c.highestBoss >= 4 && c.purchases.boost < .5f)
                 targets.Add(new PermanentExpTarget(c.adventurePurchases, "buyRecycleBoost",
                     "Boost Recycling", 100, () => c.purchases.boost,
                     "permanently recovers more boost value into gear and the Infinity Cube"));

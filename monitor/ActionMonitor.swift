@@ -805,6 +805,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             label = label.trimmingCharacters(in: .whitespacesAndNewlines)
                 .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            if label.lowercased().hasPrefix("the marginally best ") {
+                label = String(label.dropFirst("the marginally best ".count))
+            }
             if !label.isEmpty { return label }
         }
         let lower = decision.lowercased()
