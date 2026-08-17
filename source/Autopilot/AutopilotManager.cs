@@ -366,11 +366,11 @@ namespace NGUInjector.Autopilot
                 /*
                 TRAINING ROWS ARE NOT COMBAT-ABILITY UNLOCKS
 
-                The native Basic Training row is available before the Adventure move carrying
-                the same label is available. For example, attack row 3 is labelled "Parry", but
-                Parry remains locked until that row reaches 15,000. Keep the two state machines
-                separate: row milestones describe the indexed training value, while a distinct
-                PROGRESSION event is emitted only for the actual native move threshold.
+                The native Basic Training entry is available before the Adventure move carrying
+                the same label is available. For example, Parry training can advance while Parry
+                itself remains locked until 15,000. Locked moves do not belong in the achievement
+                ledger. Emit one compact unlock event at the actual native threshold, then use the
+                game's native move name for later significant-place training milestones.
                 */
                 var newlyUnlocked = new bool[12];
                 if (_lastObservedCombatAbilityUnlocks != null
@@ -382,17 +382,9 @@ namespace NGUInjector.Autopilot
                         if (!newlyUnlocked[i]) continue;
                         var attack = i < 6;
                         var row = attack ? i : i - 6;
-                        var level = attack ? c.training.attackTraining[row]
-                            : c.training.defenseTraining[row];
-                        var source = attack ? "Attack Training" : "Defense Training";
                         var label = attack ? GameNames.AttackTraining(c, row)
                             : GameNames.DefenseTraining(c, row);
-                        Main.LogAction("PROGRESSION", label + " unlocked in Adventure from "
-                                                      + source + " row " + (row + 1)
-                                                      + " reaching " + level.ToString("N0")
-                                                      + " (native requirement "
-                                                      + AdventureAbilityUnlockLevel(attack, row).ToString("N0")
-                                                      + ")");
+                        Main.LogAction("PROGRESSION", label + " unlocked");
                     }
                 }
                 if (_lastObservedTrainingMilestones != null)
@@ -401,20 +393,12 @@ namespace NGUInjector.Autopilot
                     {
                         if (current[i] <= _lastObservedTrainingMilestones[i] || current[i] <= 0) continue;
                         if (newlyUnlocked[i]) continue;
+                        if (!abilityUnlocked[i]) continue;
                         var attack = i < 6;
                         var row = i < 6 ? i : i - 6;
                         var label = attack ? GameNames.AttackTraining(c, row)
                             : GameNames.DefenseTraining(c, row);
-                        var source = attack ? "Attack Training" : "Defense Training";
-                        var abilityState = abilityUnlocked[i]
-                            ? "; Adventure ability \"" + label + "\" is unlocked"
-                            : "; working toward Adventure ability \"" + label
-                              + "\" (locked until "
-                              + AdventureAbilityUnlockLevel(attack, row).ToString("N0") + ")";
-                        Main.LogAction("MILESTONE", source + " row " + (row + 1)
-                                                    + " reached level " + current[i].ToString("N0")
-                                                    + abilityState
-                                                    + " [confirmed at greatest-place-value boundary]");
+                        Main.LogAction("MILESTONE", label + " Lv " + current[i].ToString("N0"));
                     }
                 }
                 _lastObservedTrainingMilestones = current;
