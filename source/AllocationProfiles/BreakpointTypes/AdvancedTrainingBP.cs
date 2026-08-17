@@ -159,7 +159,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     + attackTarget + " Power / " + defenseTarget + " Toughness in about "
                     + (LastCompletionEtaSeconds < 0 ? "an unbounded time" : LastCompletionEtaSeconds + "s")
                     + ", leaving less than the " + Math.Ceiling(farmWindow)
-                    + "s productive farm window before rebirth";
+                    + "s productive farm window before rebirth; AT levels reset, so no Energy is spent on an unrepaid target";
                 return false;
             }
 

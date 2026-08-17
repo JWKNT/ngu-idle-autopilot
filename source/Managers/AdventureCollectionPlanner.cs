@@ -22,6 +22,10 @@ namespace NGUInjector.Managers
         internal int ProjectedNewSlots;
         internal int RequiredFreeReserve;
         internal int IncompleteZones;
+        internal double UsefulBoostDebt;
+        internal double UsefulBoostGain;
+        internal string UsefulBoostTarget = string.Empty;
+        internal string SetReward = "No unclaimed core-set reward";
         internal string Reason = "Collection planner is waiting for Adventure state";
         internal string MissingSummary = "unknown";
     }
@@ -131,14 +135,34 @@ namespace NGUInjector.Managers
                 FightType = stats.FightType(c.totalAdvAttack(), c.totalAdvDefense())
             };
             result.IsBackfill = selected.Zone < front.Zone;
-            result.BossOnly = selected.CoreSetIncomplete;
+            result.SetReward = selected.CoreSetIncomplete ? CoreSetReward(selected.Zone)
+                : "Core-set reward already claimed";
+            double usefulBoostDebt = 0.0;
+            double usefulBoostGain = 0.0;
+            string usefulBoostTarget = string.Empty;
+            var needsNormalEnemyBoosts = selected.CoreSetIncomplete
+                && ProgressionLoadoutOptimizer.TryGetUsefulBoostDebt(c, out usefulBoostDebt,
+                    out usefulBoostGain, out usefulBoostTarget);
+            result.UsefulBoostDebt = needsNormalEnemyBoosts ? usefulBoostDebt : 0.0;
+            result.UsefulBoostGain = needsNormalEnemyBoosts ? usefulBoostGain : 0.0;
+            result.UsefulBoostTarget = needsNormalEnemyBoosts ? usefulBoostTarget : string.Empty;
+
+            // Bosses are the fast source of duplicate set pieces and early-zone EXP, while ordinary
+            // enemies are the source of Power/Toughness boost drops. Pure boss sniping is therefore
+            // valid only when it does not cut off the supply needed to make an owned, demonstrably
+            // better item win the complete loadout. Full-clear still encounters bosses naturally.
+            result.BossOnly = selected.CoreSetIncomplete && !needsNormalEnemyBoosts;
             result.RemainingItems = selected.RemainingItems;
             result.ProjectedNewSlots = selected.ProjectedNewSlots;
             result.RequiredFreeReserve = Math.Min(8, Math.Max(3, selected.ProjectedNewSlots + 2));
             result.MissingSummary = selected.MissingSummary;
             result.Reason = selected.CoreSetIncomplete
-                ? (result.IsBackfill ? "Backfilling an older incomplete equipment set after taking stronger forward gear"
-                    : "Maxing the newest fightable equipment set before optional farming")
+                ? needsNormalEnemyBoosts
+                    ? "Full-clearing for ordinary-enemy boosts while bosses advance the MAXX set: "
+                      + Math.Ceiling(usefulBoostDebt) + " boost points on " + usefulBoostTarget
+                      + " have a proven complete-loadout gain; unclaimed set reward is " + result.SetReward
+                    : (result.IsBackfill ? "Boss-sniping an older incomplete MAXX set; ordinary-enemy boosts have no proven loadout target; unclaimed set reward is " + result.SetReward
+                        : "Boss-sniping the newest incomplete MAXX set; ordinary-enemy boosts have no proven loadout target; unclaimed set reward is " + result.SetReward)
                 : (result.IsBackfill ? "Backtracking for permanent Item List MAXX collection debt"
                     : "Collecting non-set equipment and the zone bonus accessory before moving to optional farming");
             return result;
@@ -347,6 +371,26 @@ namespace NGUInjector.Managers
         {
             return ZoneStatHelper.UserOverrides != null && ZoneStatHelper.UserOverrides.ContainsKey(zone)
                 ? ZoneStatHelper.UserOverrides[zone].Name : "zone " + zone;
+        }
+
+        /*
+        NATIVE EARLY SET REWARDS
+
+        A level-100 copy is not valued only as an equip candidate. Completing every required item in
+        a zone invokes AllItemListController.checkforBonuses and grants a permanent set reward. These
+        early values are mirrored from that shipped method and are surfaced in the decision model;
+        unknown later sets remain collection debt but are not assigned a fabricated numeric reward.
+        */
+        private static string CoreSetReward(int zone)
+        {
+            switch (zone)
+            {
+                case 0: return "+2 Energy Speed and 10 EXP";
+                case 1: return "+5 Adventure Power/Toughness, +15 HP, +0.2 regen, and 20 EXP";
+                case 2: return "+5 Energy Power, 200 EXP, and six Energy consumables";
+                case 3: return "+2 Magic Power, +40,000 Magic Cap, +2 Magic Per Bar, and 300 EXP";
+                default: return "the zone's native permanent Item List set bonus";
+            }
         }
 
         private sealed class ZoneDebt

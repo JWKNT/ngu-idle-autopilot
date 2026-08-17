@@ -437,6 +437,58 @@ namespace NGUInjector.Managers
             }
         }
 
+        /*
+        USEFUL BOOST DEBT
+
+        Adventure boss-only routing is allowed to skip normal enemies, but normal enemies are the
+        renewable source of Power/Toughness/Special boost drops in ordinary zones. Expose the same
+        complete-loadout proof used by InventoryManager so the Adventure planner can refuse a route
+        which would strand a genuinely useful MAXX/higher-tier item below its level-scaled boost cap.
+        A level-100 item's native cap is twice its base cap; FullyBoostedLoadoutGain already evaluates
+        that exact current-level cap through BoostCap. Speculative future merge levels are excluded.
+        */
+        internal static bool TryGetUsefulBoostDebt(Character c, out double needed, out double gain,
+            out string itemName)
+        {
+            needed = 0.0;
+            gain = 0.0;
+            itemName = string.Empty;
+            if (c == null || c.inventory == null)
+                return false;
+            try
+            {
+                var candidates = c.inventory.GetConvertedEquips().Concat(c.inventory.GetConvertedInventory())
+                    .Where(x => x != null && x.equipment != null && x.id > 0
+                                && x.equipment.isEquipment()
+                                && (Main.Settings == null || !Main.Settings.BoostBlacklist.Contains(x.id)))
+                    .Select(x => new
+                    {
+                        Item = x.equipment,
+                        Name = x.name,
+                        Needed = (double)x.equipment.GetNeededBoosts().Total(),
+                        Gain = FullyBoostedLoadoutGain(c, x.equipment)
+                    })
+                    .Where(x => x.Needed > 0.0 && x.Gain > 1e-7)
+                    .OrderByDescending(x => x.Gain / x.Needed)
+                    .ThenByDescending(x => x.Item.bossRequired)
+                    .ThenBy(x => x.Item.id).ToArray();
+                if (candidates.Length == 0)
+                    return false;
+                var best = candidates[0];
+                needed = best.Needed;
+                gain = best.Gain;
+                itemName = string.IsNullOrEmpty(best.Name) ? "item " + best.Item.id
+                    : best.Name.Replace("\n", " ").Trim();
+                return true;
+            }
+            catch
+            {
+                // This is a routing proof, not permission to destroy or mutate an item. On an
+                // incomplete snapshot, keep the previous conservative boss-only behavior.
+                return false;
+            }
+        }
+
         private static bool PlanContainsIdOutside(Plan plan, int id, Equipment replaced)
         {
             if (id <= 0) return false;

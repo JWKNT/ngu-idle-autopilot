@@ -874,6 +874,7 @@ namespace NGUInjector.Autopilot
             var collectionReason = _collectionTarget == null
                 ? "Collection planner is waiting for a fightable Adventure target" : _collectionTarget.Reason;
             var collectionMissing = _collectionTarget == null ? "unknown" : _collectionTarget.MissingSummary;
+            var collectionSetReward = _collectionTarget == null ? "unresolved" : _collectionTarget.SetReward;
             var inventoryTotalSlots = AdventureCollectionPlanner.TotalInventorySlots(c);
             var inventoryFreeSlots = AdventureCollectionPlanner.FreeInventorySlots(c);
             var inventoryPressure = AdventureCollectionPlanner.InventoryPressure(c, _collectionTarget);
@@ -990,6 +991,10 @@ namespace NGUInjector.Autopilot
                        + "  \"collectionProjectedNewSlots\": " + (_collectionTarget == null ? 0 : _collectionTarget.ProjectedNewSlots) + ",\n"
                        + "  \"collectionRequiredFreeReserve\": " + (_collectionTarget == null ? 3 : _collectionTarget.RequiredFreeReserve) + ",\n"
                        + "  \"collectionIncompleteZones\": " + (_collectionTarget == null ? 0 : _collectionTarget.IncompleteZones) + ",\n"
+                       + "  \"collectionUsefulBoostDebt\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.UsefulBoostDebt).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionUsefulBoostGain\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.UsefulBoostGain).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionUsefulBoostTarget\": \"" + EscapeJson(_collectionTarget == null ? string.Empty : _collectionTarget.UsefulBoostTarget) + "\",\n"
+                       + "  \"collectionSetReward\": \"" + EscapeJson(collectionSetReward) + "\",\n"
                        + "  \"collectionReason\": \"" + EscapeJson(collectionReason) + "\",\n"
                        + "  \"collectionMissingSummary\": \"" + EscapeJson(collectionMissing) + "\",\n"
                        + "  \"inventoryTotalSlots\": " + inventoryTotalSlots + ",\n"
@@ -1020,6 +1025,7 @@ namespace NGUInjector.Autopilot
                        + "  \"advancedTrainingAttackTarget\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastAttackTarget + ",\n"
                        + "  \"advancedTrainingDefenseTarget\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastDefenseTarget + ",\n"
                        + "  \"advancedTrainingCompletionEtaSeconds\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastCompletionEtaSeconds + ",\n"
+                       + "  \"advancedTrainingPolicy\": \"reset-local: allocate only when the exact paired zone threshold plus a productive farm window completes before rebirth\",\n"
                        + "  \"timeMachineHorizonDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.TimeMachineBP.LastHorizonDecision) + "\",\n"
                        + "  \"energyAllocationBreakdown\": " + energyBreakdown + ",\n"
                        + "  \"energyBasicTrainingAllocated\": " + basicTrainingEnergy + ",\n"
@@ -1363,7 +1369,7 @@ namespace NGUInjector.Autopilot
             if (id == 9)
                 return label + " (permanently removes repeated Basic Training ramp time)";
             if (id == 16)
-                return label + " (the next permanent multi-run progression bundle; cheaper purchases would delay it)";
+                return label + " (permanent 500 EXP and 5 inventory spaces; consumables and weaker purchases would delay this multi-run bundle)";
             if (id == 14)
                 return label + " (permanent +20% AP after MAXX; nominal AP-cost breakeven is 750,000 future AP after MAXX)";
             if (id == 15)
