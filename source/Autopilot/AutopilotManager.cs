@@ -1042,6 +1042,7 @@ namespace NGUInjector.Autopilot
                        + "  \"magicBloodAllocated\": " + (c.bloodMagic == null || c.bloodMagic.ritual == null ? 0L : c.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic))) + ",\n"
                        + "  \"magicWandoosAllocated\": " + c.wandoos98.wandoosMagic + ",\n"
                        + "  \"magicAllocationDecision\": \"" + EscapeJson(CustomAllocation.LastMagicAllocationDecision) + "\",\n"
+                       + "  \"bloodMagicAllocationDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.BR.LastDecision) + "\",\n"
                        + "  \"loadoutDecision\": \"" + EscapeJson(ProgressionLoadoutOptimizer.LastDecision) + "\",\n"
                        + "  \"loadoutObjective\": \"" + EscapeJson(ProgressionLoadoutOptimizer.LastObjective) + "\",\n"
                        + "  \"loadoutSearchExact\": " + ProgressionLoadoutOptimizer.LastSearchExact.ToString().ToLowerInvariant() + ",\n"

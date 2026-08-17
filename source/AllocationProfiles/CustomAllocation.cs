@@ -761,11 +761,14 @@ namespace NGUInjector.AllocationProfiles
             var targetKinds = string.Join(", ", temp.Select(x => x.GetType().Name).Distinct().ToArray());
             var idleReason = _character.magic.idleMagic <= 0 ? "fully allocated"
                 : allocated <= 0 ? "no active native target accepted Magic"
-                : "remaining Magic exceeds the active targets' productive caps or cannot finish before rebirth";
+                : blood <= 0 && temp.Any(x => x is BR)
+                    ? BR.LastDecision
+                    : "remaining Magic exceeds the active targets' productive caps or cannot finish before rebirth";
             LastMagicAllocationDecision = "allocated " + allocated + "/" + _character.magic.curMagic
                                           + " (TM=" + timeMachine + ", Blood=" + blood
                                           + ", Wandoos=" + wandoos + "); idle=" + _character.magic.idleMagic
-                                          + " — " + idleReason + "; targets=" + targetKinds;
+                                          + " — " + idleReason + "; Blood: " + BR.LastDecision
+                                          + "; targets=" + targetKinds;
 
             _character.timeMachineController.updateMenu();
             _character.bloodMagicController.updateMenu();

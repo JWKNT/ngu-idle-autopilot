@@ -6,14 +6,17 @@ using System.Text;
 /*
 FILE PURPOSE
 
-BR is a profile marker carrying the rebirth time visible to allocation breakpoints. It does not
-perform a resource mutation; it lets horizon-sensitive targets reject work that would be erased
-before completion. Rebirth selection itself belongs to RebirthOptimizer/TimeRebirth.
+BR allocates otherwise-uncommitted Magic to Blood Magic rituals that can actually finish before
+the selected rebirth checkpoint. Ritual progress and levels reset, so an unfinished level has no
+run value; a newly started level also needs its native Gold charge. This class is the authoritative
+reason source for Blood allocation telemetry so a Gold wait is not mislabeled as idle Magic waste.
+Rebirth selection itself belongs to RebirthOptimizer/TimeRebirth.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class BR : BaseBreakpoint
     {
+        internal static string LastDecision { get; private set; } = "Blood Magic has not been evaluated";
         internal int RebirthTime { get; set; }
         protected override bool Unlocked()
         {
@@ -47,6 +50,15 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         private void CastRituals()
         {
             var allocationLeft = (long)MaxAllocation;
+            var allocated = 0L;
+            var allocatedTracks = new List<string>();
+            var goldBlocked = 0;
+            var horizonBlocked = 0;
+            var durationBlocked = 0;
+            var nearestGoldShortfall = double.PositiveInfinity;
+            var nearestGoldTrack = -1;
+            var nearestGoldCost = 0.0;
+            var effectiveTarget = EffectiveRebirthTarget();
             for (var i = Character.bloodMagic.ritual.Count - 1; i >= 0; i--)
             {
                 if (allocationLeft <= 0)
@@ -58,6 +70,14 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 var goldCost = Character.bloodMagicController.bloodMagics[i].baseCost * Character.totalDiscount();
                 if (goldCost > Character.realGold && Character.bloodMagic.ritual[i].progress <= 0.0)
                 {
+                    goldBlocked++;
+                    var shortfall = goldCost - Character.realGold;
+                    if (shortfall < nearestGoldShortfall)
+                    {
+                        nearestGoldShortfall = shortfall;
+                        nearestGoldTrack = i;
+                        nearestGoldCost = goldCost;
+                    }
                     if (Character.bloodMagic.ritual[i].magic > 0)
                     {
                         Character.bloodMagicController.bloodMagics[i].removeAllMagic();
@@ -69,22 +89,61 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 var tLeft = RitualTimeLeft(i, allocationLeft);
 
                 if (tLeft > 3600)
+                {
+                    durationBlocked++;
                     continue;
+                }
 
                 // Ritual progress and levels reset. The former comparison used
                 // elapsed-tLeft, which answered whether this level could have
                 // finished since run start rather than whether it can finish before
                 // the chosen checkpoint. Admit only a fully realizable Blood gain.
-                if (RebirthTime > 0 && Main.Settings.AutoRebirth)
+                if (effectiveTarget > 0)
                 {
-                    if (Character.rebirthTime.totalseconds + tLeft > RebirthTime)
+                    if (Character.rebirthTime.totalseconds + tLeft > effectiveTarget)
+                    {
+                        horizonBlocked++;
                         continue;
+                    }
                 }
 
                 var cap = CalculateMaxAllocation(i, allocationLeft);
                 SetInput(cap);
+                var before = Character.bloodMagic.ritual[i].magic;
                 Character.bloodMagicController.bloodMagics[i].add();
-                allocationLeft -= cap;
+                var accepted = Math.Max(0L, Character.bloodMagic.ritual[i].magic - before);
+                allocated += accepted;
+                allocationLeft -= accepted;
+                if (accepted > 0)
+                    allocatedTracks.Add("ritual " + (i + 1) + " (" + tLeft.ToString("0.0") + "s)");
+            }
+
+            if (allocated > 0)
+            {
+                LastDecision = "Allocated " + allocated + " Magic to "
+                               + string.Join(", ", allocatedTracks.ToArray())
+                               + "; each admitted level finishes before rebirth";
+            }
+            else if (goldBlocked > 0 && nearestGoldTrack >= 0)
+            {
+                var gps = Math.Max(0.0, Character.grossGoldPerSecond());
+                var eta = gps > 0 ? " (~" + Math.Ceiling(nearestGoldShortfall / gps) + "s at current gross GPS)" : string.Empty;
+                LastDecision = "Waiting for " + FormatGold(nearestGoldShortfall) + " more Gold"
+                               + eta + " to start Blood ritual " + (nearestGoldTrack + 1)
+                               + " (cost " + FormatGold(nearestGoldCost) + "); idle Magic cannot bypass the native Gold charge";
+            }
+            else if (horizonBlocked > 0)
+            {
+                LastDecision = "Holding Magic: " + horizonBlocked
+                               + " unlocked Blood ritual target(s) cannot finish before the selected rebirth checkpoint";
+            }
+            else if (durationBlocked > 0)
+            {
+                LastDecision = "Holding Magic: unlocked Blood rituals require more than one hour per level at the available allocation";
+            }
+            else
+            {
+                LastDecision = "No unlocked Blood ritual can productively accept the available Magic";
             }
         }
 
@@ -112,9 +171,10 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
                 var tLeft = RitualTimeLeft(i, allocationLeft);
 
-                if (RebirthTime > 0 && Main.Settings.AutoRebirth)
+                var effectiveTarget = EffectiveRebirthTarget();
+                if (effectiveTarget > 0)
                 {
-                    if (Character.rebirthTime.totalseconds + tLeft > RebirthTime)
+                    if (Character.rebirthTime.totalseconds + tLeft > effectiveTarget)
                         continue;
                 }
 
@@ -166,6 +226,25 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
             var num2 = (long) ((double) num1 / Math.Ceiling((double) num1 / (double) remaining)) + 1L;
             return num2;
+        }
+
+        private int EffectiveRebirthTarget()
+        {
+            // Full autopilot deliberately does not depend on the legacy AutoRebirth
+            // checkbox. Its selected plan is the effective reset horizon.
+            if (Main.Autopilot != null && Main.Autopilot.CanExecuteSafe
+                && Main.Autopilot.Plan != null && Main.Autopilot.Plan.RebirthSeconds > 0)
+                return Main.Autopilot.Plan.RebirthSeconds;
+            return RebirthTime;
+        }
+
+        private static string FormatGold(double amount)
+        {
+            if (amount >= 1e12) return (amount / 1e12).ToString("0.###") + "T Gold";
+            if (amount >= 1e9) return (amount / 1e9).ToString("0.###") + "B Gold";
+            if (amount >= 1e6) return (amount / 1e6).ToString("0.###") + "M Gold";
+            if (amount >= 1e3) return (amount / 1e3).ToString("0.###") + "K Gold";
+            return amount.ToString("0") + " Gold";
         }
     }
 }
