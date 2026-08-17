@@ -10,7 +10,10 @@ does not send commands, persist game data, use analytics, or contact any non-loc
   "use strict";
 
   const localHost = ["127.0.0.1", "localhost"].includes(window.location.hostname);
-  const endpoint = localHost ? "/api/state" : "http://127.0.0.1:47635/api/state";
+  const publicDashboardHosts = new Set(["jehlp.net", "www.jehlp.net", "jwknt.github.io"]);
+  const endpoint = publicDashboardHosts.has(window.location.hostname)
+    ? "http://127.0.0.1:47635/api/state"
+    : "/api/state";
   const pollMs = 1000;
   let lastSequence = -1;
 
