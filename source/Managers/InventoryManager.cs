@@ -10,7 +10,8 @@ FILE PURPOSE
 InventoryManager owns merge, boost, conversion, MacGuffin, loot-filter, and conservative trash
 operations. These are potentially irreversible: unMAXXED equipment is always unfiltered, items
 from an incomplete set remain protected, and trash requires confirmed Item List MAXX plus an
-all-use dominance proof. Physical gear selection belongs to ProgressionLoadoutOptimizer; this file
+all-use dominance proof. Its boost queue also develops a proven future slot upgrade before feeding
+the Infinity Cube. Physical gear selection belongs to ProgressionLoadoutOptimizer; this file
 maintains contents and capacity through native InventoryController calls with state verification.
 */
 namespace NGUInjector.Managers
@@ -99,10 +100,13 @@ namespace NGUInjector.Managers
         private Cube _lastCube = null;
         private readonly FixedSizedQueue _invBoostAvg = new FixedSizedQueue(60);
         private readonly FixedSizedQueue _cubeBoostAvg = new FixedSizedQueue(60);
+        private Equipment _developmentTarget;
         internal static string LastTrashDecision { get; private set; }
             = "Waiting for the first conservative trash audit";
         internal static string LastFilterDecision { get; private set; }
             = "Waiting for the first collection-safe loot-filter reconciliation";
+        internal static string LastBoostDecision { get; private set; }
+            = "Waiting for the first equipment-development audit";
 
 
         //Wandoos 98, Giant Seed, Wandoos XL, Lonely Flubber, Wanderer's Cane, Guffs, Lemmi
@@ -157,6 +161,21 @@ namespace NGUInjector.Managers
                 .Where(x => !Settings.PriorityBoosts.Contains(x.id) && !Settings.BoostBlacklist.Contains(x.id));
             result = result.Concat(equipped).ToList();
 
+            /*
+            PROVEN FUTURE-GEAR BOOST TIER
+
+            The old queue admitted unequipped items only when the player manually locked them. Full
+            automation therefore sent every boost to the Cube while a higher-tier set could remain
+            permanently below the currently equipped set. Admit an unequipped object only when a fully
+            boosted calculation copy at its current merge level, evaluated inside the complete loadout
+            with native boss scaling, improves the active objective. Ordering by gain per remaining boost
+            concentrates work on the nearest useful hump. A still-leveling item can therefore become
+            useful before MAXX, while hypothetical level-100 stats and obsolete collection pieces cannot
+            steal boosts. These proven objects run before the Cube softcap.
+            */
+            var development = GetProgressionDevelopmentSlots(ci).ToArray();
+            result = result.Concat(development).ToList();
+
             // Locked, unequipped gear can be useful later but is speculative. The
             // caller gives active/explicit gear first claim, then brings the always-
             // on Cube to its full-value softcap, then returns here for this tier.
@@ -168,7 +187,45 @@ namespace NGUInjector.Managers
             }
 
             //Make sure we filter out non-equips again, just in case one snuck into priorityboosts
-            return result.Where(x => x.equipment.isEquipment()).Where(x => x.equipment.GetNeededBoosts().Total() > 0).ToArray();
+            return result.Where(x => x.equipment.isEquipment())
+                .Where(x => x.equipment.GetNeededBoosts().Total() > 0)
+                .GroupBy(x => x.equipment).Select(x => x.First()).ToArray();
+        }
+
+        private IEnumerable<ih> GetProgressionDevelopmentSlots(IEnumerable<ih> convertedInventory)
+        {
+            var c = _character;
+            if (c == null || c.inventory == null || c.inventory.itemList == null)
+                return Enumerable.Empty<ih>();
+            var candidates = convertedInventory.Where(x => x != null && x.equipment != null
+                && x.id > 0 && x.equipment.isEquipment() && !Settings.BoostBlacklist.Contains(x.id)
+                && !Settings.PriorityBoosts.Contains(x.id))
+                .Select(x => new
+                {
+                    Item = x,
+                    Needed = x.equipment.GetNeededBoosts().Total(),
+                    Gain = ProgressionLoadoutOptimizer.FullyBoostedLoadoutGain(c, x.equipment)
+                })
+                .Where(x => x.Needed > 0 && x.Gain > 1e-7)
+                .OrderByDescending(x => x.Gain / (double)x.Needed)
+                .ThenByDescending(x => x.Item.equipment.bossRequired)
+                .ThenBy(x => x.Item.id).ToArray();
+            if (candidates.Length == 0)
+            {
+                _developmentTarget = null;
+                LastBoostDecision = "No unequipped owned item has a proven current-level boost path to improve the complete loadout; active gear and the Infinity Cube retain priority";
+                return Enumerable.Empty<ih>();
+            }
+            // Finish a proven hump instead of spreading compatible boosts across
+            // several future pieces when their close scores reorder by tiny amounts.
+            var first = candidates.FirstOrDefault(x => ReferenceEquals(x.Item.equipment, _developmentTarget))
+                        ?? candidates[0];
+            _developmentTarget = first.Item.equipment;
+            LastBoostDecision = "Developing " + SanitizeName(first.Item.name) + " across a "
+                                + first.Needed.ToString("0.##") + "-boost hump; its completed boss-scaled copy improves the full "
+                                + ProgressionLoadoutOptimizer.LastObjective + " loadout";
+            return new[] {first}.Concat(candidates.Where(x => !ReferenceEquals(x.Item.equipment, first.Item.equipment)))
+                .Select(x => x.Item);
         }
 
         internal void BoostInventory(ih[] boostSlots)
@@ -191,8 +248,12 @@ namespace NGUInjector.Managers
                 // expected to leave an item unchanged while a later candidate accepts
                 // them. Only a confirmed mutation is an action worth surfacing.
                 if (confirmed)
+                {
+                    LastBoostDecision = "Applied available compatible boosts to " + SanitizeName(item.name)
+                                        + "; loadout value will be re-evaluated after the confirmed stat delta";
                     Main.LogAction("INVENTORY", "Applied boosts to " + SanitizeName(item.name)
                                                 + " [confirmed by item/boost delta]");
+                }
             }
         }
 

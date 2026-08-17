@@ -105,6 +105,22 @@ namespace NGUInjector.Managers
             return bestZone;
         }
 
+        internal static bool TryGetNextUnlockedZone(int afterZone, out int zone, out ZoneStats stats)
+        {
+            zone = -1;
+            stats = null;
+            if (UserOverrides == null)
+                return false;
+            var maxReachable = ZoneHelpers.GetMaxReachableZone(false);
+            var next = UserOverrides.Where(x => x.Key > afterZone && x.Key <= maxReachable)
+                .OrderBy(x => x.Key).FirstOrDefault();
+            if (next.Value == null)
+                return false;
+            zone = next.Key;
+            stats = next.Value;
+            return true;
+        }
+
 
         internal static Dictionary<int, ZoneStats> Defaults = new Dictionary<int, ZoneStats>
         {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using static NGUInjector.Main;
 
 /*
@@ -33,6 +34,8 @@ namespace NGUInjector.Managers
         internal static double LastScoreGain { get; private set; }
         internal static string LastObjective { get; private set; } = "unresolved";
         internal static bool LastSearchExact { get; private set; }
+        private static readonly MethodInfo MemberwiseCloneMethod = typeof(object).GetMethod(
+            "MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic);
 
         private sealed class Plan
         {
@@ -100,8 +103,7 @@ namespace NGUInjector.Managers
             // Rebirth time moves backwards at every reset.  Cadence and retry
             // suppression must use a monotonic process clock instead.
             var now = (double)UnityEngine.Time.realtimeSinceStartup;
-            var objective = UseBossObjective(c)
-                ? "selected Fight Boss defeat" : "continuous Adventure progression";
+            var objective = Objective(c);
             LastObjective = objective;
 
             // Full automation owns the progression loadout just as it owns resource
@@ -348,6 +350,106 @@ namespace NGUInjector.Managers
                    + 3.0 * Math.Log(1.0 + Math.Max(0, defense)) + SpecialUtility(c, e, 1.0);
         }
 
+        /*
+        GEAR-DEVELOPMENT VALUE
+
+        Loadout selection must use the item's stats right now, otherwise it would equip a nominally
+        higher-tier piece before that piece is actually useful. Boost routing needs the complementary
+        question: can a completed boost bar make this exact physical item win its slot? A shallow
+        calculation copy lets the native bossRequired/effectiveBossID contribution methods answer that
+        without mutating the save. The real object remains the only object ever passed to inventory
+        controller methods. Collection level is deliberately not projected here: an incomplete item may
+        win at its real current level, but speculative future duplicate drops cannot justify boosts.
+        */
+        internal static double CurrentItemUtility(Character c, Equipment e)
+        {
+            return c == null || e == null || e.id <= 0 ? 0.0 : ItemUtility(c, e);
+        }
+
+        internal static double FullyBoostedItemUtility(Character c, Equipment e)
+        {
+            if (c == null || e == null || e.id <= 0 || MemberwiseCloneMethod == null)
+                return CurrentItemUtility(c, e);
+            try
+            {
+                var projected = (Equipment)MemberwiseCloneMethod.Invoke(e, null);
+                projected.curAttack = BoostCap(projected.capAttack, projected.level);
+                projected.curDefense = BoostCap(projected.capDefense, projected.level);
+                projected.spec1Cur = BoostCap(projected.spec1Cap, projected.level);
+                projected.spec2Cur = BoostCap(projected.spec2Cap, projected.level);
+                projected.spec3Cur = BoostCap(projected.spec3Cap, projected.level);
+                return ItemUtility(c, projected);
+            }
+            catch
+            {
+                // Failing closed here means the Cube/legacy locked-item tier retains
+                // the boost. It must never justify a mutation from an unproven model.
+                return CurrentItemUtility(c, e);
+            }
+        }
+
+        internal static double FullyBoostedLoadoutGain(Character c, Equipment e)
+        {
+            if (c == null || e == null || e.id <= 0 || MemberwiseCloneMethod == null)
+                return 0.0;
+            try
+            {
+                var projected = (Equipment)MemberwiseCloneMethod.Invoke(e, null);
+                projected.curAttack = BoostCap(projected.capAttack, projected.level);
+                projected.curDefense = BoostCap(projected.capDefense, projected.level);
+                projected.spec1Cur = BoostCap(projected.spec1Cap, projected.level);
+                projected.spec2Cur = BoostCap(projected.spec2Cap, projected.level);
+                projected.spec3Cur = BoostCap(projected.spec3Cap, projected.level);
+                var current = CurrentPlan(c, true);
+                var baseline = Score(c, current);
+                var best = baseline;
+                if (e.type == part.Head) { var p = current.Clone(); p.Head = projected; best = Math.Max(best, Score(c, p)); }
+                else if (e.type == part.Chest) { var p = current.Clone(); p.Chest = projected; best = Math.Max(best, Score(c, p)); }
+                else if (e.type == part.Legs) { var p = current.Clone(); p.Legs = projected; best = Math.Max(best, Score(c, p)); }
+                else if (e.type == part.Boots) { var p = current.Clone(); p.Boots = projected; best = Math.Max(best, Score(c, p)); }
+                else if (e.type == part.Weapon)
+                {
+                    if (!PlanContainsIdOutside(current, e.id, current.Weapon))
+                    {
+                        var p = current.Clone(); p.Weapon = projected; best = Math.Max(best, Score(c, p));
+                    }
+                    if (c.inventoryController.weapon2Unlocked()
+                        && !PlanContainsIdOutside(current, e.id, current.Weapon2))
+                    {
+                        var p = current.Clone(); p.Weapon2 = projected; best = Math.Max(best, Score(c, p));
+                    }
+                }
+                else if (e.type == part.Accessory)
+                {
+                    for (var i = 0; i < current.Accessories.Count; i++)
+                    {
+                        if (PlanContainsIdOutside(current, e.id, current.Accessories[i])) continue;
+                        var p = current.Clone();
+                        p.Accessories[i] = projected;
+                        best = Math.Max(best, Score(c, p));
+                    }
+                }
+                return Math.Max(0.0, best - baseline);
+            }
+            catch
+            {
+                return 0.0;
+            }
+        }
+
+        private static bool PlanContainsIdOutside(Plan plan, int id, Equipment replaced)
+        {
+            if (id <= 0) return false;
+            return plan.PrimaryItems().Concat(plan.Weapon2 == null
+                    ? Enumerable.Empty<Equipment>() : new[] {plan.Weapon2})
+                .Any(x => x != null && !ReferenceEquals(x, replaced) && x.id == id);
+        }
+
+        private static float BoostCap(float baseCap, float level)
+        {
+            return baseCap <= 0f ? 0f : UnityEngine.Mathf.Floor(baseCap * (1f + level / 100f));
+        }
+
         private static List<Plan> KeepBest(Character c, IEnumerable<Plan> source)
         {
             var ranked = source.OrderByDescending(x => Score(c, x)).ToList();
@@ -420,6 +522,36 @@ namespace NGUInjector.Managers
             {
                 score += 6.0 * Math.Log(1.0 + Math.Max(0.0, candidateAdvAttack));
                 score += 5.0 * Math.Log(1.0 + Math.Max(0.0, candidateAdvDefense));
+
+                /*
+                NEXT-ZONE THRESHOLD OBJECTIVE
+
+                Raw log stats are smooth, but Adventure progression is not: a set that crosses both
+                manual Power/Toughness requirements unlocks a new loot table immediately. Make that
+                discontinuity primary, then maximize the weaker normalized requirement while below it.
+                This does not equip unfinished Cave armor merely because it is newer; it equips it as
+                soon as its real boosted contribution improves the limiting route to the next zone.
+                */
+                var front = ZoneStatHelper.GetBestZone();
+                ZoneStats frontStats;
+                if (front != null && ZoneStatHelper.UserOverrides.TryGetValue(front.Zone, out frontStats)
+                    && (candidateAdvAttack < frontStats.MPower || candidateAdvDefense < frontStats.MToughness))
+                {
+                    // A smoother ratio toward the following zone cannot justify
+                    // giving up the strongest route that is already stat-safe.
+                    score -= 200000000.0;
+                }
+                int nextZone;
+                ZoneStats nextStats;
+                if (ZoneStatHelper.TryGetNextUnlockedZone(front == null ? -1 : front.Zone,
+                    out nextZone, out nextStats))
+                {
+                    var bottleneck = Math.Min(candidateAdvAttack / Math.Max(1.0, nextStats.MPower),
+                        candidateAdvDefense / Math.Max(1.0, nextStats.MToughness));
+                    score += 10000.0 * Math.Min(1.0, Math.Max(0.0, bottleneck));
+                    if (candidateAdvAttack >= nextStats.MPower && candidateAdvDefense >= nextStats.MToughness)
+                        score += 100000000.0;
+                }
             }
             else
             {
@@ -443,6 +575,18 @@ namespace NGUInjector.Managers
             double killSeconds;
             return CombatHelpers.CanNukeCurrentBoss(c)
                    || (CombatHelpers.CanWinCurrentBoss(c, out killSeconds) && killSeconds <= 120.0);
+        }
+
+        private static string Objective(Character c)
+        {
+            if (UseBossObjective(c)) return "selected Fight Boss defeat";
+            var front = ZoneStatHelper.GetBestZone();
+            int nextZone;
+            ZoneStats nextStats;
+            return ZoneStatHelper.TryGetNextUnlockedZone(front == null ? -1 : front.Zone,
+                out nextZone, out nextStats)
+                ? "Adventure progression toward " + nextStats.Name
+                : "continuous Adventure progression";
         }
 
         private static double SpecialUtility(Character c, Equipment e, double slotFactor)

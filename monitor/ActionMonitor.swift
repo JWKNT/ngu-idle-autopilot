@@ -395,6 +395,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let basicTrainingEnergy = numberDouble(state, "energyBasicTrainingAllocated")
         let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
         let loadoutDecision = state["loadoutDecision"] as? String ?? "Evaluating owned equipment"
+        let boostDecision = state["boostDecision"] as? String ?? "Evaluating future equipment boost humps"
         let trashDecision = state["trashDecision"] as? String ?? "Conservative trash audit pending"
         let filterDecision = state["filterDecision"] as? String ?? "Collection-safe loot-filter audit pending"
         let collectionBackfill = state["collectionIsBackfill"] as? Bool ?? false
@@ -644,6 +645,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Advanced Training horizon: \(advancedTrainingHorizon)
         Time Machine horizon: \(timeMachineHorizon)
         Equipment: \(loadoutDecision)
+        Gear development: \(boostDecision)
         Inventory reclamation: \(trashDecision)
         Loot-filter safety: \(filterDecision)
         Yggdrasil seeds: \(yggSeedDecision)
