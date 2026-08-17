@@ -754,6 +754,30 @@ namespace NGUInjector.AllocationProfiles
                 }
             }
 
+            /*
+            PAID TIME-MACHINE RESIDUAL
+
+            Blood can be temporarily Gold-blocked between fast ritual completions. During an
+            unscheduled rebirth hold, otherwise-idle Magic has no opportunity cost, but starting
+            a fresh Time Machine level can consume Gold and may never repay before reset. Continue
+            only an already-paid (progress > 0) gold-multiplier bar with the exact idle remainder.
+            The next sweep reclaims it synchronously as soon as Blood accepts Magic again. Native
+            addMagic performs the mutation; the observed allocation delta is the only reported spend.
+            */
+            var residualTimeMachine = 0L;
+            var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
+            if (_character.magic.idleMagic > 0 && plan != null && plan.RebirthExecutionHold
+                && BR.LastGoldShortfall > 0.0 && _character.machine != null
+                && _character.machine.goldMultiProgress > 0f
+                && _character.buttons.brokenTimeMachine.interactable
+                && !_character.challenges.timeMachineChallenge.inChallenge)
+            {
+                var beforeIdle = _character.magic.idleMagic;
+                SetInput(beforeIdle);
+                _character.timeMachineController.addMagic();
+                residualTimeMachine = Math.Max(0L, beforeIdle - _character.magic.idleMagic);
+            }
+
             var allocated = Math.Max(0L, _character.magic.curMagic - _character.magic.idleMagic);
             var timeMachine = _character.machine == null ? 0L : _character.machine.goldMultiMagic;
             var wandoos = _character.wandoos98 == null ? 0L : _character.wandoos98.wandoosMagic;
@@ -762,6 +786,7 @@ namespace NGUInjector.AllocationProfiles
                 : _character.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic));
             var targetKinds = string.Join(", ", temp.Select(x => x.GetType().Name).Distinct().ToArray());
             var idleReason = _character.magic.idleMagic <= 0 ? "fully allocated"
+                + (residualTimeMachine > 0 ? "; paid Time Machine progress receives the Blood gold-wait remainder" : string.Empty)
                 : allocated <= 0 ? "no active native target accepted Magic"
                 : blood > 0 && temp.All(x => x is BR)
                     ? "active Blood ritual is at its productive cap; the small remainder has no other admitted Magic sink"
