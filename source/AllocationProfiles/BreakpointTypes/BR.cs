@@ -128,7 +128,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             {
                 var gps = Math.Max(0.0, Character.grossGoldPerSecond());
                 var eta = gps > 0 ? " (~" + Math.Ceiling(nearestGoldShortfall / gps) + "s at current gross GPS)" : string.Empty;
-                LastDecision = "Waiting for " + FormatGold(nearestGoldShortfall) + " more Gold"
+                LastDecision = "Waiting for another " + FormatGold(nearestGoldShortfall)
                                + eta + " to start Blood ritual " + (nearestGoldTrack + 1)
                                + " (cost " + FormatGold(nearestGoldCost) + "); idle Magic cannot bypass the native Gold charge";
             }
