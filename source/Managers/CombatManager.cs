@@ -421,6 +421,44 @@ namespace NGUInjector.Managers
                 }
             }
 
+            /*
+            NATIVE-DEATH RECONCILIATION
+
+            Adventure death clears currentEnemy and moves the player to Safe Zone before the next
+            automation pass. Handle that transition before normal Safe-Zone preparation; otherwise
+            the later target-zone move resets _isFighting and silently loses the confirmed failure.
+            Bot-requested recovery and spawn rerolls already clear _isFighting before reaching this
+            state, so this branch identifies an involuntary defeat without guessing from low HP.
+            */
+            if (_isFighting && zone >= 0 && _character.adventure.zone == -1
+                && _character.adventureController.currentEnemy == null)
+            {
+                _isFighting = false;
+                var observedDamage = Math.Max(0, _fightStartHP - _character.adventure.curHP);
+                if (observedDamage > 0)
+                    _expectedFightDamage = _expectedFightDamage <= 0
+                        ? observedDamage
+                        : _expectedFightDamage * .65f + observedDamage * .35f;
+                if (_fightTimer > 1)
+                    LogCombat($"{_enemyName} defeated the player after {_fightTimer:00.0}s");
+                Main.LogAction("DEATH", "Adventure defeat by " + _enemyName
+                    + " [confirmed by native enemy-clear and forced Safe-Zone transition]");
+                MajorUnlockPlanner.RecordFightResult(_character, _fightZone, true);
+                _fightTimer = 0;
+
+                if (LoadoutManager.CurrentLock == LockType.Gold)
+                {
+                    LoadoutManager.RestoreGear();
+                    LoadoutManager.ReleaseLock();
+                }
+                if (_fightWasTitan && LoadoutManager.CurrentLock == LockType.Titan)
+                {
+                    LoadoutManager.CompleteTitanFight(true);
+                    LoadoutManager.RestoreGear();
+                    LoadoutManager.ReleaseLock();
+                }
+            }
+
             //Start by turning off auto attack if its on unless we can only idle attack
             if (!_character.adventure.autoattacking)
             {
@@ -509,7 +547,7 @@ namespace NGUInjector.Managers
                         if (ParryUnlocked() && !ParryActive() && !ParryReady()) return;
                         if (_character.adventure.curHP < _recoveryTargetHP)
                         {
-                            RecoveryReason = "Recovering to 95% HP for the high-risk Titan window";
+                            RecoveryReason = "Recovering to 95% HP for the high-risk unlock attempt";
                             return;
                         }
                     }
