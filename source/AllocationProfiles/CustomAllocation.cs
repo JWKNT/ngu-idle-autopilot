@@ -41,6 +41,9 @@ namespace NGUInjector.AllocationProfiles
         private string _lastEnergyActionShape = string.Empty;
         private DateTime _lastEnergyActionLog = DateTime.MinValue;
 
+        internal static string LastMagicAllocationDecision { get; private set; }
+            = "Magic allocation has not completed a verified sweep yet";
+
         internal bool IsAllocationRunning;
 
         public CustomAllocation(string profilesDir, string profile)
@@ -726,12 +729,28 @@ namespace NGUInjector.AllocationProfiles
                 }
             }
 
+            var allocated = Math.Max(0L, _character.magic.curMagic - _character.magic.idleMagic);
+            var timeMachine = _character.machine == null ? 0L : _character.machine.goldMultiMagic;
+            var wandoos = _character.wandoos98 == null ? 0L : _character.wandoos98.wandoosMagic;
+            var blood = _character.bloodMagic == null || _character.bloodMagic.ritual == null
+                ? 0L
+                : _character.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic));
+            var targetKinds = string.Join(", ", temp.Select(x => x.GetType().Name).Distinct().ToArray());
+            var idleReason = _character.magic.idleMagic <= 0 ? "fully allocated"
+                : allocated <= 0 ? "no active native target accepted Magic"
+                : "remaining Magic exceeds the active targets' productive caps or cannot finish before rebirth";
+            LastMagicAllocationDecision = "allocated " + allocated + "/" + _character.magic.curMagic
+                                          + " (TM=" + timeMachine + ", Blood=" + blood
+                                          + ", Wandoos=" + wandoos + "); idle=" + _character.magic.idleMagic
+                                          + " — " + idleReason + "; targets=" + targetKinds;
+
             _character.timeMachineController.updateMenu();
             _character.bloodMagicController.updateMenu();
             _character.NGUController.refreshMenu();
             _character.wandoos98Controller.refreshMenu();
             _character.wishesController.updateMenu();
-            Main.LogAction("ALLOC", "Rebalanced Magic across " + temp.Count + " active priorities");
+            Main.LogAction("ALLOC", "Rebalanced Magic across " + temp.Count + " active priorities: "
+                                    + LastMagicAllocationDecision);
         }
 
         public override void AllocateR3()

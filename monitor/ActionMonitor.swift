@@ -489,6 +489,10 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appendResourceGoal(&resourceDecisions, state: state, amountKey: "exp", decisionKey: "expDecision", etaKey: "expEtaSeconds", label: "EXP")
         appendResourceGoal(&resourceDecisions, state: state, amountKey: "ap", decisionKey: "apDecision", etaKey: "apEtaSeconds", label: "AP")
         appendResourceGoal(&resourceDecisions, state: state, amountKey: "gold", decisionKey: "goldDecision", etaKey: "goldEtaSeconds", label: "gold")
+        if state["magicAllocationDecision"] != nil {
+            let magicDecision = state["magicAllocationDecision"] as? String ?? "waiting for a verified allocation sweep"
+            resourceDecisions.append("Magic: \(magicDecision).")
+        }
         let augmentDecision = state["augmentDecision"] as? String ?? "Re-evaluating Augments"
         let augmentETA = number(state, "augmentEtaSeconds")
         let augmentEnergy = numberDouble(state, "augmentEnergy")
@@ -694,7 +698,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 color = .systemYellow; weight = .semibold
             } else if upper.contains("READY NOW") || upper.contains("SYNCED") || upper.contains("COMPLETE") || upper.contains("FULLY-ALLOCATED") {
                 color = .systemGreen; weight = .medium
-            } else if upper.contains("EXP ") || upper.contains("AP ") || upper.contains("GOLD ") || upper.contains("ENERGY:") || upper.contains("AUGMENTATION:") {
+            } else if upper.contains("EXP ") || upper.contains("AP ") || upper.contains("GOLD ") || upper.contains("ENERGY:") || upper.contains("MAGIC:") || upper.contains("AUGMENTATION:") {
                 color = .systemTeal
             } else if upper.contains("INVENTORY") || upper.contains("COLLECTION") || upper.contains("MAXX") {
                 color = upper.contains("CRITICAL") || upper.contains("HIGH PRESSURE") ? .systemOrange : .systemCyan

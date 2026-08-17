@@ -615,6 +615,7 @@ namespace NGUInjector.Autopilot
             var bossKillEta = CurrentBossKillEta(c);
             var bossViabilityReason = BossViabilityReason(c, bossReady, bossFighting, bossKillEta);
             var energyIncome = Math.Max(0.0, c.energyPerSecond());
+            var magicIncome = Math.Max(0.0, c.magicPerSecond());
             var energySweepBound = Math.Max(1L, (long)Math.Ceiling(energyIncome * 0.2) + 1L);
             var energyIdleReason = c.idleEnergy <= 0 ? "fully-allocated"
                 : c.idleEnergy <= energySweepBound ? "between-allocation-sweeps"
@@ -814,6 +815,14 @@ namespace NGUInjector.Autopilot
                        + "  \"energyAllocationBreakdown\": " + energyBreakdown + ",\n"
                        + "  \"energyBasicTrainingAllocated\": " + basicTrainingEnergy + ",\n"
                        + "  \"energyNonBasicTrainingAllocated\": " + nonBasicTrainingEnergy + ",\n"
+                       + "  \"magicCurrent\": " + c.magic.curMagic + ",\n"
+                       + "  \"magicIdle\": " + c.magic.idleMagic + ",\n"
+                       + "  \"magicAllocated\": " + Math.Max(0L, c.magic.curMagic - c.magic.idleMagic) + ",\n"
+                       + "  \"magicIncomePerSecond\": " + magicIncome.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"magicTimeMachineAllocated\": " + c.machine.goldMultiMagic + ",\n"
+                       + "  \"magicBloodAllocated\": " + (c.bloodMagic == null || c.bloodMagic.ritual == null ? 0L : c.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic))) + ",\n"
+                       + "  \"magicWandoosAllocated\": " + c.wandoos98.wandoosMagic + ",\n"
+                       + "  \"magicAllocationDecision\": \"" + EscapeJson(CustomAllocation.LastMagicAllocationDecision) + "\",\n"
                        + "  \"loadoutDecision\": \"" + EscapeJson(ProgressionLoadoutOptimizer.LastDecision) + "\",\n"
                        + "  \"loadoutObjective\": \"" + EscapeJson(ProgressionLoadoutOptimizer.LastObjective) + "\",\n"
                        + "  \"loadoutSearchExact\": " + ProgressionLoadoutOptimizer.LastSearchExact.ToString().ToLowerInvariant() + ",\n"
