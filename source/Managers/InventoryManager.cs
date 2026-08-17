@@ -443,7 +443,7 @@ namespace NGUInjector.Managers
                 _controller.swapMacguffin();
                 var confirmed = _character.inventory.macguffins[guffSlot].id == expected;
                 Main.LogAction(confirmed ? "MACGUFFIN" : "REJECTED", confirmed
-                    ? "Equipped MacGuffin " + expected + " into empty slot " + (guffSlot + 1)
+                    ? "Equipped " + GameNames.Item(_character, expected) + " into empty MacGuffin slot " + (guffSlot + 1)
                       + " [confirmed by slot state]"
                     : "MacGuffin equip produced no verified slot transition");
                 if (confirmed) equippedIds.Add(expected);
@@ -481,7 +481,7 @@ namespace NGUInjector.Managers
             if (progression != null && _character.inventory.inventory[progression.slot].removable)
             {
                 ConsumeInventorySlot(progression.slot);
-                Main.LogAction("PROGRESSION", "Consumed progression item " + progression.id
+                Main.LogAction("PROGRESSION", "Consumed " + GameNames.Item(_character, progression.id)
                     + " through the game's ItemController");
                 _controller.changePage(curPage);
                 return;
@@ -506,8 +506,8 @@ namespace NGUInjector.Managers
                     ? _character.settings.wandoos98On || _character.wandoos98.OSlevel > osBefore
                     : _character.wandoos98.XLLevels > xlBefore;
                 Main.LogAction(confirmed ? "PROGRESSION" : "REJECTED", confirmed
-                    ? "Consumed Wandoos item " + wandoos.id + " [confirmed by OS state]"
-                    : "Wandoos item " + wandoos.id + " produced no OS transition");
+                    ? "Consumed " + GameNames.Item(_character, wandoos.id) + " [confirmed by OS state]"
+                    : GameNames.Item(_character, wandoos.id) + " produced no OS transition");
                 _controller.changePage(curPage);
                 return;
             }
@@ -563,7 +563,8 @@ namespace NGUInjector.Managers
                 _controller.swapItems();
                 if (_character.inventory.inventory[pair.Key].id != pair.Value)
                 {
-                    Main.LogAction("REJECTED", "Exile clue " + pair.Value + " could not be moved to slot " + pair.Key);
+                    Main.LogAction("REJECTED", GameNames.Item(_character, pair.Value)
+                                               + " could not be moved to Exile assembly slot " + pair.Key);
                     return true;
                 }
             }

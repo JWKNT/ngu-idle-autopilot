@@ -219,8 +219,8 @@ namespace NGUInjector.Managers
                     _character.yggdrasilController.fruits[slot].activate(i);
                     Main.LogAction(fruit.activated ? "YGG" : "REJECTED",
                         fruit.activated
-                            ? "Activated fruit " + i + " [confirmed by fruit state]"
-                            : "Fruit " + i + " activation produced no state transition");
+                            ? "Activated " + GameNames.Fruit(_character, i) + " [confirmed by fruit state]"
+                            : GameNames.Fruit(_character, i) + " activation produced no state transition");
                     continue;
                 }
 
@@ -235,8 +235,8 @@ namespace NGUInjector.Managers
                     _character.yggdrasilController.fruits[slot].activate(i);
                     Main.LogAction(fruit.activated ? "YGG" : "REJECTED",
                         fruit.activated
-                            ? "Activated fruit " + i + " [confirmed by fruit state]"
-                            : "Fruit " + i + " activation produced no state transition");
+                            ? "Activated " + GameNames.Fruit(_character, i) + " [confirmed by fruit state]"
+                            : GameNames.Fruit(_character, i) + " activation produced no state transition");
                 }
             }
             _character.yggdrasilController.changePage(curPage);
@@ -265,7 +265,7 @@ namespace NGUInjector.Managers
             if (bestCost <= 0 || bestCost > _character.yggdrasil.seeds)
             {
                 LastSeedDecision = "Saving " + _character.yggdrasil.seeds + "/" + bestCost
-                                   + " seeds for fruit " + best + " tier " + (tier + 1)
+                                   + " seeds for " + GameNames.Fruit(_character, best) + " tier " + (tier + 1)
                                    + "; cheaper side upgrades would delay the compounding target";
                 return;
             }
@@ -280,12 +280,13 @@ namespace NGUInjector.Managers
             var confirmed = _character.yggdrasil.fruits[best].maxTier == tierBefore + 1
                             && _character.yggdrasil.seeds == seedsBefore - bestCost;
             LastSeedDecision = confirmed
-                ? "Bought fruit " + best + " tier " + (tierBefore + 1) + " at the strategic seed breakpoint"
-                : "Fruit " + best + " strategic seed purchase was rejected by native state validation";
+                ? "Bought " + GameNames.Fruit(_character, best) + " tier " + (tierBefore + 1)
+                  + " at the strategic seed breakpoint"
+                : GameNames.Fruit(_character, best) + " strategic seed purchase was rejected by native state validation";
             Main.LogAction(confirmed ? "YGG" : "REJECTED", confirmed
-                ? "Upgraded fruit " + best + " tier " + tierBefore + " -> " + (tierBefore + 1)
+                ? "Upgraded " + GameNames.Fruit(_character, best) + " tier " + tierBefore + " -> " + (tierBefore + 1)
                   + " for " + bestCost + " seeds [confirmed by tier and seed deltas]"
-                : "Fruit " + best + " seed upgrade produced no verified transition");
+                : GameNames.Fruit(_character, best) + " seed upgrade produced no verified transition");
         }
 
         private int StrategicSeedTarget(int count, long cap)
@@ -379,7 +380,7 @@ namespace NGUInjector.Managers
                 ? "Seed engine mature: eat permanent fruit rewards; poop target "
                   + (bestPoop < 0 ? "reserved" : bestPoop.ToString())
                 : "Seed engine building: harvest low-tier temporary fruits for double seeds; "
-                  + (bestPoop < 0 ? "reserve poop" : "poop fruit " + bestPoop);
+                  + (bestPoop < 0 ? "reserve poop" : "poop " + GameNames.Fruit(_character, bestPoop));
         }
 
         private int SelectPoopTarget(bool seedEngineComplete)

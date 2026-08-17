@@ -13,12 +13,6 @@ namespace NGUInjector.Managers
 {
     internal static class BeardManager
     {
-        private static readonly string[] Names =
-        {
-            "Fu Manchu", "Neckbeard", "Reverse Hitler", "Beard Cage",
-            "LadyBeard", "BEARd", "Golden Beard"
-        };
-
         // Utility is progression-gate value, not the displayed percentage.  Adventure,
         // drop and NUMBER dominate early; NGU and gold rise once those systems exist.
         private static double Utility(Character c, int id)
@@ -89,8 +83,8 @@ namespace NGUInjector.Managers
                     c.allBeards.deactivateBeard(id);
                     Main.LogAction(!c.beards.activeBeards.Contains(id) ? "BEARD" : "REJECTED",
                         !c.beards.activeBeards.Contains(id)
-                            ? "Deactivated " + Names[id] + " during first-minute beard optimization"
-                            : "Could not deactivate beard " + id);
+                            ? "Deactivated " + GameNames.Beard(c, id) + " during first-minute beard optimization"
+                            : "Could not deactivate " + GameNames.Beard(c, id));
                 }
             }
 
@@ -101,8 +95,8 @@ namespace NGUInjector.Managers
                 c.allBeards.activateBeard(id);
                 Main.LogAction(c.beards.activeBeards.Contains(id) ? "BEARD" : "REJECTED",
                     c.beards.activeBeards.Contains(id)
-                        ? "Activated " + Names[id] + " [confirmed by active-beard state]"
-                        : "Activation of " + Names[id] + " produced no state transition");
+                        ? "Activated " + GameNames.Beard(c, id) + " [confirmed by active-beard state]"
+                        : "Activation of " + GameNames.Beard(c, id) + " produced no state transition");
             }
 
             // Golden Beard deactivation clears every digger.  We never deactivate it

@@ -767,7 +767,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /*
     KEY EVENTS FILTER
 
-    actions.log remains the durable source. This view admits only confirmed, low-frequency
+    actions.log remains the durable source. This view admits only low-frequency, state-validated
     transitions: victories, significant-digit levels, first/MAXX item discoveries, EXP/AP
     purchases, rebirths, major rewards, and completed progression. It deliberately rejects
     attempts, allocation churn, ordinary drops, merges, recovery ticks, and routing narration.
@@ -781,8 +781,18 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             keyEventRemainder = lines.popLast() ?? ""
         }
-        let selected = lines.filter(isKeyEventLine)
+        let selected = lines.filter(isKeyEventLine).map(keyEventDisplayLine)
         return selected.isEmpty ? "" : selected.joined(separator: "\n") + "\n"
+    }
+
+    // Live Actions keeps the validation evidence. Key Events removes that implementation
+    // suffix so the sparse history reads as an event ledger rather than a diagnostic trace.
+    private func keyEventDisplayLine(_ line: String) -> String {
+        return line.replacingOccurrences(
+            of: #"\s*\[[^\]]*(?:confirmed|verified)[^\]]*\]"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
     }
 
     private func isKeyEventLine(_ line: String) -> Bool {
@@ -825,7 +835,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .foregroundColor: NSColor.systemGreen
         ])
         output.append(NSAttributedString(
-            string: "Verified victories • significant level milestones • first/MAXX items • XP/AP purchases • major progression\n\n",
+            string: "Victories • significant level milestones • first/MAXX items • XP/AP purchases • major progression\n\n",
             attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular),
                 .foregroundColor: NSColor(calibratedWhite: 0.58, alpha: 1)

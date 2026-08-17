@@ -122,12 +122,12 @@ namespace NGUInjector.Managers
             {
                 if (ac.blockMove.button.IsInteractable() && !_pc.isParrying)
                 {
-                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Reactive block (charger)");
+                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Block — charger reaction");
                 }
 
                 if (ac.parryMove.button.IsInteractable() && !_pc.isBlocking && !_pc.isParrying)
                 {
-                    return ExecuteVerifiedMove(ac.parryMove.button, ac.parryMove.doMove, "Reactive parry (charger)");
+                    return ExecuteVerifiedMove(ac.parryMove.button, ac.parryMove.doMove, "Parry — charger reaction");
                 }
             }
 
@@ -135,7 +135,7 @@ namespace NGUInjector.Managers
             {
                 if (ac.blockMove.button.IsInteractable())
                 {
-                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Reactive block (rapid)");
+                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Block — rapid-enemy reaction");
                 }
             }
 
@@ -143,7 +143,7 @@ namespace NGUInjector.Managers
             {
                 if (ac.blockMove.button.IsInteractable())
                 {
-                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Reactive block (exploder)");
+                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Block — exploder reaction");
                 }
             }
 
@@ -288,9 +288,9 @@ namespace NGUInjector.Managers
 
             if (ac.ultimateAttackMove.button.IsInteractable())
             {
-                var description = ChargeActive() ? "Charged ultimate attack"
-                    : GetChargeCooldown() > .45 ? "Ultimate attack before cooldown reset"
-                    : "Ultimate attack";
+                var description = ChargeActive() ? "Ultimate Attack — Charge active"
+                    : GetChargeCooldown() > .45 ? "Ultimate Attack — before cooldown reset"
+                    : "Ultimate Attack";
                 if ((fastCombat || ChargeActive() || GetChargeCooldown() > .45)
                     && ExecuteVerifiedMove(ac.ultimateAttackMove.button, ac.ultimateAttackMove.doMove, description))
                     return;
@@ -298,19 +298,19 @@ namespace NGUInjector.Managers
 
             if (ac.pierceMove.button.IsInteractable())
             {
-                ExecuteVerifiedMove(ac.pierceMove.button, ac.pierceMove.doMove, "Pierce attack");
+                ExecuteVerifiedMove(ac.pierceMove.button, ac.pierceMove.doMove, "Piercing Attack");
                 return;
             }
 
             if (ac.strongAttackMove.button.IsInteractable())
             {
-                ExecuteVerifiedMove(ac.strongAttackMove.button, ac.strongAttackMove.doMove, "Strong attack");
+                ExecuteVerifiedMove(ac.strongAttackMove.button, ac.strongAttackMove.doMove, "Strong Attack");
                 return;
             }
 
             if (ac.regularAttackMove.button.IsInteractable())
             {
-                ExecuteVerifiedMove(ac.regularAttackMove.button, ac.regularAttackMove.doMove, "Regular attack");
+                ExecuteVerifiedMove(ac.regularAttackMove.button, ac.regularAttackMove.doMove, "Regular Attack");
                 return;
             }
         }
@@ -329,8 +329,10 @@ namespace NGUInjector.Managers
             var confirmed = _character.adventure.zone == zone;
             Main.LogAction(confirmed ? "ZONE" : "REJECTED",
                 confirmed
-                    ? "Changed Adventure zone " + before + " -> " + zone + " [confirmed by game state]"
-                    : "Adventure zone request " + before + " -> " + zone + " was rejected");
+                    ? "Changed Adventure zone " + GameNames.Zone(_character, before) + " -> "
+                      + GameNames.Zone(_character, zone) + " [confirmed by game state]"
+                    : "Adventure zone request " + GameNames.Zone(_character, before) + " -> "
+                      + GameNames.Zone(_character, zone) + " was rejected");
         }
 
         internal void IdleZone(int zone, bool bossOnly, bool recoverHealth, bool? beastMode = null)

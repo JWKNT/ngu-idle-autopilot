@@ -56,9 +56,11 @@ namespace NGUInjector.Managers
                 var confirmed = slot < inv.daycare.Count && inv.daycare[slot].id == candidateId;
                 Main.LogAction(confirmed ? "DAYCARE" : "REJECTED",
                     confirmed
-                        ? "Daycare slot " + (slot + 1) + ": item " + previousId + " -> " + candidateId
+                        ? "Daycare slot " + (slot + 1) + ": " + GameNames.Item(c, previousId)
+                          + " -> " + GameNames.Item(c, candidateId)
                           + " [confirmed by daycare state]"
-                        : "Daycare swap for item " + candidateId + " produced no state transition");
+                        : "Daycare swap for " + GameNames.Item(c, candidateId)
+                          + " produced no state transition");
                 if (confirmed)
                     occupied.Add(candidateId);
             }

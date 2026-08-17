@@ -53,7 +53,7 @@ namespace NGUInjector.Managers
                 if (!PrecisionImpossible(i) || wish.energy <= 0 && wish.magic <= 0 && wish.res3 <= 0)
                     continue;
                 _character.wishesController.removeAllResources(i);
-                Main.LogAction("HOLD", "Removed resources from Wish " + i
+                Main.LogAction("HOLD", "Removed resources from " + GameNames.Wish(_character, i)
                                        + " because its best-case level time exceeds the native floating-point completion limit");
             }
 

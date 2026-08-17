@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.Remoting.Messaging;
 using System.Text;
 using NGUInjector.Autopilot;
+using NGUInjector.Managers;
 
 /*
 FILE PURPOSE
@@ -19,11 +20,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
     {
         private int BTIndex => Index <= 5 ? Index : Index - 6;
 
-        private static readonly string[] AttackNames =
-            { "Basic Attack", "Strong Attack", "Parry", "Piercing Attack", "Ultimate Attack", "Mega Buff" };
-        private static readonly string[] DefenseNames =
-            { "Basic Defense", "Defensive Buff", "Heal", "Block", "Ultimate Buff", "Oh Shit" };
-
         internal string Label
         {
             get
@@ -31,10 +27,10 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 if (Character.settings.syncTraining && Index <= 5)
                 {
                     if (AttackUnlocked && DefenseUnlocked)
-                        return AttackNames[BTIndex] + " + " + DefenseNames[BTIndex];
-                    return AttackUnlocked ? AttackNames[BTIndex] : DefenseNames[BTIndex];
+                        return GameNames.AttackTraining(BTIndex) + " + " + GameNames.DefenseTraining(BTIndex);
+                    return AttackUnlocked ? GameNames.AttackTraining(BTIndex) : GameNames.DefenseTraining(BTIndex);
                 }
-                return Index <= 5 ? AttackNames[BTIndex] : DefenseNames[BTIndex];
+                return Index <= 5 ? GameNames.AttackTraining(BTIndex) : GameNames.DefenseTraining(BTIndex);
             }
         }
 

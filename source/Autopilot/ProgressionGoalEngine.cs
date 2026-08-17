@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using NGUInjector.Managers;
 
 /*
 FILE PURPOSE
@@ -129,29 +130,29 @@ namespace NGUInjector.Autopilot
             // Per-run titan kill counters reset at every rebirth. Persistent set flags
             // are the correct long-range progression gates for the roadmap.
             if (!items.GRBComplete && c.highestBoss >= 58)
-                AddFeature(goals, "titan-1", "Complete GRB / Titan 1 set", false, 0, 1);
+                AddFeature(goals, "titan-1", "Complete " + GameNames.Titan(c, 0) + " set", false, 0, 1);
             else if (items.GRBComplete && !items.seedComplete)
-                AddFeature(goals, "titan-2", "Complete Grand Corrupted Tree / Titan 2 seed set", false, 0, 1);
+                AddFeature(goals, "titan-2", "Complete " + GameNames.Titan(c, 1) + " seed set", false, 0, 1);
             else if (items.seedComplete && !items.jakeComplete)
-                AddFeature(goals, "titan-3", "Complete Jake / Titan 3 set", false, 0, 1);
+                AddFeature(goals, "titan-3", "Complete " + GameNames.Titan(c, 2) + " set", false, 0, 1);
             else if (items.jakeComplete && !items.uugComplete)
-                AddFeature(goals, "titan-4", "Complete UUG / Titan 4 set", false, 0, 1);
+                AddFeature(goals, "titan-4", "Complete " + GameNames.Titan(c, 3) + " set", false, 0, 1);
             else if (items.uugComplete && !items.waldoComplete)
-                AddFeature(goals, "titan-5", "Complete Walderp / Titan 5 set", false, 0, 1);
+                AddFeature(goals, "titan-5", "Complete " + GameNames.Titan(c, 4) + " set", false, 0, 1);
             else if (items.waldoComplete && !items.beast1complete)
-                AddFeature(goals, "titan-6", "Complete Beast / Titan 6 set", false, 0, 1);
+                AddFeature(goals, "titan-6", "Complete " + GameNames.Titan(c, 5) + " set", false, 0, 1);
             else if (items.beast1complete && !items.nerdComplete)
-                AddFeature(goals, "titan-7", "Complete Greasy Nerd / Titan 7 set", false, 0, 1);
+                AddFeature(goals, "titan-7", "Complete " + GameNames.Titan(c, 6) + " set", false, 0, 1);
             else if (items.nerdComplete && !items.godmotherComplete)
-                AddFeature(goals, "titan-8", "Complete Godmother / Titan 8 set", false, 0, 1);
+                AddFeature(goals, "titan-8", "Complete " + GameNames.Titan(c, 7) + " set", false, 0, 1);
             else if (items.godmotherComplete && !items.exileComplete)
-                AddFeature(goals, "titan-9", "Complete Exile / Titan 9 set", false, 0, 1);
+                AddFeature(goals, "titan-9", "Complete " + GameNames.Titan(c, 8) + " set", false, 0, 1);
             else if (items.exileComplete && !items.spaceComplete)
-                AddFeature(goals, "titan-10", "Complete IT HUNGERS / Titan 10 Space set", false, 0, 1);
+                AddFeature(goals, "titan-10", "Complete " + GameNames.Titan(c, 9) + " Space set", false, 0, 1);
             else if (items.spaceComplete && !items.rockLobsterComplete)
-                AddFeature(goals, "titan-11", "Complete Rock Lobster / Titan 11 set", false, 0, 1);
+                AddFeature(goals, "titan-11", "Complete " + GameNames.Titan(c, 10) + " set", false, 0, 1);
             else if (items.rockLobsterComplete && !items.amalgamateComplete)
-                AddFeature(goals, "titan-12", "Complete AMALGAMATE / Titan 12 set", false, 0, 1);
+                AddFeature(goals, "titan-12", "Complete " + GameNames.Titan(c, 11) + " set", false, 0, 1);
         }
 
         private static void AddFeature(ICollection<GoalNode> goals, string id, string label, bool complete,

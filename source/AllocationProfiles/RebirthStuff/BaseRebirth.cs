@@ -408,14 +408,14 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                         if (Main.Settings.BloodMacGuffinBThreshold <= mcguffB)
                         {
                             CharObj.bloodSpells.castMacguffin2Spell();
-                            Main.LogPitSpin("Casting Blood MacGuffin B Spell power @ " + mcguffB);
+                            Main.LogPitSpin("Casting Blood MacGuffin β power @ " + mcguffB);
                             return;
                         }
                         else
                         {
                             if (rebirth)
                             {
-                                Main.Log("Casting Failed Blood MacGuffin B Spell - Insufficient Power " + mcguffB +
+                                Main.Log("Casting Failed Blood MacGuffin β - Insufficient Power " + mcguffB +
                                          " of " + Main.Settings.BloodMacGuffinBThreshold);
                             }
                         }
@@ -439,14 +439,14 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                         if (Main.Settings.BloodMacGuffinAThreshold <= mcguffA)
                         {
                             CharObj.bloodSpells.castMacguffin1Spell();
-                            Main.LogPitSpin("Casting Blood MacGuffin A Spell power @ " + mcguffA);
+                            Main.LogPitSpin("Casting Blood MacGuffin α power @ " + mcguffA);
                             return;
                         }
                         else
                         {
                             if (rebirth)
                             {
-                                Main.Log("Casting Failed Blood MacGuffin A Spell - Insufficient Power " + mcguffA +
+                                Main.Log("Casting Failed Blood MacGuffin α - Insufficient Power " + mcguffA +
                                          " of " + Main.Settings.BloodMacGuffinAThreshold);
                             }
                         }

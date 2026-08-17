@@ -311,7 +311,7 @@ namespace NGUInjector.Autopilot
             for (var i = 0; i < current.Length; i++)
             {
                 if (current[i] > _lastObservedTitanKills[i])
-                    Main.LogAction("TITAN", "Defeated " + TitanNames[i] + " — native kill count "
+                    Main.LogAction("TITAN", "Defeated " + GameNames.Titan(c, i) + " — native kill count "
                                             + current[i] + " [confirmed by Titan counter delta]");
             }
             _lastObservedTitanKills = current;
@@ -362,7 +362,7 @@ namespace NGUInjector.Autopilot
                     for (var i = 0; i < current.Length; i++)
                     {
                         if (current[i] <= _lastObservedTrainingMilestones[i] || current[i] <= 0) continue;
-                        var label = i < 6 ? AttackTrainingNames[i] : DefenseTrainingNames[i - 6];
+                        var label = i < 6 ? GameNames.AttackTraining(i) : GameNames.DefenseTraining(i - 6);
                         Main.LogAction("MILESTONE", label + " reached level " + current[i].ToString("N0")
                                                     + " [confirmed at greatest-place-value boundary]");
                     }
@@ -370,9 +370,10 @@ namespace NGUInjector.Autopilot
                 _lastObservedTrainingMilestones = current;
             }
 
-            if (c.augments == null || c.augments.augs == null)
+            if (c.augments == null || c.augments.augs == null || c.augmentsController == null
+                || c.augmentsController.augments == null)
                 return;
-            var tracks = Math.Min(AugmentNames.Length, c.augments.augs.Length);
+            var tracks = Math.Min(c.augmentsController.augments.Length, c.augments.augs.Length);
             var augCurrent = new long[tracks * 2];
             for (var i = 0; i < tracks; i++)
             {
@@ -386,8 +387,8 @@ namespace NGUInjector.Autopilot
                 {
                     if (augCurrent[i] <= _lastObservedAugmentMilestones[i] || augCurrent[i] <= 0) continue;
                     var pair = i / 2;
-                    var kind = i % 2 == 0 ? "Augment" : "Upgrade";
-                    Main.LogAction("MILESTONE", AugmentNames[pair] + " " + kind + " reached level "
+                    var upgrade = i % 2 != 0;
+                    Main.LogAction("MILESTONE", GameNames.Augment(c, pair, upgrade) + " reached level "
                                                 + augCurrent[i].ToString("N0")
                                                 + " [confirmed at greatest-place-value boundary]");
                 }
@@ -406,13 +407,7 @@ namespace NGUInjector.Autopilot
 
         private static string SafeItemName(Character c, int id)
         {
-            try
-            {
-                if (c.itemInfo != null && c.itemInfo.itemName != null && id < c.itemInfo.itemName.Length)
-                    return (c.itemInfo.itemName[id] ?? "item " + id).Replace("\r", " ").Replace("\n", " ").Trim();
-            }
-            catch { }
-            return "item " + id;
+            return GameNames.Item(c, id);
         }
 
         private void ManageBloodSpell()
@@ -432,14 +427,14 @@ namespace NGUInjector.Autopilot
                 && bloodBefore >= c.bloodSpells.minMacguffin2Blood())
             {
                 c.bloodSpells.castMacguffin2Spell();
-                label = "MacGuffin B (all equipped MacGuffins)";
+                label = "Blood MacGuffin β — all equipped MacGuffins";
             }
             else if (c.adventure.itopod.perkLevel.Count > 72 && c.adventure.itopod.perkLevel[72] >= 1
                      && c.bloodMagic.macguffin1Time.totalseconds >= c.bloodMagicController.spells.macguffin1Cooldown
                      && bloodBefore >= c.bloodSpells.minMacguffin1Blood())
             {
                 c.bloodSpells.castMacguffin1Spell();
-                label = "MacGuffin A";
+                label = "Blood MacGuffin α";
             }
             else
             {
@@ -448,19 +443,19 @@ namespace NGUInjector.Autopilot
                 if (remaining <= 5)
                 {
                     c.bloodSpells.castRebirthSpell(bloodBefore);
-                    label = "Rebirth Number reserve at the selected checkpoint";
+                    label = "Blood NUMBER Boost — reserved for the selected rebirth checkpoint";
                 }
                 else if (c.bloodMagic.adventureSpellTime.totalseconds >= c.bloodSpells.adventureSpellCooldown
                          && bloodBefore >= c.bloodSpells.minAdventureBlood()
                          && c.settings.rebirthDifficulty == difficulty.normal)
                 {
                     c.bloodSpells.castAdventurePowerupSpell();
-                    label = "Iron Pill permanent Adventure stats";
+                    label = "Iron Pill — permanent Adventure stats";
                 }
                 else if (c.settings.pitUnlocked && bloodBefore >= c.bloodSpells.minGoldBlood())
                 {
                     c.bloodSpells.castGoldSpell(bloodBefore);
-                    label = "Blood Counterfeit gold multiplier";
+                    label = "Counterfeit Gold";
                 }
             }
 
@@ -512,7 +507,7 @@ namespace NGUInjector.Autopilot
                 if (_loggedAdventureZone != deathNoteZone || _loggedAdventureFightType != 2)
                 {
                     Main.LogAction("PROGRESSION", "Titan 8 Death Note target: " + deathNoteTarget
-                                                         + " in zone " + deathNoteZone);
+                                                         + " in " + GameNames.Zone(Main.Character, deathNoteZone));
                     _loggedAdventureZone = deathNoteZone;
                     _loggedAdventureFightType = 2;
                 }
@@ -527,7 +522,8 @@ namespace NGUInjector.Autopilot
             {
                 if (_loggedAdventureZone != titanZone || _loggedAdventureFightType != 2)
                 {
-                    Main.LogAction("ADVENTURE", "Prioritizing active Titan window in zone " + titanZone);
+                    Main.LogAction("ADVENTURE", "Prioritizing active Titan window in "
+                                                   + GameNames.Zone(Main.Character, titanZone));
                     _loggedAdventureZone = titanZone;
                     _loggedAdventureFightType = 2;
                 }
@@ -584,8 +580,7 @@ namespace NGUInjector.Autopilot
                     : "; collection: " + _collectionTarget.Reason + " ("
                       + _collectionTarget.MissingSummary + ")";
                 Main.LogAction(_collectionTarget != null && _collectionTarget.IsBackfill ? "COLLECTION" : "ADVENTURE",
-                    "Routing to " + (ZoneStatHelper.UserOverrides.ContainsKey(best.Zone)
-                        ? ZoneStatHelper.UserOverrides[best.Zone].Name : "zone " + best.Zone)
+                    "Routing to " + GameNames.Zone(Main.Character, best.Zone)
                     + " using fight type " + best.FightType + collectionDetail);
                 _loggedAdventureZone = best.Zone;
                 _loggedAdventureFightType = best.FightType;
@@ -810,11 +805,8 @@ namespace NGUInjector.Autopilot
             var adventureZone = c.adventure.zone;
             var adventureTargetZone = _adventureTarget == null ? -1 : _adventureTarget.Zone;
             var adventureFightType = _adventureTarget == null ? 0 : _adventureTarget.FightType;
-            var adventureTargetName = adventureTargetZone == 1000 ? "ITOPOD"
-                : adventureTargetZone >= 0 && ZoneStatHelper.UserOverrides != null
-                                      && ZoneStatHelper.UserOverrides.ContainsKey(adventureTargetZone)
-                ? ZoneStatHelper.UserOverrides[adventureTargetZone].Name
-                : "Not yet selected";
+            var adventureTargetName = adventureTargetZone >= 0
+                ? GameNames.Zone(c, adventureTargetZone) : "Not yet selected";
             var adventureBossOnlyForSet = _collectionTarget != null && _collectionTarget.Target != null
                                           && _collectionTarget.Target.Zone == adventureTargetZone
                                           && _collectionTarget.BossOnly;
@@ -833,7 +825,7 @@ namespace NGUInjector.Autopilot
             var inventoryPressure = AdventureCollectionPlanner.InventoryPressure(c, _collectionTarget);
             var deferredExpPermanent = GetStrategicPermanentExpTarget(c);
             var expQolPolicy = Config.ManageInventory && Config.ManageAllocations
-                ? "deferred: Loot Filter, Auto Merge, Inventory Merge, loadouts, custom buttons, and Auto Advance duplicate active bot controllers"
+                ? "deferred: Basic Loot Filter, Auto Merge, Inventory Merge Slot, loadouts, custom buttons, and Auto Advance duplicate active bot controllers"
                 : "eligible only for the disabled matching bot subsystem and only below 0.5% of lifetime EXP";
             var nextTitanName = NextTitanName(c);
             var escapedNextTitanName = nextTitanName.Replace("\\", "\\\\").Replace("\"", "\\\"");
@@ -1280,7 +1272,7 @@ namespace NGUInjector.Autopilot
                     Decision = "Yellow Heart is the current AP target, but the game requires a free, non-filtered accessory slot before purchase",
                     Target = GetApCost(controller, id), EtaSeconds = -1};
             var cost = GetApCost(controller, id);
-            var label = ApPurchaseMethods[id].Substring(3).Replace("AP", string.Empty);
+            var label = NativeApPurchaseName(c, id);
             if (cost <= 0)
                 return new ResourceStatus {Decision = "Held because " + label + " is not currently purchasable", Target = 0, EtaSeconds = -1};
             return new ResourceStatus
@@ -1382,7 +1374,6 @@ namespace NGUInjector.Autopilot
             {
                 var state = c.augments.augs[i];
                 var controller = c.augmentsController.augments[i];
-                var label = i >= 0 && i < AugmentNames.Length ? AugmentNames[i] : "pair " + (i + 1);
                 if (state.augEnergy > 0)
                 {
                     var eta = controller.getAugProgressPerTick(state.augEnergy) > 0
@@ -1390,7 +1381,8 @@ namespace NGUInjector.Autopilot
                         : -1;
                     return new AugmentStatus
                     {
-                        Decision = "Installing " + label + " augment level " + (state.augLevel + 1),
+                        Decision = "Installing " + GameNames.Augment(c, i, false)
+                                   + " level " + (state.augLevel + 1),
                         Allocated = state.augEnergy,
                         Progress = state.augProgress,
                         EtaSeconds = eta
@@ -1403,7 +1395,8 @@ namespace NGUInjector.Autopilot
                         : -1;
                     return new AugmentStatus
                     {
-                        Decision = "Installing " + label + " upgrade level " + (state.upgradeLevel + 1),
+                        Decision = "Installing " + GameNames.Augment(c, i, true)
+                                   + " level " + (state.upgradeLevel + 1),
                         Allocated = state.upgradeEnergy,
                         Progress = state.upgradeProgress,
                         EtaSeconds = eta
@@ -1419,35 +1412,21 @@ namespace NGUInjector.Autopilot
             };
         }
 
-        private static readonly string[] AugmentNames =
-        {
-            "Safety Scissors", "Milk Infusion", "Cannon Implant", "Shoulder Mounted",
-            "Actual Ammunition", "The Final Stand", "Buster"
-        };
-
-        private static readonly string[] TitanNames =
-        {
-            "GRB / Titan 1", "Grand Corrupted Tree / Titan 2", "Jake / Titan 3",
-            "UUG / Titan 4", "Walderp / Titan 5", "The Beast / Titan 6",
-            "Greasy Nerd / Titan 7", "Godmother / Titan 8", "Exile / Titan 9",
-            "IT HUNGERS / Titan 10", "Rock Lobster / Titan 11", "AMALGAMATE / Titan 12"
-        };
-
         private static string NextTitanName(Character c)
         {
             var items = c.inventory.itemList;
-            if (!items.GRBComplete) return "GRB / Titan 1";
-            if (!items.seedComplete) return "Grand Corrupted Tree / Titan 2";
-            if (!items.jakeComplete) return "Jake / Titan 3";
-            if (!items.uugComplete) return "UUG / Titan 4";
-            if (!items.waldoComplete) return "Walderp / Titan 5";
-            if (!items.beast1complete) return "The Beast / Titan 6";
-            if (!items.nerdComplete) return "Greasy Nerd / Titan 7";
-            if (!items.godmotherComplete) return "Godmother / Titan 8";
-            if (!items.exileComplete) return "Exile / Titan 9";
-            if (!items.spaceComplete) return "IT HUNGERS / Titan 10";
-            if (!items.rockLobsterComplete) return "Rock Lobster / Titan 11";
-            if (!items.amalgamateComplete) return "AMALGAMATE / Titan 12";
+            if (!items.GRBComplete) return GameNames.Titan(c, 0);
+            if (!items.seedComplete) return GameNames.Titan(c, 1);
+            if (!items.jakeComplete) return GameNames.Titan(c, 2);
+            if (!items.uugComplete) return GameNames.Titan(c, 3);
+            if (!items.waldoComplete) return GameNames.Titan(c, 4);
+            if (!items.beast1complete) return GameNames.Titan(c, 5);
+            if (!items.nerdComplete) return GameNames.Titan(c, 6);
+            if (!items.godmotherComplete) return GameNames.Titan(c, 7);
+            if (!items.exileComplete) return GameNames.Titan(c, 8);
+            if (!items.spaceComplete) return GameNames.Titan(c, 9);
+            if (!items.rockLobsterComplete) return GameNames.Titan(c, 10);
+            if (!items.amalgamateComplete) return GameNames.Titan(c, 11);
             return "next Titan version and drop-set milestone";
         }
 
@@ -1688,7 +1667,7 @@ namespace NGUInjector.Autopilot
                 var defenseRate = TrainingRate(c, false, i);
                 var attackUnlocked = i == 0 || c.training.attackTraining[i - 1] > 5000L * i;
                 var defenseUnlocked = i == 0 || c.training.defenseTraining[i - 1] > 5000L * i;
-                rows.Add("{\"pair\":\"" + EscapeJson(AttackTrainingNames[i] + " + " + DefenseTrainingNames[i])
+                rows.Add("{\"pair\":\"" + EscapeJson(GameNames.AttackTraining(i) + " + " + GameNames.DefenseTraining(i))
                          + "\",\"syncTraining\":" + c.settings.syncTraining.ToString().ToLowerInvariant()
                          + ",\"attackUnlocked\":" + attackUnlocked.ToString().ToLowerInvariant()
                          + ",\"defenseUnlocked\":" + defenseUnlocked.ToString().ToLowerInvariant()
@@ -1715,16 +1694,6 @@ namespace NGUInjector.Autopilot
             return total;
         }
 
-        private static readonly string[] AttackTrainingNames =
-        {
-            "Basic Attack", "Strong Attack", "Parry", "Piercing Attack", "Ultimate Attack", "Mega Buff"
-        };
-
-        private static readonly string[] DefenseTrainingNames =
-        {
-            "Basic Defense", "Defensive Buff", "Heal", "Block", "Ultimate Buff", "Oh Shit"
-        };
-
         private static void GetNextTrainingGoal(Character c, out string goal, out int etaSeconds)
         {
             goal = "Keep all unlocked Basic Trainings speed-capped";
@@ -1739,7 +1708,7 @@ namespace NGUInjector.Autopilot
                 if (c.training.attackTraining[i - 1] < attackTarget)
                 {
                     var remaining = attackTarget - c.training.attackTraining[i - 1];
-                    var attackGoal = "Unlock " + AttackTrainingNames[i];
+                    var attackGoal = "Unlock " + GameNames.AttackTraining(i);
                     if (remaining < smallestRemaining)
                     {
                         smallestRemaining = remaining;
@@ -1753,7 +1722,7 @@ namespace NGUInjector.Autopilot
                 if (c.training.defenseTraining[i - 1] < defenseTarget)
                 {
                     var remaining = defenseTarget - c.training.defenseTraining[i - 1];
-                    var defenseGoal = "Unlock " + DefenseTrainingNames[i];
+                    var defenseGoal = "Unlock " + GameNames.DefenseTraining(i);
                     if (remaining < smallestRemaining)
                     {
                         smallestRemaining = remaining;
@@ -2223,7 +2192,7 @@ namespace NGUInjector.Autopilot
             // relative to lifetime EXP so convenience cannot starve real growth.
             if (!Config.ManageInventory && !c.purchases.hasFilter && 20 <= lifetime * .005)
                 return new PermanentExpTarget(c.adventurePurchases, "buyFilter",
-                    "Loot Filter", 20, () => c.purchases.hasFilter ? 1.0 : 0.0,
+                    "Basic Loot Filter", 20, () => c.purchases.hasFilter ? 1.0 : 0.0,
                     "inventory automation is disabled, so the native filter now prevents manual loot overflow");
             if (!Config.ManageInventory && !c.purchases.hasAutoMerge && 200 <= lifetime * .005)
                 return new PermanentExpTarget(c.adventurePurchases, "buyAutoMerge",
@@ -2232,11 +2201,11 @@ namespace NGUInjector.Autopilot
             if (!Config.ManageInventory && c.purchases.hasAutoMerge && !c.purchases.hasInvMerge
                 && 1000 <= lifetime * .005)
                 return new PermanentExpTarget(c.adventurePurchases, "buyInvMergeUnlock",
-                    "Inventory Auto-Merge", 1000, () => c.purchases.hasInvMerge ? 1.0 : 0.0,
+                    "Inventory Merge Slot", 1000, () => c.purchases.hasInvMerge ? 1.0 : 0.0,
                     "inventory automation is disabled and native inventory merging can replace repeated manual merges");
             if (!Config.ManageAllocations && !c.purchases.hasAutoAdvance && 300 <= lifetime * .005)
                 return new PermanentExpTarget(c.miscPurchases, "buyAutoAdvance",
-                    "Basic Training Auto Advance", 300, () => c.purchases.hasAutoAdvance ? 1.0 : 0.0,
+                    "Auto Advance", 300, () => c.purchases.hasAutoAdvance ? 1.0 : 0.0,
                     "allocation automation is disabled, so native excess transfer prevents capped Basic Training waste");
             return null;
         }
@@ -2421,7 +2390,7 @@ namespace NGUInjector.Autopilot
             var confirmed = c.yggdrasil.fruits[best].permCostPaid && c.realExp < expBefore;
             Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
                 confirmed
-                    ? "Bought permanent auto-activation for Yggdrasil fruit " + best + " for "
+                    ? "Bought permanent auto-activation for " + GameNames.Fruit(c, best) + " for "
                       + (expBefore - c.realExp) + " EXP [confirmed by fruit flag and EXP delta]"
                     : "Yggdrasil permanent purchase produced no verified flag/EXP transition");
             return confirmed;
@@ -2544,6 +2513,28 @@ namespace NGUInjector.Autopilot
                 controller = UnityEngine.Resources.FindObjectsOfTypeAll<ArbitraryController>()
                     .FirstOrDefault(x => x != null && x.character == c);
             return controller;
+        }
+
+        private static string NativeApPurchaseName(Character c, int id)
+        {
+            try
+            {
+                var native = UnityEngine.Resources.FindObjectsOfTypeAll<ArbitraryController>()
+                    .Where(x => x != null && x.id == id && !string.IsNullOrEmpty(x.itemName))
+                    .OrderByDescending(x => x.character == c)
+                    .FirstOrDefault();
+                if (native != null)
+                    return native.itemName.Replace("\r", " ").Replace("\n", " ").Trim();
+            }
+            catch { }
+            // These four are the early targets that can be selected while their shop page is
+            // inactive (and therefore absent from Resources). Strings match the serialized AP
+            // shop labels/internal controller name in the installed build.
+            if (id == 9) return "Insta Training Caps";
+            if (id == 14) return GameNames.Item(c, 129);
+            if (id == 15) return "Additional Inventory Spaces";
+            if (id == 16) return "Starter Pack";
+            return "AP upgrade ID " + id;
         }
 
         private static bool HasYellowHeartMaxxed(Character c)
@@ -2709,7 +2700,7 @@ namespace NGUInjector.Autopilot
             try
             {
                 controller.id = id;
-                controller.itemName = methodName.Substring(3).Replace("AP", string.Empty);
+                controller.itemName = NativeApPurchaseName(controller.character, id);
                 var cost = controller.cost();
                 if (cost <= 0 || cost > available)
                     return false;

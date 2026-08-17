@@ -230,19 +230,19 @@ namespace NGUInjector.Managers
             if (ai == AI.charger && eai.GetPV<int>("chargeCooldown") == 0)
             {
                 var move = Main.Character.adventureController.paralyzeMove;
-                return ExecuteVerifiedMove(move.button, move.doMove, "Paralyze charger");
+                return ExecuteVerifiedMove(move.button, move.doMove, "Paralyze Gaze — charger");
             }
 
             if (ai == AI.rapid && eai.GetPV<int>("rapidEffect") < 5)
             {
                 var move = Main.Character.adventureController.paralyzeMove;
-                return ExecuteVerifiedMove(move.button, move.doMove, "Paralyze rapid enemy");
+                return ExecuteVerifiedMove(move.button, move.doMove, "Paralyze Gaze — rapid enemy");
             }
 
             if (ai != AI.rapid && ai != AI.charger)
             {
                 var move = Main.Character.adventureController.paralyzeMove;
-                return ExecuteVerifiedMove(move.button, move.doMove, "Paralyze");
+                return ExecuteVerifiedMove(move.button, move.doMove, "Paralyze Gaze");
             }
             return false;
         }
@@ -311,7 +311,7 @@ namespace NGUInjector.Managers
         internal static bool CastOhShit()
         {
             var move = Main.Character.adventureController.ohShitMove;
-            return ExecuteVerifiedMove(move.button, move.doMove, "Emergency skill");
+            return ExecuteVerifiedMove(move.button, move.doMove, "OH SHIT!");
         }
     }
 }

@@ -94,8 +94,9 @@ namespace NGUInjector.Managers
                     if (IsLoadoutEquipped(Settings.GoldDropLoadout) && ts.MoneyTarget >= 0)
                     {
                         PendingTitanMoneyTarget = ts.MoneyTarget;
-                        Main.LogAction("GEAR", "Verified Titan gold loadout for Titan "
-                                                     + (ts.MoneyTarget + 1) + "; completion remains pending until a confirmed kill");
+                        Main.LogAction("GEAR", "Verified Titan gold loadout for "
+                                                     + GameNames.Titan(Main.Character, ts.MoneyTarget)
+                                                     + "; completion remains pending until a confirmed kill");
                     }
                     else
                     {
@@ -130,7 +131,7 @@ namespace NGUInjector.Managers
                     Settings.TitanMoneyDone = done;
                 }
                 Settings.DoGoldSwap = false;
-                Main.LogAction("PROGRESSION", "Titan " + (PendingTitanMoneyTarget + 1)
+                Main.LogAction("PROGRESSION", GameNames.Titan(Main.Character, PendingTitanMoneyTarget)
                                                        + " money event completed [confirmed enemy kill]");
                 PendingTitanMoneyTarget = -1;
                 return;

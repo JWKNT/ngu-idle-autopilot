@@ -280,8 +280,10 @@ namespace NGUInjector.Managers
                                 && Main.Character.realGold < goldBefore;
                 Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
                     confirmed
-                        ? "Upgraded Digger " + _cheapestDigger + " max level [confirmed by level/gold delta]"
-                        : "Digger " + _cheapestDigger + " upgrade produced no state transition");
+                        ? "Upgraded " + GameNames.Digger(Main.Character, _cheapestDigger)
+                          + " max level [confirmed by level/gold delta]"
+                        : GameNames.Digger(Main.Character, _cheapestDigger)
+                          + " upgrade produced no state transition");
                 if (!confirmed)
                     return;
             }

@@ -118,8 +118,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 : selected.AugTimeLeftEnergy((long)allocation);
             if (actualTime > horizon)
             {
-                Main.LogAction("HOLD", "Held Augment pair " + bestPair + " "
-                    + (bestIsUpgrade ? "upgrade" : "augment") + ": exact allocated-energy ETA "
+                Main.LogAction("HOLD", "Held " + GameNames.Augment(Character, bestPair, bestIsUpgrade)
+                    + ": exact allocated-energy ETA "
                     + Math.Ceiling(actualTime) + "s exceeds rebirth horizon " + Math.Ceiling(horizon) + "s");
                 return;
             }
@@ -132,8 +132,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             {
                 selected.addEnergyAug();
             }
-            Main.LogAllocation("BestAug exact marginal ROI: pair " + bestPair + " "
-                               + (bestIsUpgrade ? "upgrade" : "augment") + ", score " + bestScore);
+            Main.LogAllocation("BestAug exact marginal ROI: "
+                               + GameNames.Augment(Character, bestPair, bestIsUpgrade)
+                               + ", score " + bestScore);
         }
 
         private static int ActiveHighestBoss(Character c)
