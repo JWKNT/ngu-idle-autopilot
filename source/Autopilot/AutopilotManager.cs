@@ -486,7 +486,7 @@ namespace NGUInjector.Autopilot
             }
             else
             {
-                var remaining = Plan == null ? int.MaxValue
+                var remaining = Plan == null || Plan.RebirthExecutionHold ? int.MaxValue
                     : Plan.RebirthSeconds - (int)c.rebirthTime.totalseconds;
                 if (remaining <= 5)
                 {
@@ -791,7 +791,11 @@ namespace NGUInjector.Autopilot
 
         private void LoadGeneratedProfile()
         {
-            File.WriteAllText(_profilePath, Plan.ToProfileJson(CanExecuteIrreversible && Config.AllowRebirths,
+            // An unscheduled optimizer hold is not a TIME rebirth sixty seconds in
+            // the future. Keep the allocation profile active but omit its rebirth
+            // breakpoint until a mathematically valid execution target exists.
+            File.WriteAllText(_profilePath, Plan.ToProfileJson(CanExecuteIrreversible
+                && Config.AllowRebirths && !Plan.RebirthExecutionHold,
                 CanExecuteIrreversible && Config.AllowChallenges));
             Profile = new CustomAllocation(_profilesDir, "autopilot.generated");
             Profile.ReloadAllocation();
@@ -804,8 +808,9 @@ namespace NGUInjector.Autopilot
             var expStatus = GetExpStatus(c);
             var apStatus = GetApStatus(c);
             var goldStatus = GetGoldStatus(c);
+            var allocationTarget = Plan.EffectiveAllocationTarget(c);
             var goldHorizon = ResourceHorizonModel.EvaluateGold(c,
-                Math.Max(0, Plan.RebirthSeconds - (int)Math.Floor(c.rebirthTime.totalseconds)));
+                Math.Max(0, (int)Math.Floor(allocationTarget - c.rebirthTime.totalseconds)));
             CompleteResourceStatus(expStatus, c.realExp, _expPerSecond);
             CompleteResourceStatus(apStatus, c.arbitrary.curArbitraryPoints, _apPerSecond);
             CompleteResourceStatus(goldStatus, c.realGold, _goldPerSecond);
@@ -820,7 +825,9 @@ namespace NGUInjector.Autopilot
                 : c.highestSadisticBoss;
             var elapsedSeconds = (int)Math.Floor(c.rebirthTime.totalseconds);
             const int bossRawProjectionHorizon = 604800;
-            var bossFitEta = NextBossViabilityEta(c, Plan.RebirthSeconds);
+            var bossFitTarget = Plan.RebirthExecutionHold
+                ? elapsedSeconds + bossRawProjectionHorizon : Plan.RebirthSeconds;
+            var bossFitEta = NextBossViabilityEta(c, bossFitTarget);
             // Preserve a raw selected-boss estimate even when it does not fit the
             // chosen reset.  The separate fit/slack fields prevent that estimate
             // from being mistaken for an action the current run will actually take.
@@ -829,9 +836,10 @@ namespace NGUInjector.Autopilot
             var bossSelectedId = c.bossID + 1;
             var bossRecordTargetId = activeHighestBoss + 1;
             var bossTargetMatchesSelected = c.bossID == activeHighestBoss;
-            var bossHorizon = Math.Max(0, Plan.RebirthSeconds - elapsedSeconds);
+            var bossHorizon = Plan.RebirthExecutionHold ? bossRawProjectionHorizon
+                : Math.Max(0, Plan.RebirthSeconds - elapsedSeconds);
             var activeGoalsJson = ProgressionGoalEngine.ToJson(ProgressionGoalEngine.ActiveGoals(c,
-                trainingGoal, trainingEtaSeconds, bossFitEta, Plan.RebirthSeconds, Plan.RebirthReason));
+                trainingGoal, trainingEtaSeconds, bossFitEta, bossFitTarget, Plan.RebirthReason));
             var escapedTrainingGoal = trainingGoal.Replace("\\", "\\\\").Replace("\"", "\\\"");
             var bossReady = IsNextBossReady(c);
             var bossFighting = c.bossController != null && (c.bossController.isFighting || c.bossController.nukeBoss);
@@ -933,6 +941,7 @@ namespace NGUInjector.Autopilot
                        + "  \"objective\": \"" + escapedObjective + "\",\n"
                        + "  \"rebirthSeconds\": " + Plan.RebirthSeconds + ",\n"
                        + "  \"rebirthReason\": \"" + EscapeJson(Plan.RebirthReason) + "\",\n"
+                       + "  \"rebirthExecutionHold\": " + Plan.RebirthExecutionHold.ToString().ToLowerInvariant() + ",\n"
                        + "  \"rebirthRunnerUpSeconds\": " + Plan.RebirthRunnerUpSeconds + ",\n"
                        + "  \"rebirthRunnerUpDeltaSeconds\": " + Plan.RebirthRunnerUpDeltaSeconds + ",\n"
                        + "  \"rebirthRunnerUpReason\": \"" + EscapeJson(Plan.RebirthRunnerUpReason) + "\",\n"
@@ -1448,7 +1457,8 @@ namespace NGUInjector.Autopilot
             var hasPermanentPitTarget = pitReady
                                         && MoneyPitManager.TryGetPermanentTierTarget(
                                             out permanentPitTarget, out permanentPitLabel);
-            var remaining = Math.Max(0.0, Plan.RebirthSeconds - c.rebirthTime.totalseconds);
+            var remaining = Math.Max(0.0,
+                Plan.EffectiveAllocationTarget(c) - c.rebirthTime.totalseconds);
             var permanentTierReachable = hasPermanentPitTarget && _goldPerSecond > 0
                                          && Math.Max(0.0, permanentPitTarget - c.realGold) / _goldPerSecond <= remaining;
             if (permanentTierReachable)
@@ -2374,7 +2384,8 @@ namespace NGUInjector.Autopilot
             var horizon = 3600.0;
             if (Main.Autopilot != null && Main.Autopilot.Plan != null
                 && Main.Autopilot.Plan.RebirthSeconds > 0)
-                horizon = Math.Max(60.0, Main.Autopilot.Plan.RebirthSeconds);
+                horizon = Math.Max(60.0, Main.Autopilot.Plan.EffectiveAllocationTarget(c)
+                    - c.rebirthTime.totalseconds);
             var persistentMagicWeight = c.settings.rebirthDifficulty != difficulty.normal ? .50
                 : c.settings.nguOn || c.settings.beardsOn ? 1.0 / 3.0
                 : c.settings.yggdrasilOn ? .20

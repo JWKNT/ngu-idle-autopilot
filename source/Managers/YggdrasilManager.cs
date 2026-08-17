@@ -50,7 +50,8 @@ namespace NGUInjector.Managers
             var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
             var remaining = plan == null || plan.RebirthSeconds < 0
                 ? int.MaxValue
-                : plan.RebirthSeconds - (int)_character.rebirthTime.totalseconds;
+                : (int)Math.Floor(plan.EffectiveAllocationTarget(_character)
+                                  - _character.rebirthTime.totalseconds);
             return remaining <= 5 && _character.yggdrasil.fruits.Any(fruit =>
                 fruit.maxTier > 0 && fruit.seconds >= threshold);
         }

@@ -58,6 +58,7 @@ namespace NGUInjector.Autopilot
                 plan.RebirthRecoveryEtaSeconds = rebirth.RecoveryEtaSeconds;
                 plan.RebirthRecoveryRemainingBosses = rebirth.RecoveryRemainingBosses;
                 plan.RebirthRecoveryReason = rebirth.RecoveryReason;
+                plan.RebirthExecutionHold = rebirth.ExecutionHold;
                 if (c.highestBoss >= 30)
                 {
                     Add(plan.Energy, 0, "CAPALLBT:12", "CAPTM:25", "CAPBESTAUG:28", "CAPAT-1:18", "CAPAT-0:18", "CAPWAN:8", "BESTAUG");

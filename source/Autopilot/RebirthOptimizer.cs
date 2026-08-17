@@ -30,6 +30,7 @@ namespace NGUInjector.Autopilot
         internal int RecoveryEtaSeconds = -1;
         internal int RecoveryRemainingBosses;
         internal string RecoveryReason = string.Empty;
+        internal bool ExecutionHold;
     }
 
     internal static class RebirthOptimizer
@@ -157,7 +158,8 @@ namespace NGUInjector.Autopilot
                     ProjectedMultiplier = c.nextAttackMulti,
                     ProjectedAP = holdUntil < 4100 ? 0 : 1 + (holdUntil - 4100) / 500,
                     CandidateSummary = "all modeled candidates rejected by monotonic Number constraint",
-                    CandidateCount = candidates.Count
+                    CandidateCount = candidates.Count,
+                    ExecutionHold = true
                 };
             }
 

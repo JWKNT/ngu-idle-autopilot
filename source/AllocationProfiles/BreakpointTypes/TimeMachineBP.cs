@@ -45,7 +45,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 LastHorizonDecision = "Allowed: no finite rebirth horizon is available, so reset-local value cannot yet be bounded";
                 return true;
             }
-            var remaining = plan.RebirthSeconds - (int)Math.Floor(Character.rebirthTime.totalseconds);
+            var remaining = (int)Math.Floor(plan.EffectiveAllocationTarget(Character)
+                                            - Character.rebirthTime.totalseconds);
             if (remaining <= 0)
             {
                 LastHorizonDecision = "Blocked: the selected rebirth checkpoint has arrived; additional reset-local gold cannot complete a sink";

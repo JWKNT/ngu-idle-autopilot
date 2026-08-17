@@ -260,8 +260,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
                 let target = number(object, "rebirthSeconds")
                 let remaining = max(0, target - elapsed)
-                statusLabel.stringValue = "REBIRTH \(formatExactDuration(remaining))"
-                statusLabel.textColor = .systemGreen
+                let executionHold = object["rebirthExecutionHold"] as? Bool ?? false
+                statusLabel.stringValue = executionHold
+                    ? "REBIRTH HOLD • NO EXECUTABLE RESET SCHEDULED"
+                    : "REBIRTH \(formatExactDuration(remaining))"
+                statusLabel.textColor = executionHold ? .systemOrange : .systemGreen
                 updateSummary(object)
             }
             if sequence != lastRenderedSequence {
@@ -288,15 +291,18 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
         let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
+        let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
         let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
             || !(state["rebirthPreviewMonotonic"] as? Bool ?? true)
             || !(state["rebirthRecoveryResetEfficient"] as? Bool ?? true)
-        let rebirthText = rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
+        let rebirthText = rebirthExecutionHold ? "hold — recalculating"
+            : rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
             : rebirthBlocked ? "route hold" : "now"
         let bossText = bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
             : "in " + formatEstimate(bossEta)
         statusLabel.stringValue = "REBIRTH \(rebirthText)   •   BOSS \(selectedBoss) \(bossText)"
-        statusLabel.textColor = rebirthBlocked && rebirthRemaining <= 0 ? .systemOrange : .systemGreen
+        statusLabel.textColor = rebirthExecutionHold
+            || rebirthBlocked && rebirthRemaining <= 0 ? .systemOrange : .systemGreen
 
         let exp = numberDouble(state, "exp")
         let expTarget = numberDouble(state, "expTargetCost")
@@ -355,6 +361,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
         let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
+        let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
         let rebirthReason = state["rebirthReason"] as? String ?? "current highest-value checkpoint"
         let rebirthRunnerUp = number(state, "rebirthRunnerUpSeconds")
         let rebirthRunnerUpReason = state["rebirthRunnerUpReason"] as? String ?? "alternative checkpoint"
@@ -509,7 +516,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if inventoryPressure == "HIGH" || inventoryPressure == "CRITICAL" {
             shortTerm.append("Protect loot capacity: only \(inventoryFree)/\(inventoryTotal) slots are free versus a \(collectionReserve)-slot live reserve; AP space is promoted ahead of larger permanent purchases.")
         }
-        if !rebirthExecutionEnabled || !rebirthPreviewMonotonic || !rebirthRecoveryResetEfficient {
+        if rebirthExecutionHold {
+            shortTerm.append("Rebirth is unscheduled: continuously re-evaluate until a modeled checkpoint gives a strict Number improvement.")
+        } else if !rebirthExecutionEnabled || !rebirthPreviewMonotonic || !rebirthRecoveryResetEfficient {
             let reason = rebirthSafetyBlockReason.isEmpty
                 ? "waiting for a strict Number improvement or a faster modeled recovery route" : rebirthSafetyBlockReason
             shortTerm.append("Rebirth route hold: \(reason).")
@@ -622,13 +631,13 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ◆ BOSS: selected \(selectedBoss) / next record \(nextBoss) — \(bossGlance)
         ◆ ADVENTURE: \(zone) — \(majorUnlockActive ? "MAJOR UNLOCK: " + majorUnlockName.uppercased() : collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
         ◆ INVENTORY: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure) PRESSURE
-        ◆ REBIRTH: \(rebirthExecutionEnabled && rebirthPreviewMonotonic && rebirthRecoveryResetEfficient ? formatExactDuration(rebirthRemaining) + " remaining — exact target " + formatExactDuration(rebirthTarget) : "ROUTE HOLD — " + rebirthSafetyBlockReason)
+        ◆ REBIRTH: \(rebirthExecutionHold ? "UNSCHEDULED HOLD — recalculated every second; diagnostic probe is not an ETA" : rebirthExecutionEnabled && rebirthPreviewMonotonic && rebirthRecoveryResetEfficient ? formatExactDuration(rebirthRemaining) + " remaining — exact target " + formatExactDuration(rebirthTarget) : "ROUTE HOLD — " + rebirthSafetyBlockReason)
 
         REBIRTH DECISION — LIVE MODEL
-        TARGET RUN AGE: \(formatExactDuration(rebirthTarget))
+        TARGET RUN AGE: \(rebirthExecutionHold ? "not scheduled" : formatExactDuration(rebirthTarget))
         CURRENT RUN AGE: \(formatExactDuration(rebirthElapsed))
-        REMAINING: \(formatExactDuration(rebirthRemaining))
-        EXPECTED EXECUTION: \(wallClockEstimate(rebirthRemaining)) local time
+        REMAINING: \(rebirthExecutionHold ? "no executable countdown" : formatExactDuration(rebirthRemaining))
+        EXPECTED EXECUTION: \(rebirthExecutionHold ? "none until the Number/progression model validates a reset" : wallClockEstimate(rebirthRemaining) + " local time")
         \(roundExplanation)
         SELECTION REASON: \(rebirthReason)
         \(optimizerForecast)

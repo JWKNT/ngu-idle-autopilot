@@ -43,6 +43,7 @@ namespace NGUInjector.Autopilot
         internal int RebirthRecoveryEtaSeconds = -1;
         internal int RebirthRecoveryRemainingBosses;
         internal string RebirthRecoveryReason = string.Empty;
+        internal bool RebirthExecutionHold;
         internal readonly List<TimedValue> NGUDifficulties = new List<TimedValue>();
         internal readonly List<string> Challenges = new List<string>();
         internal int WandoosOS;
@@ -53,10 +54,30 @@ namespace NGUInjector.Autopilot
 
         internal string Signature()
         {
-            return Stage + "|" + Objective + "|" + RebirthSeconds + "|" + RebirthReason + "|"
+            // The optimizer's elapsed+60 diagnostic probe moves every second while
+            // reset is blocked. It is not executable policy and must not regenerate
+            // the allocation profile (which would reclaim/reapply every resource).
+            var rebirthSignature = RebirthExecutionHold ? "UNSCHEDULED-HOLD" : RebirthSeconds.ToString();
+            return Stage + "|" + Objective + "|" + rebirthSignature + "|" + RebirthReason + "|"
+                   + RebirthExecutionHold + "|"
                    + string.Join(";", NGUDifficulties.Select(x => x.Time + ":" + x.Value).ToArray()) + "|" + WandoosOS
                    + "|" + string.Join(",", Diggers.Select(x => x.ToString()).ToArray())
                    + "|" + string.Join(",", Challenges.ToArray()) + "|" + BreakpointSignature(Energy) + "|" + BreakpointSignature(Magic) + "|" + BreakpointSignature(R3);
+        }
+
+        /*
+        RESET-LOCAL ALLOCATION HORIZON
+
+        A rolling rebirth safety hold is not an execution countdown. Treating its diagnostic
+        elapsed+60 timestamp as a real reset made every Augment, Time Machine, Advanced Training,
+        and Blood decision reject work that needed more than one minute. While reset is blocked,
+        grant reset-local systems a conservative rolling hour; the planner still reevaluates every
+        second and the irreversible rebirth controller remains governed by its separate safety gate.
+        */
+        internal double EffectiveAllocationTarget(Character c)
+        {
+            if (!RebirthExecutionHold || c == null) return RebirthSeconds;
+            return Math.Max(RebirthSeconds, c.rebirthTime.totalseconds + 3600.0);
         }
 
         private static string BreakpointSignature(IEnumerable<PlanBreakpoint> points)

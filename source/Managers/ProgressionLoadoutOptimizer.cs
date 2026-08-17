@@ -9,8 +9,9 @@ FILE PURPOSE
 
 ProgressionLoadoutOptimizer selects the best physical equipment objects for the active boss,
 Adventure, major-unlock, or resource-refill context, including ordered weapons and constrained
-accessories. Goal-specific scoring can accept lower raw combat stats for a proven loot/generation
-ETA improvement, but never below the active target's recovery floor. It executes reference-identity
+accessories. Hard major-unlock combat uses target-enemy kill/survival math and excludes unrelated
+production bonuses; routine contexts may accept lower raw combat stats for a proven generation
+ETA improvement. It executes reference-identity
 native swap transactions, reclaims allocations before cap-lowering gear, verifies the final layout,
 and rolls back on failure. ID-only equality and direct field assignment are unsafe because duplicate
 copies and saved loadouts have physical identity.
@@ -341,10 +342,24 @@ namespace NGUInjector.Managers
         {
             var groups = source.GroupBy(x => x.id).ToList();
             if (groups.Any(g => g.Count() > 2)) _searchExact = false;
-            var ranked = groups.SelectMany(g => g.OrderByDescending(x => ItemUtility(c, x)).Take(2))
-                .OrderByDescending(x => ItemUtility(c, x)).ToList();
+            var ranked = groups.SelectMany(g => g.OrderByDescending(x => TrimUtility(c, x)).Take(2))
+                .OrderByDescending(x => TrimUtility(c, x)).ToList();
             if (ranked.Count > count) _searchExact = false;
             return ranked.Take(count);
+        }
+
+        private static double TrimUtility(Character c, Equipment e)
+        {
+            var attack = c.inventoryController.equipAttackBonus(e);
+            var defense = c.inventoryController.equipDefenseBonus(e);
+            if (_scoreMajorUnlock != null)
+            {
+                // A combat target must never be removed from the bounded search
+                // because an Energy/Gold item had a larger generic utility score.
+                return 8.0 * Math.Log(1.0 + Math.Max(0, attack))
+                       + 8.0 * Math.Log(1.0 + Math.Max(0, defense));
+            }
+            return ItemUtility(c, e);
         }
 
         private static double ItemUtility(Character c, Equipment e)
@@ -577,6 +592,12 @@ namespace NGUInjector.Managers
             var candidateAdvDefense = c.totalAdvDefense()
                                       * (c.adventure.defense + c.inventoryController.cubeToughness() + defenseItems)
                                       / advDefenseNumerator;
+            var advHpNumerator = Math.Max(1e-9, c.adventure.maxHP
+                + 3.0 * (c.inventoryController.cubeToughness() + currentDefenseItems));
+            var candidateAdvHP = c.totalAdvHP()
+                                 * (c.adventure.maxHP
+                                    + 3.0 * (c.inventoryController.cubeToughness() + defenseItems))
+                                 / advHpNumerator;
             if (!bossObjective)
             {
                 score += 6.0 * Math.Log(1.0 + Math.Max(0.0, candidateAdvAttack));
@@ -585,7 +606,7 @@ namespace NGUInjector.Managers
                 if (majorUnlock != null)
                 {
                     score += MajorUnlockUtility(c, plan, majorUnlock,
-                        candidateAdvAttack, candidateAdvDefense);
+                        candidateAdvAttack, candidateAdvDefense, candidateAdvHP);
                 }
                 else
                 {
@@ -627,10 +648,17 @@ namespace NGUInjector.Managers
                 score += 0.3 * Math.Log(1.0 + Math.Max(0.0, candidateAdvAttack));
                 score += 0.3 * Math.Log(1.0 + Math.Max(0.0, candidateAdvDefense));
             }
-            score += ProductionRateUtility(c, plan);
-            foreach (var item in scoringItems) score += SpecialUtility(c, item, 1.0);
-            if (plan.Weapon2 != null && plan.Weapon2.id > 0)
-                score += SpecialUtility(c, plan.Weapon2, weapon2Factor);
+            // During hard Adventure combat, Energy/Gold/general specials are not
+            // combat stats and may not displace an item that shortens the target
+            // fight or makes it survivable. RNG-gated unlock loot is valued inside
+            // MajorUnlockUtility only after the combat constraint is satisfied.
+            if (majorUnlock == null)
+            {
+                score += ProductionRateUtility(c, plan);
+                foreach (var item in scoringItems) score += SpecialUtility(c, item, 1.0);
+                if (plan.Weapon2 != null && plan.Weapon2.id > 0)
+                    score += SpecialUtility(c, plan.Weapon2, weapon2Factor);
+            }
             return score;
         }
 
@@ -670,19 +698,17 @@ namespace NGUInjector.Managers
         /*
         GOAL-SPECIFIC LOADOUT VALUE
 
-        A major unlock is not scored like routine highest-zone farming. First preserve a recoverable
-        combat floor for the exact target. Above that floor, maximize the weaker Power/Toughness
-        ratio; an RNG-gated mechanic additionally values the native aggregate loot multiplier.
+        A major unlock is not scored like routine highest-zone farming. Evaluate the target zone's
+        actual boss attack, defense, HP, attack cadence, active-attack power, and candidate maximum
+        HP. This replaces the coarse Toughness threshold as the loadout objective. An RNG-gated
+        mechanic additionally values the native aggregate loot multiplier only after combat works.
         Guaranteed drops (the first Pissed Off Key) deliberately assign no Drop Chance value.
         */
         private static double MajorUnlockUtility(Character c, Plan plan, MajorUnlockTarget target,
-            double candidateAdvAttack, double candidateAdvDefense)
+            double candidateAdvAttack, double candidateAdvDefense, double candidateAdvHP)
         {
-            var powerRatio = candidateAdvAttack / Math.Max(1.0, target.MinimumPower);
-            var toughnessRatio = candidateAdvDefense / Math.Max(1.0, target.MinimumToughness);
-            var bottleneck = Math.Min(powerRatio, toughnessRatio);
-            var score = 10000.0 * Math.Min(2.0, Math.Max(0.0, bottleneck));
-            score += bottleneck >= 1.0 ? 100000000.0 : -200000000.0;
+            var score = TargetCombatUtility(c, target, candidateAdvAttack,
+                candidateAdvDefense, candidateAdvHP);
             if (!target.ValuesLoot) return score;
 
             var controller = c.inventoryController;
@@ -696,6 +722,43 @@ namespace NGUInjector.Managers
             // Expected attempts to the unlock are inversely proportional to loot
             // factor. Large scaling is safe only after the combat-floor constraint.
             return score + 20000.0 * Math.Log(Math.Max(1e-9, ratio));
+        }
+
+        private static double TargetCombatUtility(Character c, MajorUnlockTarget target,
+            double attack, double defense, double maxHP)
+        {
+            if (target.Zone < 0 || c.adventureController.enemyList == null
+                || target.Zone >= c.adventureController.enemyList.Count
+                || c.adventureController.enemyList[target.Zone] == null)
+                return -500000000.0;
+            var all = c.adventureController.enemyList[target.Zone];
+            var enemies = all.Where(x => x.enemyType == enemyType.boss
+                || x.enemyType.ToString().IndexOf("bigBoss", StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+            if (enemies.Count == 0) enemies = all.ToList();
+            var worst = double.PositiveInfinity;
+            foreach (var enemy in enemies)
+            {
+                var outgoing = .8 * Math.Max(0.0, attack - enemy.defense / 2.0)
+                               * c.regAttackPower();
+                if (outgoing <= 0)
+                {
+                    worst = Math.Min(worst, -500000000.0);
+                    continue;
+                }
+                var killSeconds = Math.Ceiling(enemy.maxHP / outgoing);
+                var firstAttack = 1.5 * enemy.attackRate;
+                var enemyAttacks = killSeconds < firstAttack ? 0
+                    : 1 + (int)Math.Floor((killSeconds - firstAttack) / Math.Max(.1, enemy.attackRate));
+                var incoming = 1.2 * Math.Max(enemy.attack * .1, enemy.attack - defense / 2.0);
+                var projectedDamage = enemyAttacks * incoming;
+                var survivalMargin = maxHP / Math.Max(1.0, projectedDamage);
+                var viable = killSeconds <= 120.0 && projectedDamage < maxHP * .95;
+                var value = viable ? 100000000.0 : -200000000.0;
+                value += 1000000.0 / (1.0 + killSeconds);
+                value += 20000.0 * Math.Log(Math.Max(1e-9, survivalMargin));
+                worst = Math.Min(worst, value);
+            }
+            return double.IsPositiveInfinity(worst) ? -500000000.0 : worst;
         }
 
         private static double SpecialUtility(Character c, Equipment e, double slotFactor)
@@ -991,6 +1054,7 @@ namespace NGUInjector.Managers
                     var rolledBack = ExecutePhysical(c, snapshot) && Matches(c, snapshot);
                     c.inventoryController.updateBonuses();
                     c.inventoryController.updateInventory();
+                    Main.RestoreAllocationsAfterGearSwap();
                     Main.LogAction("REJECTED", rolledBack
                         ? "Physical loadout rejected; original physical slots verified after rollback"
                         : "Physical loadout rejected and rollback verification FAILED");
@@ -998,6 +1062,7 @@ namespace NGUInjector.Managers
                 }
                 c.inventoryController.updateBonuses();
                 c.inventoryController.updateInventory();
+                Main.RestoreAllocationsAfterGearSwap();
                 return Matches(c, desired);
             }
             catch (Exception ex)
@@ -1007,6 +1072,7 @@ namespace NGUInjector.Managers
                     var rolledBack = ExecutePhysical(c, snapshot) && Matches(c, snapshot);
                     c.inventoryController.updateBonuses();
                     c.inventoryController.updateInventory();
+                    Main.RestoreAllocationsAfterGearSwap();
                     Main.LogAction("REJECTED", rolledBack
                         ? "Exception path restored and verified the original physical slots"
                         : "Exception path could not verify the original physical slots");

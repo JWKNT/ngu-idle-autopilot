@@ -43,8 +43,10 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             var available = (long)MaxAllocation;
             if (available <= 0)
                 return;
-            var horizon = RebirthTime > 0
-                ? Math.Max(0.0, RebirthTime - Character.rebirthTime.totalseconds)
+            var effectiveTarget = Main.Autopilot != null && Main.Autopilot.Plan != null
+                ? Main.Autopilot.Plan.EffectiveAllocationTarget(Character) : RebirthTime;
+            var horizon = effectiveTarget > 0
+                ? Math.Max(0.0, effectiveTarget - Character.rebirthTime.totalseconds)
                 : double.PositiveInfinity;
             double currentBossKill;
             var bossProgressionBlocked = Character.bossID <= ActiveHighestBoss(Character)
@@ -56,8 +58,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 var aug = Character.augmentsController.augments[i];
                 var state = Character.augments.augs[i];
 
-                if (!aug.augLocked() && !aug.hitAugmentTarget()
-                    && (!bossProgressionBlocked || state.augProgress > 0f))
+                if (!aug.augLocked() && !aug.hitAugmentTarget())
                 {
                     var time = Math.Max(0.0001, aug.AugTimeLeftEnergy(available));
                     var affordable = aug.AugProgress() > 0f || aug.getAugCost() <= gold;
@@ -80,8 +81,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     }
                 }
 
-                if (!aug.upgradeLocked() && !aug.hitUpgradeTarget() && state.augLevel > 0
-                    && (!bossProgressionBlocked || state.upgradeProgress > 0f))
+                if (!aug.upgradeLocked() && !aug.hitUpgradeTarget() && state.augLevel > 0)
                 {
                     var time = Math.Max(0.0001, aug.UpgradeTimeLeftEnergy(available));
                     var affordable = aug.UpgradeProgress() > 0f || aug.getUpgradeCost() <= gold;
@@ -105,7 +105,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             if (bestPair < 0)
             {
                 if (bossProgressionBlocked)
-                    Main.LogAllocation("Held new Augment starts because the selected Fight Boss is not yet viable; residual Energy returns to Basic Training");
+                    Main.LogAllocation("No affordable Augment completion fits the allocation horizon while the selected Fight Boss remains blocked");
                 return;
             }
             var selected = Character.augmentsController.augments[bestPair];

@@ -237,7 +237,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             // checkbox. Its selected plan is the effective reset horizon.
             if (Main.Autopilot != null && Main.Autopilot.CanExecuteSafe
                 && Main.Autopilot.Plan != null && Main.Autopilot.Plan.RebirthSeconds > 0)
-                return Main.Autopilot.Plan.RebirthSeconds;
+                return (int)Math.Ceiling(Main.Autopilot.Plan.EffectiveAllocationTarget(Character));
             return RebirthTime;
         }
 

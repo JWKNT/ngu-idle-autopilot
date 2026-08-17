@@ -239,6 +239,22 @@ namespace NGUInjector
             get { return Autopilot != null && Autopilot.CanExecuteSafe && Autopilot.Profile != null ? Autopilot.Profile : _profile; }
         }
 
+        /*
+        POST-GEAR ALLOCATION RESTORATION
+
+        Native equipment swaps can lower resource caps, so the loadout transaction must reclaim
+        Energy, Magic, and Resource 3 before swapping. Waiting for the next 0.2-second scheduler
+        tick exposes a visibly empty allocation and can lose productive ticks. This entry point
+        restores the currently authoritative profile synchronously after a verified swap/rollback;
+        it never selects a profile or grants resources, and it remains gated by gameplay sync.
+        */
+        internal static void RestoreAllocationsAfterGearSwap()
+        {
+            if (!IsAutomationReady || ActiveProfile == null)
+                return;
+            ActiveProfile.DoAllocations();
+        }
+
         internal void Unload()
         {
             _isUnloading = true;

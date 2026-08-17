@@ -40,6 +40,8 @@ namespace NGUInjector.AllocationProfiles
         private readonly string _profileName;
         private string _lastEnergyActionShape = string.Empty;
         private DateTime _lastEnergyActionLog = DateTime.MinValue;
+        private string _lastMagicActionShape = string.Empty;
+        private DateTime _lastMagicActionLog = DateTime.MinValue;
 
         internal static string LastMagicAllocationDecision { get; private set; }
             = "Magic allocation has not completed a verified sweep yet";
@@ -761,9 +763,11 @@ namespace NGUInjector.AllocationProfiles
             var targetKinds = string.Join(", ", temp.Select(x => x.GetType().Name).Distinct().ToArray());
             var idleReason = _character.magic.idleMagic <= 0 ? "fully allocated"
                 : allocated <= 0 ? "no active native target accepted Magic"
+                : blood > 0 && temp.All(x => x is BR)
+                    ? "active Blood ritual is at its productive cap; the small remainder has no other admitted Magic sink"
                 : blood <= 0 && temp.Any(x => x is BR)
                     ? BR.LastDecision
-                    : "remaining Magic exceeds the active targets' productive caps or cannot finish before rebirth";
+                : "remaining Magic exceeds the active targets' productive caps or cannot finish before rebirth";
             LastMagicAllocationDecision = "allocated " + allocated + "/" + _character.magic.curMagic
                                           + " (TM=" + timeMachine + ", Blood=" + blood
                                           + ", Wandoos=" + wandoos + "); idle=" + _character.magic.idleMagic
@@ -775,8 +779,20 @@ namespace NGUInjector.AllocationProfiles
             _character.NGUController.refreshMenu();
             _character.wandoos98Controller.refreshMenu();
             _character.wishesController.updateMenu();
-            Main.LogAction("ALLOC", "Rebalanced Magic across " + temp.Count + " active priorities: "
-                                    + LastMagicAllocationDecision);
+            var actionShape = temp.Count + ":" + targetKinds + ":" + idleReason
+                              + ":tm=" + (timeMachine > 0) + ":blood=" + (blood > 0)
+                              + ":wan=" + (wandoos > 0);
+            // Magic is recalculated at 5 Hz just like Energy. Emit state changes
+            // immediately, but coalesce identical verified layouts so a valid
+            // ritual/TM allocation does not look like constant destructive churn.
+            if (actionShape != _lastMagicActionShape
+                || (DateTime.UtcNow - _lastMagicActionLog).TotalSeconds >= 2.0)
+            {
+                Main.LogAction("ALLOC", "Rebalanced Magic across " + temp.Count + " active priorities: "
+                                        + LastMagicAllocationDecision);
+                _lastMagicActionShape = actionShape;
+                _lastMagicActionLog = DateTime.UtcNow;
+            }
         }
 
         public override void AllocateR3()

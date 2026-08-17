@@ -75,8 +75,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 if (Main.Autopilot == null || Main.Autopilot.Plan == null
                     || Main.Autopilot.Plan.RebirthSeconds <= 0)
                     return 0;
-                var remaining = Main.Autopilot.Plan.RebirthSeconds
-                                - (int)Math.Floor(Character.rebirthTime.totalseconds);
+                var remaining = (int)Math.Floor(Main.Autopilot.Plan.EffectiveAllocationTarget(Character)
+                                - Character.rebirthTime.totalseconds);
                 if (remaining <= 0)
                     return 0;
 
@@ -103,8 +103,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             {
                 if (Main.Autopilot == null || Main.Autopilot.Plan == null)
                     return double.MaxValue;
-                var remaining = Main.Autopilot.Plan.RebirthSeconds
-                                - (int)Math.Floor(Character.rebirthTime.totalseconds);
+                var remaining = (int)Math.Floor(Main.Autopilot.Plan.EffectiveAllocationTarget(Character)
+                                - Character.rebirthTime.totalseconds);
                 if (remaining <= 0)
                     return double.MaxValue;
                 var attack = Index <= 5 && AttackUnlocked
@@ -121,8 +121,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         {
             if (availableBudget <= 0 || Main.Autopilot == null || Main.Autopilot.Plan == null)
                 return 0;
-            var remaining = Main.Autopilot.Plan.RebirthSeconds
-                            - (int)Math.Floor(Character.rebirthTime.totalseconds);
+            var remaining = (int)Math.Floor(Main.Autopilot.Plan.EffectiveAllocationTarget(Character)
+                            - Character.rebirthTime.totalseconds);
             if (remaining <= 0)
                 return 0;
             var attack = Index <= 5 && AttackUnlocked

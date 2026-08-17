@@ -126,7 +126,8 @@ namespace NGUInjector.Managers
             var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
             if (plan == null || plan.RebirthSeconds < 0 || !Main.Settings.AutoRebirth)
                 return seconds <= 3600;
-            var remaining = Math.Max(0.0, plan.RebirthSeconds - c.rebirthTime.totalseconds);
+            var remaining = Math.Max(0.0,
+                plan.EffectiveAllocationTarget(c) - c.rebirthTime.totalseconds);
             return seconds <= remaining;
         }
 

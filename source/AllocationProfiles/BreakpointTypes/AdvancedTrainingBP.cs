@@ -142,7 +142,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             var completionEta = Math.Max(attackEta, defenseEta);
             LastCompletionEtaSeconds = completionEta >= int.MaxValue
                 ? -1 : (int)Math.Ceiling(completionEta);
-            var remaining = Main.Autopilot.Plan.RebirthSeconds - Character.rebirthTime.totalseconds;
+            var remaining = Main.Autopilot.Plan.EffectiveAllocationTarget(Character)
+                            - Character.rebirthTime.totalseconds;
             double respawn;
             try
             {

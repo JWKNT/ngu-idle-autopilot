@@ -15,8 +15,9 @@ confirmed fight outcomes reported by CombatManager. Output is a read-only MajorU
 by Adventure routing, contextual gear scoring, and telemetry. This class never grants an item,
 writes an unlock flag, consumes inventory, or bypasses native combat/drop controllers.
 
-Safety invariant: an aggressive push still needs positive modeled damage and minimum Power/
-Toughness fractions. Three consecutive deaths suspend the exact target until stats improve or a
+Safety invariant: an aggressive push still needs positive modeled damage and must survive the
+target enemy's conservative first hit; static Power/Toughness guide thresholds are descriptive,
+not a combat proof. Three consecutive deaths suspend the exact target until stats improve or a
 short monotonic backoff expires. InventoryManager remains the sole native consumer of acquired
 keys. Add future mechanics here only with an audited source zone/drop or native unlock condition.
 */
@@ -180,8 +181,7 @@ namespace NGUInjector.Managers
             if (target == null || target.Zone < 0
                 || target.Zone > ZoneHelpers.GetMaxReachableZone(true))
                 return false;
-            if (c.totalAdvAttack() < target.MinimumPower
-                || c.totalAdvDefense() < target.MinimumToughness)
+            if (!HasRecoverableCombatPath(c, target))
                 return false;
 
             FailureState state;
@@ -199,6 +199,36 @@ namespace NGUInjector.Managers
             target.RetryEtaSeconds = Math.Max(0,
                 (int)Math.Ceiling(state.SuppressedUntil - UnityEngine.Time.realtimeSinceStartup));
             return target.RetryEtaSeconds <= 0;
+        }
+
+        /*
+        MAJOR-UNLOCK COMBAT ADMISSION
+
+        Guide Power/Toughness numbers describe comfortable farming, but the bot deliberately pushes
+        a one-time mechanic with active skills and Safe-Zone recovery. Admission therefore uses the
+        actual target enemy records: current active-attack damage must be positive and the strongest
+        relevant boss's conservative first hit must not be lethal. Confirmed deaths still feed the
+        monotonic retry/backoff policy above. This method is read-only and never spawns an enemy.
+        */
+        private static bool HasRecoverableCombatPath(Character c, MajorUnlockTarget target)
+        {
+            if (c.adventureController.enemyList == null
+                || target.Zone < 0 || target.Zone >= c.adventureController.enemyList.Count
+                || c.adventureController.enemyList[target.Zone] == null
+                || c.adventureController.enemyList[target.Zone].Count == 0)
+                return false;
+            var all = c.adventureController.enemyList[target.Zone];
+            var relevant = all.Where(x => x.enemyType == enemyType.boss
+                || x.enemyType.ToString().IndexOf("bigBoss", StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+            if (relevant.Count == 0) relevant = all.ToList();
+            return relevant.All(enemy =>
+            {
+                var outgoing = .8 * Math.Max(0.0, c.totalAdvAttack() - enemy.defense / 2.0)
+                               * c.regAttackPower();
+                var conservativeFirstHit = 1.2 * Math.Max(enemy.attack * .1,
+                    enemy.attack - c.totalAdvDefense() / 2.0);
+                return outgoing > 0.0 && conservativeFirstHit < c.totalAdvHP() * .95;
+            });
         }
 
         private static MajorUnlockTarget Remember(MajorUnlockTarget target)
