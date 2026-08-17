@@ -362,8 +362,12 @@ namespace NGUInjector.Autopilot
                     for (var i = 0; i < current.Length; i++)
                     {
                         if (current[i] <= _lastObservedTrainingMilestones[i] || current[i] <= 0) continue;
-                        var label = i < 6 ? GameNames.AttackTraining(i) : GameNames.DefenseTraining(i - 6);
-                        Main.LogAction("MILESTONE", label + " reached level " + current[i].ToString("N0")
+                        var row = i < 6 ? i : i - 6;
+                        var label = i < 6 ? GameNames.AttackTraining(c, row)
+                            : GameNames.DefenseTraining(c, row);
+                        var source = i < 6 ? "Attack Training" : "Defense Training";
+                        Main.LogAction("MILESTONE", label + " (" + source + " row " + (row + 1)
+                                                    + ") reached level " + current[i].ToString("N0")
                                                     + " [confirmed at greatest-place-value boundary]");
                     }
                 }
@@ -388,7 +392,9 @@ namespace NGUInjector.Autopilot
                     if (augCurrent[i] <= _lastObservedAugmentMilestones[i] || augCurrent[i] <= 0) continue;
                     var pair = i / 2;
                     var upgrade = i % 2 != 0;
-                    Main.LogAction("MILESTONE", GameNames.Augment(c, pair, upgrade) + " reached level "
+                    Main.LogAction("MILESTONE", GameNames.Augment(c, pair, upgrade) + " ("
+                                                + (upgrade ? "Upgrade" : "Augment") + " row " + (pair + 1)
+                                                + ") reached level "
                                                 + augCurrent[i].ToString("N0")
                                                 + " [confirmed at greatest-place-value boundary]");
                 }
@@ -742,12 +748,13 @@ namespace NGUInjector.Autopilot
                 : c.settings.rebirthDifficulty == difficulty.evil ? c.highestHardBoss
                 : c.highestSadisticBoss;
             var elapsedSeconds = (int)Math.Floor(c.rebirthTime.totalseconds);
+            const int bossRawProjectionHorizon = 604800;
             var bossFitEta = NextBossViabilityEta(c, Plan.RebirthSeconds);
             // Preserve a raw selected-boss estimate even when it does not fit the
             // chosen reset.  The separate fit/slack fields prevent that estimate
             // from being mistaken for an action the current run will actually take.
             var bossViabilityEta = bossFitEta >= 0 ? bossFitEta
-                : NextBossViabilityEta(c, elapsedSeconds + 3600);
+                : RawSelectedBossDefeatEta(c, bossRawProjectionHorizon);
             var bossSelectedId = c.bossID + 1;
             var bossRecordTargetId = activeHighestBoss + 1;
             var bossTargetMatchesSelected = c.bossID == activeHighestBoss;
@@ -759,6 +766,10 @@ namespace NGUInjector.Autopilot
             var bossFighting = c.bossController != null && (c.bossController.isFighting || c.bossController.nukeBoss);
             var bossKillEta = CurrentBossKillEta(c);
             var bossViabilityReason = BossViabilityReason(c, bossReady, bossFighting, bossKillEta);
+            var bossEtaState = c.bossController == null ? "controller-unavailable"
+                : bossFighting && bossKillEta >= 0 ? "active-fight"
+                : bossViabilityEta >= 0 ? "finite"
+                : "outside-seven-day-current-allocation-model";
             var energyIncome = Math.Max(0.0, c.energyPerSecond());
             var magicIncome = Math.Max(0.0, c.magicPerSecond());
             var energySweepBound = Math.Max(1L, (long)Math.Ceiling(energyIncome * 0.2) + 1L);
@@ -917,6 +928,8 @@ namespace NGUInjector.Autopilot
                        + "  \"bossRebirthSlackSeconds\": " + (bossViabilityEta < 0 ? -1 : bossHorizon - bossViabilityEta) + ",\n"
                        + "  \"bossEtaModelVersion\": \"discrete-training-augment-event-and-fixed-fight-v3\",\n"
                        + "  \"bossEtaConfidence\": \"projected-current-allocation\",\n"
+                       + "  \"bossEtaState\": \"" + bossEtaState + "\",\n"
+                       + "  \"bossEtaProjectionHorizonSeconds\": " + bossRawProjectionHorizon + ",\n"
                        + "  \"bossEtaIncludedEvents\": \"discrete Basic Training, first pending completion on each allocated Augment/Upgrade track, boss/player regeneration, current physical gear\",\n"
                        + "  \"bossEtaExcludedEvents\": \"future allocation changes, chained Augment levels after the first pending completion, future drops/purchases\",\n"
                        + "  \"bossViabilityReason\": \"" + EscapeJson(bossViabilityReason) + "\",\n"
@@ -1478,6 +1491,9 @@ namespace NGUInjector.Autopilot
         {
             var immediateHorizon = Math.Max(0,
                 rebirthTarget - (int)Math.Floor(c.rebirthTime.totalseconds));
+            var activeKillEta = CurrentBossKillEta(c);
+            if (c.bossController != null && c.bossController.isFighting)
+                return activeKillEta >= 0 && activeKillEta <= immediateHorizon ? activeKillEta : -1;
             if (CombatHelpers.CanNukeCurrentBoss(c))
                 return immediateHorizon >= 1 ? 1 : -1;
             if (IsNextBossReady(c))
@@ -1502,6 +1518,61 @@ namespace NGUInjector.Autopilot
                 return (int)Math.Ceiling(wait + killSeconds);
             }
             return -1;
+        }
+
+        /*
+        RAW BOSS ETA
+
+        The rebirth-fit search is intentionally finite and may correctly reject a boss that cannot
+        die before this run's checkpoint. The monitor still needs a bounded raw forecast, not an
+        eternal "calculating" placeholder. Under the frozen-current-allocation model, projected
+        training and Augment multipliers are non-decreasing, so an exponential bracket followed by
+        integer binary search finds the first viable start in O(log horizon) projections. Seven days
+        is a hard reporting horizon; failure is emitted explicitly as outside-model, never pending.
+        */
+        private static int RawSelectedBossDefeatEta(Character c, int horizonSeconds)
+        {
+            if (c == null || c.bossController == null || horizonSeconds <= 0)
+                return -1;
+            var activeKillEta = CurrentBossKillEta(c);
+            if (c.bossController.isFighting)
+                return activeKillEta >= 0 && activeKillEta <= horizonSeconds ? activeKillEta : -1;
+            if (CombatHelpers.CanNukeCurrentBoss(c))
+                return 1;
+
+            double killSeconds;
+            if (ProjectedBossWin(c, 0, out killSeconds) && killSeconds <= 120.0)
+                return (int)Math.Ceiling(killSeconds);
+
+            var previous = 0;
+            var upper = -1;
+            for (var wait = 1; wait < horizonSeconds; wait = wait > horizonSeconds / 2
+                     ? horizonSeconds - 1 : wait * 2)
+            {
+                if (ProjectedBossWin(c, wait, out killSeconds) && killSeconds <= 120.0)
+                {
+                    upper = wait;
+                    break;
+                }
+                previous = wait;
+                if (wait == horizonSeconds - 1) break;
+            }
+            if (upper < 0)
+                return -1;
+
+            var lower = previous + 1;
+            while (lower < upper)
+            {
+                var middle = lower + (upper - lower) / 2;
+                if (ProjectedBossWin(c, middle, out killSeconds) && killSeconds <= 120.0)
+                    upper = middle;
+                else
+                    lower = middle + 1;
+            }
+            if (!ProjectedBossWin(c, lower, out killSeconds) || killSeconds > 120.0
+                || lower + killSeconds > horizonSeconds)
+                return -1;
+            return (int)Math.Ceiling(lower + killSeconds);
         }
 
         // Rebirth execution uses this same projection as telemetry so a planner
@@ -1667,7 +1738,8 @@ namespace NGUInjector.Autopilot
                 var defenseRate = TrainingRate(c, false, i);
                 var attackUnlocked = i == 0 || c.training.attackTraining[i - 1] > 5000L * i;
                 var defenseUnlocked = i == 0 || c.training.defenseTraining[i - 1] > 5000L * i;
-                rows.Add("{\"pair\":\"" + EscapeJson(GameNames.AttackTraining(i) + " + " + GameNames.DefenseTraining(i))
+                rows.Add("{\"pair\":\"" + EscapeJson(GameNames.AttackTraining(c, i) + " + "
+                         + GameNames.DefenseTraining(c, i))
                          + "\",\"syncTraining\":" + c.settings.syncTraining.ToString().ToLowerInvariant()
                          + ",\"attackUnlocked\":" + attackUnlocked.ToString().ToLowerInvariant()
                          + ",\"defenseUnlocked\":" + defenseUnlocked.ToString().ToLowerInvariant()
@@ -1708,7 +1780,7 @@ namespace NGUInjector.Autopilot
                 if (c.training.attackTraining[i - 1] < attackTarget)
                 {
                     var remaining = attackTarget - c.training.attackTraining[i - 1];
-                    var attackGoal = "Unlock " + GameNames.AttackTraining(i);
+                    var attackGoal = "Unlock " + GameNames.AttackTraining(c, i);
                     if (remaining < smallestRemaining)
                     {
                         smallestRemaining = remaining;
@@ -1722,7 +1794,7 @@ namespace NGUInjector.Autopilot
                 if (c.training.defenseTraining[i - 1] < defenseTarget)
                 {
                     var remaining = defenseTarget - c.training.defenseTraining[i - 1];
-                    var defenseGoal = "Unlock " + GameNames.DefenseTraining(i);
+                    var defenseGoal = "Unlock " + GameNames.DefenseTraining(c, i);
                     if (remaining < smallestRemaining)
                     {
                         smallestRemaining = remaining;

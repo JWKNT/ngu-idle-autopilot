@@ -29,10 +29,50 @@ namespace NGUInjector.Managers
                 ? AttackTrainingNames[index] : "Attack Training " + (index + 1);
         }
 
+        internal static string AttackTraining(Character c, int index)
+        {
+            try
+            {
+                if (c != null && c.allOffenseController != null && c.allOffenseController.trains != null)
+                {
+                    foreach (var controller in c.allOffenseController.trains)
+                    {
+                        if (controller == null || controller.id != index || controller.nextAttackName == null)
+                            continue;
+                        var rendered = Clean(controller.nextAttackName.text, string.Empty);
+                        if (rendered.Length > 0 && !rendered.StartsWith("Requires", StringComparison.OrdinalIgnoreCase))
+                            return rendered;
+                    }
+                }
+            }
+            catch { }
+            return AttackTraining(index);
+        }
+
         internal static string DefenseTraining(int index)
         {
             return index >= 0 && index < DefenseTrainingNames.Length
                 ? DefenseTrainingNames[index] : "Defense Training " + (index + 1);
+        }
+
+        internal static string DefenseTraining(Character c, int index)
+        {
+            try
+            {
+                if (c != null && c.allDefenseController != null && c.allDefenseController.trains != null)
+                {
+                    foreach (var controller in c.allDefenseController.trains)
+                    {
+                        if (controller == null || controller.id != index || controller.nextDefenseName == null)
+                            continue;
+                        var rendered = Clean(controller.nextDefenseName.text, string.Empty);
+                        if (rendered.Length > 0 && !rendered.StartsWith("Requires", StringComparison.OrdinalIgnoreCase))
+                            return rendered;
+                    }
+                }
+            }
+            catch { }
+            return DefenseTraining(index);
         }
 
         internal static string Item(Character c, int id)
@@ -74,7 +114,17 @@ namespace NGUInjector.Managers
                 if (c != null && c.augmentsController != null && c.augmentsController.augments != null
                     && index >= 0 && index < c.augmentsController.augments.Length)
                 {
-                    var controller = c.augmentsController.augments[index];
+                    AugmentController controller = null;
+                    foreach (var candidate in c.augmentsController.augments)
+                    {
+                        if (candidate != null && candidate.id == index)
+                        {
+                            controller = candidate;
+                            break;
+                        }
+                    }
+                    if (controller == null && index < c.augmentsController.augments.Length)
+                        controller = c.augmentsController.augments[index];
                     if (controller != null)
                         return Clean(upgrade ? controller.upgradeName : controller.augName,
                             (upgrade ? "Augment Upgrade " : "Augment ") + (index + 1));

@@ -282,6 +282,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let selectedBoss = number(state, "bossSelectedId")
         let bossEta = number(state, "bossDefeatEtaSeconds")
+        let bossEtaHorizon = state["bossEtaProjectionHorizonSeconds"] == nil
+            ? 604800 : max(1, number(state, "bossEtaProjectionHorizonSeconds"))
         let zone = state["adventureTargetName"] as? String ?? "selecting zone"
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
@@ -291,7 +293,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             || !(state["rebirthRecoveryResetEfficient"] as? Bool ?? true)
         let rebirthText = rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
             : rebirthBlocked ? "route hold" : "now"
-        let bossText = bossEta < 0 ? "ETA calculating" : "in " + formatEstimate(bossEta)
+        let bossText = bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
+            : "in " + formatEstimate(bossEta)
         statusLabel.stringValue = "REBIRTH \(rebirthText)   •   BOSS \(selectedBoss) \(bossText)"
         statusLabel.textColor = rebirthBlocked && rebirthRemaining <= 0 ? .systemOrange : .systemGreen
 
@@ -342,6 +345,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let bossKillETA = number(state, "bossKillEtaSeconds")
         let bossViabilityETA = state["bossDefeatEtaSeconds"] == nil
             ? number(state, "bossViabilityEtaSeconds") : number(state, "bossDefeatEtaSeconds")
+        let bossEtaHorizon = state["bossEtaProjectionHorizonSeconds"] == nil
+            ? 604800 : max(1, number(state, "bossEtaProjectionHorizonSeconds"))
         let bossFitsRebirth = state["bossDefeatFitsRebirthHorizon"] as? Bool ?? (bossViabilityETA >= 0)
         let bossRebirthSlack = number(state, "bossRebirthSlackSeconds")
         let bossViabilityReason = state["bossViabilityReason"] as? String ?? "waiting for the next exact combat viability result"
@@ -467,7 +472,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             let bossEtaText: String
             if bossViabilityETA < 0 {
-                bossEtaText = "no finite defeat ETA in the 60-minute projection window"
+                bossEtaText = "no finite defeat ETA within the bounded (formatEstimate(bossEtaHorizon)) current-allocation model"
             } else if bossFitsRebirth {
                 bossEtaText = "estimated defeat \(formatEstimate(bossViabilityETA)), fitting the rebirth by \(formatEstimate(max(0, bossRebirthSlack)))"
             } else {
@@ -574,7 +579,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let continueEtaText = rebirthRecoveryContinueETA >= 0 ? formatEstimate(rebirthRecoveryContinueETA) : "no finite current-run route"
             recoveryForecast = """
             RECORD RECOVERY MODE: \(rebirthRecoveryRemainingBosses) catch-up boss transitions remain.
-            SELECTED REPEATED-CYCLE POLICY ETA: \(rebirthOptimizerRecoveryETA >= 0 ? formatEstimate(rebirthOptimizerRecoveryETA) : "still projecting")
+            SELECTED REPEATED-CYCLE POLICY ETA: \(rebirthOptimizerRecoveryETA >= 0 ? formatEstimate(rebirthOptimizerRecoveryETA) : "outside the bounded recovery model")
             RESET + REPLAY ROUTE: \(resetEtaText)
             CONTINUE CURRENT RUN ROUTE: \(continueEtaText)
             ROUTE VERDICT: \(rebirthRecoveryReason)
@@ -587,7 +592,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ? "WHY THE ROUND NUMBER: this second is a discontinuity in NGU Idle's native Number time-multiplier formula; it was evaluated, not assumed."
             : "WHY THIS SECOND: it is the highest-scoring live event or integer-second candidate in the current finite-horizon model."
         let bossGlance = bossReady ? "READY NOW"
-            : bossViabilityETA < 0 ? "ETA CALCULATING" : "ETA " + formatEstimate(bossViabilityETA)
+            : bossViabilityETA < 0 ? "NO FINITE ETA ≤ " + formatEstimate(bossEtaHorizon)
+            : "ETA " + formatEstimate(bossViabilityETA)
 
         let body = """
         AT A GLANCE

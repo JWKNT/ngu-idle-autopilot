@@ -27,10 +27,13 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 if (Character.settings.syncTraining && Index <= 5)
                 {
                     if (AttackUnlocked && DefenseUnlocked)
-                        return GameNames.AttackTraining(BTIndex) + " + " + GameNames.DefenseTraining(BTIndex);
-                    return AttackUnlocked ? GameNames.AttackTraining(BTIndex) : GameNames.DefenseTraining(BTIndex);
+                        return GameNames.AttackTraining(Character, BTIndex) + " + "
+                               + GameNames.DefenseTraining(Character, BTIndex);
+                    return AttackUnlocked ? GameNames.AttackTraining(Character, BTIndex)
+                        : GameNames.DefenseTraining(Character, BTIndex);
                 }
-                return Index <= 5 ? GameNames.AttackTraining(BTIndex) : GameNames.DefenseTraining(BTIndex);
+                return Index <= 5 ? GameNames.AttackTraining(Character, BTIndex)
+                    : GameNames.DefenseTraining(Character, BTIndex);
             }
         }
 
