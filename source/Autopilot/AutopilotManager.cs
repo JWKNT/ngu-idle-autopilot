@@ -987,6 +987,8 @@ namespace NGUInjector.Autopilot
                        + "  \"collectionTargetZone\": " + (_collectionTarget == null || _collectionTarget.Target == null ? -1 : _collectionTarget.Target.Zone) + ",\n"
                        + "  \"collectionIsBackfill\": " + (_collectionTarget != null && _collectionTarget.IsBackfill).ToString().ToLowerInvariant() + ",\n"
                        + "  \"collectionRemainingItems\": " + (_collectionTarget == null ? 0 : _collectionTarget.RemainingItems) + ",\n"
+                       + "  \"collectionProjectedNewSlots\": " + (_collectionTarget == null ? 0 : _collectionTarget.ProjectedNewSlots) + ",\n"
+                       + "  \"collectionRequiredFreeReserve\": " + (_collectionTarget == null ? 3 : _collectionTarget.RequiredFreeReserve) + ",\n"
                        + "  \"collectionIncompleteZones\": " + (_collectionTarget == null ? 0 : _collectionTarget.IncompleteZones) + ",\n"
                        + "  \"collectionReason\": \"" + EscapeJson(collectionReason) + "\",\n"
                        + "  \"collectionMissingSummary\": \"" + EscapeJson(collectionMissing) + "\",\n"
@@ -1013,6 +1015,11 @@ namespace NGUInjector.Autopilot
                        + "  \"energySweepBound\": " + energySweepBound + ",\n"
                        + "  \"energyIdleReason\": \"" + energyIdleReason + "\",\n"
                        + "  \"basicTrainingLongHorizonPolicy\": \"reserve Energy first for reachable maximum cap-reduction frontiers with at most a two-future-run Energy-cap payback; then optimize immediate boss marginal value\",\n"
+                       + "  \"advancedTrainingHorizonDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.CurrentDecision(c)) + "\",\n"
+                       + "  \"advancedTrainingTargetZone\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastTargetZone + ",\n"
+                       + "  \"advancedTrainingAttackTarget\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastAttackTarget + ",\n"
+                       + "  \"advancedTrainingDefenseTarget\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastDefenseTarget + ",\n"
+                       + "  \"advancedTrainingCompletionEtaSeconds\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastCompletionEtaSeconds + ",\n"
                        + "  \"timeMachineHorizonDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.TimeMachineBP.LastHorizonDecision) + "\",\n"
                        + "  \"energyAllocationBreakdown\": " + energyBreakdown + ",\n"
                        + "  \"energyBasicTrainingAllocated\": " + basicTrainingEnergy + ",\n"
@@ -1317,13 +1324,18 @@ namespace NGUInjector.Autopilot
             var controller = GetArbitraryController(c);
             if (controller == null)
                 return new ResourceStatus {Decision = "Held because the game's AP purchase controller is not available", Target = 0, EtaSeconds = -1};
-            var id = !c.arbitrary.instaTrain ? 9
+            var spaceCritical = !IsApOwned(c, 15)
+                                && AdventureCollectionPlanner.InventoryPressureCritical(c);
+            var spaceNeeded = !IsApOwned(c, 15)
+                              && AdventureCollectionPlanner.InventoryPressureHigh(c, _collectionTarget);
+            var id = spaceCritical ? 15
+                : !c.arbitrary.instaTrain ? 9
+                : spaceNeeded ? 15
                 : !c.arbitrary.hasStarterPack ? 16
                 // The bot already performs filtering and merging.  The Heart is the
                 // first post-starter AP purchase that creates new progression income
                 // (+20% AP once MAXXED), whereas Loot Filter merely duplicates us.
                 : !HasYellowHeartDropped(c) ? 14
-                : !IsApOwned(c, 15) && AdventureCollectionPlanner.InventoryPressureHigh(c, _collectionTarget) ? 15
                 : NextAvailableApPurchase(controller);
             if (id < 0 || !ApPurchaseMethods.ContainsKey(id))
                 return new ResourceStatus {Decision = "Held because every supported permanent AP upgrade is already owned or locked", Target = 0, EtaSeconds = -1};
@@ -2153,6 +2165,17 @@ namespace NGUInjector.Autopilot
             var freeSlots = AdventureCollectionPlanner.FreeInventorySlots(c);
             if (freeSlots <= 2)
             {
+                // Spend the cheaper currency for the same permanent slot. AP space
+                // costs at most 10,000 AP; if it is already funded, leave EXP for
+                // compounding generation and let the AP transaction later in this
+                // same automation cycle perform the native purchase.
+                var apController = GetArbitraryController(c);
+                var apSpaceCost = apController == null || IsApOwned(c, 15)
+                    ? long.MaxValue : GetApCost(apController, 15);
+                var apCanFundSpace = apSpaceCost > 0
+                                     && apSpaceCost <= c.arbitrary.curArbitraryPoints - Config.ApReserve;
+                if (apCanFundSpace)
+                    return null;
                 var costMethod = c.adventurePurchases.GetType().GetMethod("invSpaceCost",
                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 var cost = costMethod == null ? 0L : Convert.ToInt64(costMethod.Invoke(c.adventurePurchases, null));
@@ -2650,11 +2673,29 @@ namespace NGUInjector.Autopilot
             if (controller == null)
                 return;
 
+            // Lost loot is irrecoverable. At critical capacity the cheapest native
+            // AP slot preempts every other AP goal, even Insta Training. At normal
+            // collection pressure, Insta Training keeps its permanent run-start
+            // priority but capacity still beats the larger Starter/Heart reserves.
+            var spaceCritical = !IsApOwned(c, 15)
+                                && AdventureCollectionPlanner.InventoryPressureCritical(c);
+            if (spaceCritical)
+            {
+                TryBuyApUpgrade(controller, 15, available, ApPurchaseMethods[15]);
+                return;
+            }
+
             // Preserve AP for the next high-impact permanent gate instead of draining it
             // into whatever cheap button happens to be affordable first.
             if (!c.arbitrary.instaTrain)
             {
                 TryBuyApUpgrade(controller, 9, available, ApPurchaseMethods[9]);
+                return;
+            }
+            if (!IsApOwned(c, 15)
+                && AdventureCollectionPlanner.InventoryPressureHigh(c, _collectionTarget))
+            {
+                TryBuyApUpgrade(controller, 15, available, ApPurchaseMethods[15]);
                 return;
             }
             if (!c.arbitrary.hasStarterPack)
@@ -2674,13 +2715,6 @@ namespace NGUInjector.Autopilot
             // MAXX collection deliberately retains merge candidates. When verified
             // free slots fall below that live debt, reserve AP for space instead of
             // draining it into a lower-ranked convenience purchase.
-            if (!IsApOwned(c, 15)
-                && AdventureCollectionPlanner.InventoryPressureHigh(c, _collectionTarget))
-            {
-                TryBuyApUpgrade(controller, 15, available, ApPurchaseMethods[15]);
-                return;
-            }
-
             foreach (var id in ApPurchaseOrder)
             {
                 if (id == 9 || id == 14 || id == 16 || IsApOwned(c, id) || !IsApFeatureUnlocked(c, id))

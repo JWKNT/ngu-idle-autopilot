@@ -19,6 +19,8 @@ namespace NGUInjector.Managers
         internal bool IsBackfill;
         internal bool BossOnly;
         internal int RemainingItems;
+        internal int ProjectedNewSlots;
+        internal int RequiredFreeReserve;
         internal int IncompleteZones;
         internal string Reason = "Collection planner is waiting for Adventure state";
         internal string MissingSummary = "unknown";
@@ -131,6 +133,8 @@ namespace NGUInjector.Managers
             result.IsBackfill = selected.Zone < front.Zone;
             result.BossOnly = selected.CoreSetIncomplete;
             result.RemainingItems = selected.RemainingItems;
+            result.ProjectedNewSlots = selected.ProjectedNewSlots;
+            result.RequiredFreeReserve = Math.Min(8, Math.Max(3, selected.ProjectedNewSlots + 2));
             result.MissingSummary = selected.MissingSummary;
             result.Reason = selected.CoreSetIncomplete
                 ? (result.IsBackfill ? "Backfilling an older incomplete equipment set after taking stronger forward gear"
@@ -157,8 +161,16 @@ namespace NGUInjector.Managers
             var total = TotalInventorySlots(c);
             var free = FreeInventorySlots(c);
             if (total <= 0) return false;
-            var debtReserve = collection == null ? 3 : Math.Min(10, Math.Max(3, collection.RemainingItems + 2));
+            // Remaining MAXX debt is not equivalent to required slots: another
+            // copy normally merges into an already-owned physical item. Reserve
+            // capacity only for missing physical IDs plus two drop/sweep buffers.
+            var debtReserve = collection == null ? 3 : Math.Max(3, collection.RequiredFreeReserve);
             return free <= Math.Max(debtReserve, (int)Math.Ceiling(total * .10));
+        }
+
+        internal static bool InventoryPressureCritical(Character c)
+        {
+            return FreeInventorySlots(c) <= 2;
         }
 
         internal static string InventoryPressure(Character c, AdventureCollectionTarget collection)
@@ -248,9 +260,14 @@ namespace NGUInjector.Managers
         {
             var debt = new ZoneDebt {Zone = zone, CoreSetIncomplete = !CoreSetComplete(c, zone)};
             var missing = new List<string>();
+            var missingIds = new HashSet<int>();
+            var physicallyOwned = PhysicalEquipmentIds(c);
             int bonus;
             if (KnownBonusAccessory.TryGetValue(zone, out bonus) && IsEquipment(c, bonus) && !IsMaxxed(c, bonus))
+            {
                 missing.Add(ItemName(c, bonus));
+                missingIds.Add(bonus);
+            }
 
             int[] ids;
             if (ZoneLootIds.TryGetValue(zone, out ids))
@@ -266,9 +283,12 @@ namespace NGUInjector.Managers
                         continue;
                     var name = ItemName(c, id);
                     if (!missing.Contains(name)) missing.Add(name);
+                    missingIds.Add(id);
                 }
             }
             debt.RemainingItems = missing.Count + (debt.CoreSetIncomplete ? 1 : 0);
+            debt.ProjectedNewSlots = missingIds.Count(id => !physicallyOwned.Contains(id))
+                                     + (debt.CoreSetIncomplete ? 1 : 0);
             debt.HasDebt = debt.CoreSetIncomplete || missing.Count > 0;
             var preview = string.Join(", ", missing.Take(3).ToArray());
             if (missing.Count > 3) preview += " +" + (missing.Count - 3) + " more";
@@ -276,6 +296,27 @@ namespace NGUInjector.Managers
                 ? "incomplete " + ZoneName(zone) + " set" + (preview.Length > 0 ? "; " + preview : string.Empty)
                 : preview.Length > 0 ? preview : "unresolved equipment entry";
             return debt;
+        }
+
+        private static HashSet<int> PhysicalEquipmentIds(Character c)
+        {
+            var result = new HashSet<int>();
+            if (c == null || c.inventory == null) return result;
+            Action<Equipment> add = item =>
+            {
+                if (item != null && item.id > 0) result.Add(item.id);
+            };
+            add(c.inventory.head);
+            add(c.inventory.chest);
+            add(c.inventory.legs);
+            add(c.inventory.boots);
+            add(c.inventory.weapon);
+            add(c.inventory.weapon2);
+            if (c.inventory.accs != null)
+                foreach (var item in c.inventory.accs) add(item);
+            if (c.inventory.inventory != null)
+                foreach (var item in c.inventory.inventory) add(item);
+            return result;
         }
 
         private static bool IsEquipment(Character c, int id)
@@ -314,6 +355,7 @@ namespace NGUInjector.Managers
             internal bool CoreSetIncomplete;
             internal bool HasDebt;
             internal int RemainingItems;
+            internal int ProjectedNewSlots;
             internal string MissingSummary;
         }
     }

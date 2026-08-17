@@ -577,6 +577,26 @@ namespace NGUInjector.AllocationProfiles
             // one that intentionally contains no BT target.
             _character.removeAllEnergy();
 
+            /*
+            FINITE ADVENTURE-GATE RESERVATION
+
+            A valid AdvancedTrainingBP has already proven that its exact finite
+            Power/Toughness target opens the next zone and repays before rebirth.
+            Reserve that small, reset-local gate allocation before the broad BT
+            water-fill; otherwise the aggregate BT budget can consume the Energy
+            first and make an admitted two-stat gate impossible to complete.
+            */
+            var cappedAdvancedTraining = temp.OfType<AdvancedTrainingBP>()
+                .Where(x => x.IsCapPrio()).ToList();
+            var advancedTrainingSpent = 0L;
+            foreach (var training in cappedAdvancedTraining)
+            {
+                if (_character.idleEnergy <= 0) break;
+                var before = _character.idleEnergy;
+                training.Allocate();
+                advancedTrainingSpent += Math.Max(0L, before - _character.idleEnergy);
+            }
+
             var cappedTraining = temp.OfType<BasicTrainingBP>().ToList();
             var optimizeCappedTraining = cappedTraining.Count > 0
                                          && cappedTraining.All(x => x.IsCapPrio());
@@ -624,6 +644,8 @@ namespace NGUInjector.AllocationProfiles
             foreach (var prio in temp)
             {
                 if (optimizeCappedTraining && prio is BasicTrainingBP)
+                    continue;
+                if (cappedAdvancedTraining.Contains(prio as AdvancedTrainingBP))
                     continue;
                 if (!prio.IsCapPrio())
                 {
@@ -676,6 +698,7 @@ namespace NGUInjector.AllocationProfiles
                                         + "; idle=" + _character.idleEnergy
                                         + (optimizedTrainingSpent > 0 ? ", optimizedBT=" + optimizedTrainingSpent : string.Empty)
                                         + (longHorizonTrainingSpent > 0 ? ", persistent-cap-reserve=" + longHorizonTrainingSpent : string.Empty)
+                                        + (advancedTrainingSpent > 0 ? ", next-zone-AT=" + advancedTrainingSpent : string.Empty)
                                         + (swept > 0 ? ", residual->BT=" + swept : string.Empty));
                 _lastEnergyActionShape = actionShape;
                 _lastEnergyActionLog = DateTime.UtcNow;

@@ -60,12 +60,12 @@ namespace NGUInjector.Autopilot
                 plan.RebirthRecoveryReason = rebirth.RecoveryReason;
                 if (c.highestBoss >= 30)
                 {
-                    Add(plan.Energy, 0, "CAPALLBT:12", "CAPTM:25", "CAPBESTAUG:28", "CAPWAN:8", "BESTAUG");
+                    Add(plan.Energy, 0, "CAPALLBT:12", "CAPTM:25", "CAPBESTAUG:28", "CAPAT-1:18", "CAPAT-0:18", "CAPWAN:8", "BESTAUG");
                     Add(plan.Energy, 1500, "CAPALLBT:10", "CAPTM:20", "CAPAT-1:18", "CAPAT-0:18", "CAPWAN:8", "BESTAUG");
                 }
                 else
                 {
-                    Add(plan.Energy, 0, "CAPALLBT:15", "CAPBESTAUG:35", "CAPWAN:10", "BESTAUG");
+                    Add(plan.Energy, 0, "CAPALLBT:15", "CAPBESTAUG:35", "CAPAT-1:20", "CAPAT-0:20", "CAPWAN:10", "BESTAUG");
                     Add(plan.Energy, 1500, "CAPALLBT:12", "CAPAT-1:20", "CAPAT-0:20", "CAPWAN:10", "BESTAUG");
                 }
                 Add(plan.Magic, 0, "CAPTM:40", "BR", "CAPWAN:10");
@@ -112,7 +112,7 @@ namespace NGUInjector.Autopilot
                 plan.Challenges.Clear();
             }
 
-            Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPBESTAUG", "CAPWAN", "NGU-4", "NGU-6");
+            Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPBESTAUG", "CAPAT-1:25", "CAPAT-0:20", "CAPWAN", "NGU-4", "NGU-6");
             Add(plan.Energy, 3600, "CAPALLBT", "CAPAT-1:25", "CAPAT-0:20", "CAPWAN", "NGU-4", "NGU-6");
             Add(plan.Magic, 0, "CAPTM", "BR", "CAPWAN", "NGU-0", "NGU-1");
             Add(plan.Magic, 3600, "BR", "CAPWAN", "NGU-0", "NGU-1");
@@ -178,8 +178,8 @@ namespace NGUInjector.Autopilot
 
             if (wishes)
             {
-                Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "TM");
-                Add(plan.Energy, 1800, "CAPALLBT", "CAPBESTAUG", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10");
+                Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPAT-1:30", "CAPAT-0:20", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "TM");
+                Add(plan.Energy, 1800, "CAPALLBT", "CAPBESTAUG", "CAPAT-1:30", "CAPAT-0:20", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10");
                 Add(plan.Energy, 10800, "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "CAPAT-1:30", "CAPAT-0:20", "NGU-4", "NGU-6", "NGU-8");
                 Add(plan.Magic, 0, "CAPTM", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "TM");
                 Add(plan.Magic, 1800, "BR", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "NGU-0", "NGU-1");
@@ -187,8 +187,8 @@ namespace NGUInjector.Autopilot
             }
             else
             {
-                Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPWAN", "TM");
-                Add(plan.Energy, 1800, "CAPALLBT", "CAPBESTAUG", "CAPWAN");
+                Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPAT-1:30", "CAPAT-0:20", "CAPWAN", "TM");
+                Add(plan.Energy, 1800, "CAPALLBT", "CAPBESTAUG", "CAPAT-1:30", "CAPAT-0:20", "CAPWAN");
                 Add(plan.Energy, 10800, "CAPAT-1:30", "CAPAT-0:20", "NGU-4", "NGU-6", "NGU-8");
                 Add(plan.Magic, 0, "CAPTM", "CAPWAN", "TM");
                 Add(plan.Magic, 1800, "BR", "CAPWAN", "NGU-0", "NGU-1");
@@ -218,7 +218,7 @@ namespace NGUInjector.Autopilot
             plan.WandoosOS = ChooseWandoos(c, difficulty.sadistic);
             plan.NGUDifficulties.Add(new TimedValue {Time = 0, Value = 2});
 
-            Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPBESTAUG", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "NGU-4", "NGU-6", "NGU-8");
+            Add(plan.Energy, 0, "CAPALLBT", "CAPTM", "CAPBESTAUG", "CAPAT-1:25", "CAPAT-0:20", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "NGU-4", "NGU-6", "NGU-8");
             Add(plan.Energy, 7200, "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "CAPAT-1:25", "CAPAT-0:20", "NGU-4", "NGU-6", "NGU-8");
             Add(plan.Magic, 0, "CAPTM", "BR", "CAPWAN", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "NGU-0", "NGU-1", "NGU-6");
             Add(plan.Magic, 7200, "BR", "CAPWISH-0:10", "CAPWISH-1:10", "CAPWISH-2:10", "CAPWISH-3:10", "NGU-0", "NGU-1", "NGU-6");

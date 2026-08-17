@@ -399,6 +399,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let filterDecision = state["filterDecision"] as? String ?? "Collection-safe loot-filter audit pending"
         let collectionBackfill = state["collectionIsBackfill"] as? Bool ?? false
         let collectionRemaining = number(state, "collectionRemainingItems")
+        let collectionProjectedSlots = number(state, "collectionProjectedNewSlots")
+        let collectionReserve = number(state, "collectionRequiredFreeReserve")
         let collectionZones = number(state, "collectionIncompleteZones")
         let collectionReason = state["collectionReason"] as? String ?? "Equipment collection planner pending"
         let collectionMissing = state["collectionMissingSummary"] as? String ?? "unknown equipment debt"
@@ -410,6 +412,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let yggFruitDecision = state["yggFruitDecision"] as? String ?? "Yggdrasil fruit policy pending"
         let timeMachineHorizon = state["timeMachineHorizonDecision"] as? String
             ?? "Time Machine reset-horizon value is being evaluated"
+        let advancedTrainingHorizon = state["advancedTrainingHorizonDecision"] as? String
+            ?? "Advanced Training next-zone value is being evaluated"
         let allocationSummary: String
         if let rows = state["energyAllocationBreakdown"] as? [[String: Any]] {
             allocationSummary = rows.filter {
@@ -486,7 +490,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             shortTerm.append("MAXX collection: \(collectionMissing) — \(collectionZones) fightable zone\(collectionZones == 1 ? "" : "s") still carry permanent Item List debt.")
         }
         if inventoryPressure == "HIGH" || inventoryPressure == "CRITICAL" {
-            shortTerm.append("Protect loot capacity: only \(inventoryFree)/\(inventoryTotal) slots are free; safe trash/merge runs every second and AP space is promoted ahead of convenience purchases.")
+            shortTerm.append("Protect loot capacity: only \(inventoryFree)/\(inventoryTotal) slots are free versus a \(collectionReserve)-slot live reserve; AP space is promoted ahead of larger permanent purchases.")
         }
         if !rebirthExecutionEnabled || !rebirthPreviewMonotonic || !rebirthRecoveryResetEfficient {
             let reason = rebirthSafetyBlockReason.isEmpty
@@ -630,13 +634,14 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Highest Fight Boss: \(highestBoss)    Next record: \(nextBoss)    Selected in this run: \(selectedBoss)
         Adventure target: \(zone)
         Equipment collection: \(collectionReason); \(collectionMissing). Remaining debt markers \(collectionRemaining) across \(collectionZones) fightable zone\(collectionZones == 1 ? "" : "s").
-        Inventory capacity: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure.lowercased()) pressure. Space purchases are dynamically promoted when the merge/drop reserve is threatened.
+        Inventory capacity: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure.lowercased()) pressure. \(collectionProjectedSlots) currently targeted item ID(s) need a new physical slot; reserve \(collectionReserve) includes two drop/sweep buffers. AP buys capacity first when funded, EXP only at critical pressure when AP cannot.
         Adventure stats: Power \(shortNumber(power)) / Toughness \(shortNumber(toughness))
         Energy: \(shortNumber(max(0, energyCurrent - energyIdle))) allocated / \(shortNumber(energyCurrent)) total (\(String(format: "%.1f", 100 * energyUtilization))% utilized); +\(shortNumber(energyIncome))/s; idle state: \(energyIdleReason.replacingOccurrences(of: "-", with: " "))
         Reconciliation: \(shortNumber(basicTrainingEnergy)) E in Basic Training; \(shortNumber(nonBasicTrainingEnergy)) E in Augments/other Energy systems; \(shortNumber(energyIdle)) E idle.
         Training allocation:
         \(allocationSummary)
         Long-horizon BT rule: \(state["basicTrainingLongHorizonPolicy"] as? String ?? "persistent cap investments are evaluated before immediate boss marginal value")
+        Advanced Training horizon: \(advancedTrainingHorizon)
         Time Machine horizon: \(timeMachineHorizon)
         Equipment: \(loadoutDecision)
         Inventory reclamation: \(trashDecision)
