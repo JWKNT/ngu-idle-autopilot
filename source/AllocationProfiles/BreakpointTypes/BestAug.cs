@@ -9,8 +9,9 @@ FILE PURPOSE
 
 BestAug ranks currently unlocked Augment/Upgrade completions by marginal combat multiplier,
 finish time, gold availability, and remaining rebirth horizon, then funds a completable track.
-Partial reset-local work must not masquerade as value. Cross-system Energy comparison belongs to
-CustomAllocation; this file owns only the internal Augment choice.
+Because Augment levels vanish at rebirth, a completion must also leave a real combat-payoff window;
+partial or terminal reset-local work must not masquerade as value. Cross-system Energy comparison
+belongs to CustomAllocation; this file owns only the internal Augment choice.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -43,11 +44,23 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             var available = (long)MaxAllocation;
             if (available <= 0)
                 return;
-            var effectiveTarget = Main.Autopilot != null && Main.Autopilot.Plan != null
-                ? Main.Autopilot.Plan.EffectiveAllocationTarget(Character) : RebirthTime;
-            var horizon = effectiveTarget > 0
-                ? Math.Max(0.0, effectiveTarget - Character.rebirthTime.totalseconds)
-                : double.PositiveInfinity;
+            var horizon = RemainingRebirthHorizon();
+            if (double.IsPositiveInfinity(horizon) && RebirthTime > 0)
+                horizon = Math.Max(0.0, RebirthTime - Character.rebirthTime.totalseconds);
+            // A reset-local level that completes on the rebirth boundary produces no
+            // boss, Adventure, or permanent value. Preserve a minimum observation/
+            // combat window, and prefer the current selected-boss ETA when one is
+            // already provable from native stats.
+            var finiteHorizon = !double.IsPositiveInfinity(horizon);
+            if (finiteHorizon && horizon <= 30.0)
+            {
+                Main.LogAllocation("Held reset-local Augments: <=30s remain before the selected rebirth target");
+                return;
+            }
+            var bossEta = finiteHorizon
+                ? Autopilot.AutopilotManager.SelectedBossDefeatEta(Character,
+                    Math.Max(0, (int)Math.Floor(horizon)))
+                : -1;
             double currentBossKill;
             var bossProgressionBlocked = Character.bossID <= ActiveHighestBoss(Character)
                                          && !CombatHelpers.CanNukeCurrentBoss(Character)
@@ -62,7 +75,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 {
                     var time = Math.Max(0.0001, aug.AugTimeLeftEnergy(available));
                     var affordable = aug.AugProgress() > 0f || aug.getAugCost() <= gold;
-                    if (affordable && time <= horizon)
+                    if (affordable && HasPayoffWindow(time, horizon, bossEta))
                     {
                         var level = (double)state.augLevel;
                         var upgrade = (double)state.upgradeLevel;
@@ -85,7 +98,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 {
                     var time = Math.Max(0.0001, aug.UpgradeTimeLeftEnergy(available));
                     var affordable = aug.UpgradeProgress() > 0f || aug.getUpgradeCost() <= gold;
-                    if (affordable && time <= horizon)
+                    if (affordable && HasPayoffWindow(time, horizon, bossEta))
                     {
                         var level = (double)state.augLevel;
                         var upgrade = (double)state.upgradeLevel;
@@ -116,11 +129,12 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             var actualTime = bestIsUpgrade
                 ? selected.UpgradeTimeLeftEnergy((long)allocation)
                 : selected.AugTimeLeftEnergy((long)allocation);
-            if (actualTime > horizon)
+            if (!HasPayoffWindow(actualTime, horizon, bossEta))
             {
                 Main.LogAction("HOLD", "Held " + GameNames.Augment(Character, bestPair, bestIsUpgrade)
                     + ": exact allocated-energy ETA "
-                    + Math.Ceiling(actualTime) + "s exceeds rebirth horizon " + Math.Ceiling(horizon) + "s");
+                    + Math.Ceiling(actualTime) + "s leaves no proved payoff window inside rebirth horizon "
+                    + Math.Ceiling(horizon) + "s");
                 return;
             }
             SetInput(allocation);
@@ -135,6 +149,22 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             Main.LogAllocation("BestAug exact marginal ROI: "
                                + GameNames.Augment(Character, bestPair, bestIsUpgrade)
                                + ", score " + bestScore);
+        }
+
+        private static bool HasPayoffWindow(double completionSeconds, double horizonSeconds, int bossEta)
+        {
+            if (double.IsNaN(completionSeconds) || double.IsInfinity(completionSeconds)
+                || completionSeconds < 0.0)
+                return false;
+            if (double.IsPositiveInfinity(horizonSeconds))
+                return true;
+            // If a selected Fight Boss is already forecast, completion must precede
+            // it. Otherwise require enough post-completion time for at least one
+            // meaningful Adventure/combat cycle instead of valuing the bar itself.
+            var payoffBoundary = bossEta >= 0
+                ? Math.Min(horizonSeconds - 5.0, bossEta)
+                : horizonSeconds - Math.Max(30.0, Math.Min(300.0, completionSeconds));
+            return completionSeconds <= payoffBoundary;
         }
 
         private static int ActiveHighestBoss(Character c)

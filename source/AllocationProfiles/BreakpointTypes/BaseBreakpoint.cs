@@ -84,6 +84,17 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             Character.energyMagicPanel.validateInput();
         }
 
+        protected double RemainingRebirthHorizon()
+        {
+            var autopilot = Main.Autopilot;
+            if (autopilot == null || autopilot.Plan == null)
+                return double.PositiveInfinity;
+            var target = autopilot.Plan.EffectiveAllocationTarget(Character);
+            return target > 0
+                ? Math.Max(0.0, target - Character.rebirthTime.totalseconds)
+                : double.PositiveInfinity;
+        }
+
         internal static IEnumerable<BaseBreakpoint> ParseBreakpointArray(string[] prios, ResourceType type, int rebirthTime)
         {
             foreach (var prio in prios)

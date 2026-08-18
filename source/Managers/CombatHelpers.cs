@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using UnityEngine.UI;
+using NGUInjector.Autopilot;
 
 /*
 FILE PURPOSE
@@ -45,42 +46,11 @@ namespace NGUInjector.Managers
             killSeconds = double.PositiveInfinity;
             survivalSeconds = double.PositiveInfinity;
             if (c == null || playerHp <= 0 || bossHp <= 0) return false;
-
-            // Native order is boss regen/cap, incoming damage and immediate player
-            // death, then outgoing damage and boss death. Character.updateHP is a
-            // separate 0.02-second callback; conservatively do not credit it before
-            // the first hit, then use its exact per-tick amount thereafter.
-            var outgoingDamage = 0.02 * Math.Max(0.0, attack - c.bossDefense);
-            var preHitBossHp = Math.Min(c.bossMaxHP, bossHp + c.bossRegen);
-            long killTick;
-            if (outgoingDamage <= 0)
-                killTick = long.MaxValue;
-            else if (outgoingDamage >= preHitBossHp)
-                killTick = 1;
-            else
-            {
-                var netBossDamage = outgoingDamage - c.bossRegen;
-                killTick = netBossDamage <= 0 ? long.MaxValue
-                    : 1L + (long)Math.Ceiling((preHitBossHp - outgoingDamage) / netBossDamage);
-            }
-
-            var incomingDamage = 0.02 * Math.Max(0.0, c.bossAttack - defense);
-            var playerRegen = 0.001 + 0.001 * defense;
-            long deathTick;
-            if (incomingDamage <= 0)
-                deathTick = long.MaxValue;
-            else if (incomingDamage >= playerHp)
-                deathTick = 1;
-            else
-            {
-                var netPlayerDamage = incomingDamage - playerRegen;
-                deathTick = netPlayerDamage <= 0 ? long.MaxValue
-                    : 1L + (long)Math.Ceiling((playerHp - incomingDamage) / netPlayerDamage);
-            }
-
-            if (killTick != long.MaxValue) killSeconds = killTick * 0.02;
-            if (deathTick != long.MaxValue) survivalSeconds = deathTick * 0.02;
-            return killTick < deathTick;
+            var projection = MechanicsFightBoss.Evaluate(attack, defense, playerHp,
+                c.bossAttack, c.bossDefense, bossHp, c.bossMaxHP, c.bossRegen);
+            killSeconds = projection.KillSeconds;
+            survivalSeconds = projection.SurvivalSeconds;
+            return projection.PlayerWins;
         }
 
         internal static bool ExecuteVerifiedMove(Button button, Action execute, string description)

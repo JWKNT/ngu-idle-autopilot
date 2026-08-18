@@ -106,6 +106,15 @@ namespace NGUInjector
                 {43, "7 Aethereal Seas"}
             };
 
+            // The legacy editor's hand-maintained list predates T13/T14.  Titan routing is
+            // source-derived now, so make every routed Titan displayable from the native zone
+            // controller rather than letting a missing UI label abort injector startup.
+            foreach (var titanZone in ZoneHelpers.TitanZones)
+            {
+                if (!ZoneList.ContainsKey(titanZone))
+                    ZoneList[titanZone] = GameNames.Zone(Main.Character, titanZone);
+            }
+
             SpriteEnemyList = new Dictionary<int, string>();
             foreach (var x in Main.Character.adventureController.enemyList)
             {
@@ -180,8 +189,10 @@ namespace NGUInjector
             TitanGoldTargets.Items.Clear();
             for (var i = 0; i < ZoneHelpers.TitanZones.Length; i++)
             {
-                var text =
-                    $"{ZoneList[ZoneHelpers.TitanZones[i]]}";
+                var zone = ZoneHelpers.TitanZones[i];
+                string text;
+                if (!ZoneList.TryGetValue(zone, out text))
+                    text = GameNames.Zone(Main.Character, zone);
                 if (newSettings.TitanGoldTargets[i])
                 {
                     text = $"{text} ({(newSettings.TitanMoneyDone[i] ? "Done" : "Waiting")})";
@@ -206,8 +217,10 @@ namespace NGUInjector
             TitanSwapTargets.Items.Clear();
             for (var i = 0; i < ZoneHelpers.TitanZones.Length; i++)
             {
-                var text =
-                    $"{ZoneList[ZoneHelpers.TitanZones[i]]}";
+                var zone = ZoneHelpers.TitanZones[i];
+                string text;
+                if (!ZoneList.TryGetValue(zone, out text))
+                    text = GameNames.Zone(Main.Character, zone);
                 var item = new ListViewItem
                 {
                     Tag = i,
@@ -1264,7 +1277,7 @@ namespace NGUInjector
 
         private void UnloadButton_Click(object sender, EventArgs e)
         {
-            Main.RunOnMainThread(Loader.Unload);
+            Main.RunLifecycleOnMainThread(Loader.Unload);
         }
 
         private void ITOPODCombatMode_SelectedIndexChanged(object sender, EventArgs e)

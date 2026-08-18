@@ -43,9 +43,34 @@ namespace NGUInjector.Autopilot
         internal int RebirthRecoveryEtaSeconds = -1;
         internal int RebirthRecoveryRemainingBosses;
         internal string RebirthRecoveryReason = string.Empty;
+        internal double RebirthExpectedCatchupExp;
+        internal double RebirthExpectedCatchupExpPerHour;
+        internal double RebirthMinimumNumberRatio;
         internal bool RebirthExecutionHold;
+        internal int RebirthNextPositiveEtaSeconds = -1;
+        internal int RebirthNextEvaluationEtaSeconds = -1;
+        internal string RebirthEtaReason = string.Empty;
+        // Puzzle windows and challenge stipulations are legality constraints, not candidates for
+        // the general event scorer. Builders set this bit whenever changing the target could make
+        // an otherwise valid run impossible or irreversibly miss its native window.
+        internal bool RebirthTargetLocked;
         internal readonly List<TimedValue> NGUDifficulties = new List<TimedValue>();
         internal readonly List<string> Challenges = new List<string>();
+        internal string ChallengeEvidenceSummary = string.Empty;
+        internal bool ChallengeActive;
+        internal bool ChallengeAdmitted;
+        internal string ChallengeName = string.Empty;
+        internal int ChallengeClearEtaSeconds = -1;
+        internal int ChallengeRecoveryEtaSeconds = -1;
+        internal int ChallengeTargetBoss = -1;
+        internal int ChallengeTargetLevel = -1;
+        internal int ChallengeCompletedBefore = -1;
+        internal int ChallengeMaxCompletions = -1;
+        internal string ChallengeEtaReason = string.Empty;
+        internal string EndgameObjective = string.Empty;
+        internal string EndgameMissingSummary = string.Empty;
+        internal int Titan12VersionTarget = -1;
+        internal bool EndgameReadyToTrigger;
         internal int WandoosOS;
         internal int[] Diggers = new int[0];
         internal readonly List<PlanBreakpoint> Energy = new List<PlanBreakpoint>();
@@ -60,6 +85,9 @@ namespace NGUInjector.Autopilot
             var rebirthSignature = RebirthExecutionHold ? "UNSCHEDULED-HOLD" : RebirthSeconds.ToString();
             return Stage + "|" + Objective + "|" + rebirthSignature + "|" + RebirthReason + "|"
                    + RebirthExecutionHold + "|"
+                   + EndgameObjective + "|" + EndgameMissingSummary + "|"
+                   + Titan12VersionTarget + "|" + EndgameReadyToTrigger + "|"
+                   + ChallengeActive + "|" + ChallengeAdmitted + "|" + ChallengeName + "|"
                    + string.Join(";", NGUDifficulties.Select(x => x.Time + ":" + x.Value).ToArray()) + "|" + WandoosOS
                    + "|" + string.Join(",", Diggers.Select(x => x.ToString()).ToArray())
                    + "|" + string.Join(",", Challenges.ToArray()) + "|" + BreakpointSignature(Energy) + "|" + BreakpointSignature(Magic) + "|" + BreakpointSignature(R3);

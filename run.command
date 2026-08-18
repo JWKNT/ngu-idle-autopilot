@@ -27,6 +27,15 @@ if [[ ! -f "$bot_dir/runtime/autopilot.json" ]]; then
   cp "$bot_dir/autopilot.example.json" "$bot_dir/runtime/autopilot.json"
 fi
 
+# The injector cannot enumerate an older assembly after its pointer is overwritten. Treat any
+# recorded pointer as an active ownership claim and require an explicit ejection (or full game
+# restart plus stale-pointer cleanup) before a new scheduler can be created.
+if [[ -f "$bot_dir/runtime/assembly-pointer.txt" ]]; then
+  existing_pointer=$(<"$bot_dir/runtime/assembly-pointer.txt")
+  print -u2 "Autopilot pointer $existing_pointer is already recorded. Run ./stop.command before injecting again."
+  exit 1
+fi
+
 cd "$bot_dir"
 # decision.json is generated telemetry, not save data. Remove the previous producer's
 # retained frame before injection so a newly opened monitor cannot briefly present it
@@ -65,18 +74,45 @@ dashboard_log="$bot_dir/runtime/logs/dashboard-server.log"
 if [[ -f "$dashboard_pid_file" ]]; then
   old_dashboard_pid=$(<"$dashboard_pid_file")
   old_dashboard_command=$(ps -p "$old_dashboard_pid" -o command= 2>/dev/null || true)
-  if [[ "$old_dashboard_pid" == <-> && "$old_dashboard_command" == *"$dashboard_script"* ]]; then
+  if [[ "$old_dashboard_pid" == <-> && "$old_dashboard_command" == *"dashboard_server.py"* ]]; then
     kill "$old_dashboard_pid" 2>/dev/null || true
   fi
   rm -f "$dashboard_pid_file"
 fi
+
+# A listener can outlive an obsolete/stale PID file. Reclaim the port only from
+# this exact dashboard script; an unrelated owner is a hard collision and must not
+# be mistaken for the newly launched read-only bridge.
+for dashboard_listener_pid in $(lsof -tiTCP:47635 -sTCP:LISTEN 2>/dev/null || true); do
+  dashboard_listener_command=$(ps -p "$dashboard_listener_pid" -o command= 2>/dev/null || true)
+  if [[ "$dashboard_listener_command" == *"dashboard_server.py"* ]]; then
+    kill "$dashboard_listener_pid" 2>/dev/null || true
+  else
+    print -u2 "Port 47635 is owned by an unrelated process $dashboard_listener_pid; dashboard not started."
+    dashboard_listener_collision=true
+  fi
+done
+if [[ "${dashboard_listener_collision:-false}" == true ]]; then
+  exit 1
+fi
+for _ in {1..20}; do
+  [[ -z "$(lsof -tiTCP:47635 -sTCP:LISTEN 2>/dev/null || true)" ]] && break
+  sleep 0.1
+done
 
 python3 "$dashboard_script" --root "$bot_dir/docs" --runtime "$bot_dir/runtime" --port 47635 \
   --daemon --pid-file "$dashboard_pid_file" --log "$dashboard_log"
 
 dashboard_ready=false
 for _ in {1..20}; do
-  if curl -fsS "http://127.0.0.1:47635/api/health" >/dev/null 2>&1; then
+  if [[ -f "$dashboard_pid_file" ]]; then
+    dashboard_pid=$(<"$dashboard_pid_file")
+  else
+    dashboard_pid=""
+  fi
+  dashboard_listener_pid=$(lsof -tiTCP:47635 -sTCP:LISTEN 2>/dev/null | head -1 || true)
+  if [[ "$dashboard_pid" == <-> && "$dashboard_listener_pid" == "$dashboard_pid" ]] \
+      && curl -fsS "http://127.0.0.1:47635/api/health" >/dev/null 2>&1; then
     dashboard_ready=true
     break
   fi
@@ -89,7 +125,7 @@ else
   if [[ -f "$dashboard_pid_file" ]]; then
     dashboard_pid=$(<"$dashboard_pid_file")
     dashboard_command=$(ps -p "$dashboard_pid" -o command= 2>/dev/null || true)
-    if [[ "$dashboard_command" == *"$dashboard_script"* ]]; then
+    if [[ "$dashboard_command" == *"dashboard_server.py"* ]]; then
       kill "$dashboard_pid" 2>/dev/null || true
     fi
     rm -f "$dashboard_pid_file"

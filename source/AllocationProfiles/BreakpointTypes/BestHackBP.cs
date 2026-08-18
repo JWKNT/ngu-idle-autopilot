@@ -106,11 +106,12 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         private bool AtHardCap(int id)
         {
-            if (id < 0 || id >= Character.hacks.hacks.Count || id >= Character.hacksController.properties.Count)
+            if (id < 0 || id >= Character.hacks.hacks.Count)
                 return true;
-            var divider = Math.Max(1.0, Character.hacksController.properties[id].baseDivider);
-            var max = (long)Math.Floor(Math.Log(1e38 / divider) / Math.Log(1.0078)) + 1L;
-            return Character.hacks.hacks[id].level >= max;
+            // The native updater refuses to advance at this public cap. Its 1e38
+            // boundary and two-stage approximation are intentionally authoritative;
+            // a custom float.MaxValue solver can allocate forever to a frozen bar.
+            return Character.hacks.hacks[id].level >= Character.hacksController.hardCapLevel(id);
         }
 
         private double TimeToNextMilestone(int id, float r3)

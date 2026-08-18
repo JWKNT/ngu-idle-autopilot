@@ -25,6 +25,11 @@ namespace NGUInjector.Managers
         internal double UsefulBoostDebt;
         internal double UsefulBoostGain;
         internal string UsefulBoostTarget = string.Empty;
+        internal double ObservedKillSeconds = -1.0;
+        internal double ExpectedTargetDropSeconds = -1.0;
+        internal double TargetDropConfidenceSeconds = -1.0;
+        internal double BossSpawnShare;
+        internal string StochasticEvidence = "No calibrated drop forecast is available";
         internal string SetReward = "No unclaimed core-set reward";
         internal string Reason = "Collection planner is waiting for Adventure state";
         internal string MissingSummary = "unknown";
@@ -151,18 +156,24 @@ namespace NGUInjector.Managers
             // enemies are the source of Power/Toughness boost drops. Pure boss sniping is therefore
             // valid only when it does not cut off the supply needed to make an owned, demonstrably
             // better item win the complete loadout. Full-clear still encounters bosses naturally.
-            result.BossOnly = selected.CoreSetIncomplete && !needsNormalEnemyBoosts;
+            // Native ordinary-zone loot gives relevant chances to both normal enemies and bosses.
+            // A set being incomplete does not prove that discarding every normal spawn improves
+            // time-to-MAXX. Keep the full-clear branch unless the exact remaining target is proven
+            // boss-exclusive; one-time boss-only mechanics are modeled separately by
+            // MajorUnlockPlanner with source-audited probabilities.
+            result.BossOnly = selected.OnlyBossExclusiveDebt && !needsNormalEnemyBoosts;
             result.RemainingItems = selected.RemainingItems;
             result.ProjectedNewSlots = selected.ProjectedNewSlots;
             result.RequiredFreeReserve = Math.Min(8, Math.Max(3, selected.ProjectedNewSlots + 2));
             result.MissingSummary = selected.MissingSummary;
+            PopulateStochasticEvidence(c, result);
             result.Reason = selected.CoreSetIncomplete
                 ? needsNormalEnemyBoosts
                     ? "Full-clearing for ordinary-enemy boosts while bosses advance the MAXX set: "
                       + Math.Ceiling(usefulBoostDebt) + " boost points on " + usefulBoostTarget
                       + " have a proven complete-loadout gain; unclaimed set reward is " + result.SetReward
-                    : (result.IsBackfill ? "Boss-sniping an older incomplete MAXX set; ordinary-enemy boosts have no proven loadout target; unclaimed set reward is " + result.SetReward
-                        : "Boss-sniping the newest incomplete MAXX set; ordinary-enemy boosts have no proven loadout target; unclaimed set reward is " + result.SetReward)
+                    : (result.IsBackfill ? "Full-clearing an older incomplete MAXX set because no source-derived boss-snipe advantage is proven; unclaimed set reward is " + result.SetReward
+                        : "Full-clearing the newest incomplete MAXX set because no source-derived boss-snipe advantage is proven; unclaimed set reward is " + result.SetReward)
                 : (result.IsBackfill ? "Backtracking for permanent Item List MAXX collection debt"
                     : "Collecting non-set equipment and the zone bonus accessory before moving to optional farming");
             return result;
@@ -235,6 +246,22 @@ namespace NGUInjector.Managers
             return false;
         }
 
+        internal static bool IsKnownCompletedOrdinaryItem(Character c, int id)
+        {
+            if (c == null || id <= 0 || !IsMaxxed(c, id)) return false;
+            var knownSource = false;
+            foreach (var pair in ZoneLootIds)
+            {
+                if (!pair.Value.Contains(id)) continue;
+                knownSource = true;
+                if (HasCoreSet(pair.Key) && !CoreSetComplete(c, pair.Key))
+                    return false;
+            }
+            // Unknown-source and Titan equipment intentionally remains unfiltered:
+            // the optimizer cannot prove that a unique set/puzzle use is complete.
+            return knownSource;
+        }
+
         internal static bool CoreSetComplete(Character c, int zone)
         {
             if (!HasCoreSet(zone)) return true;
@@ -299,20 +326,34 @@ namespace NGUInjector.Managers
                 foreach (var id in ids.Distinct())
                 {
                     if (!IsEquipment(c, id) || IsMaxxed(c, id)) continue;
-                    // Core-set flags already represent undiscovered set pieces.  For
-                    // other rares, create debt once the game proves the item can drop;
-                    // known Bonus Accessories are the deliberate exception above.
-                    if (!IsDropped(c, id) && (!KnownBonusAccessory.ContainsKey(zone)
-                                               || KnownBonusAccessory[zone] != id))
+                    // An incomplete core-set flag proves at least one listed set piece remains even
+                    // before its first physical drop. Enumerating those IDs gives inventory reserve
+                    // the real worst case instead of a synthetic single-slot placeholder. Optional
+                    // rares outside an incomplete set still require native itemDropped evidence.
+                    if (!debt.CoreSetIncomplete && !IsDropped(c, id)
+                        && (!KnownBonusAccessory.ContainsKey(zone) || KnownBonusAccessory[zone] != id))
                         continue;
                     var name = ItemName(c, id);
                     if (!missing.Contains(name)) missing.Add(name);
                     missingIds.Add(id);
                 }
             }
-            debt.RemainingItems = missing.Count + (debt.CoreSetIncomplete ? 1 : 0);
-            debt.ProjectedNewSlots = missingIds.Count(id => !physicallyOwned.Contains(id))
-                                     + (debt.CoreSetIncomplete ? 1 : 0);
+            debt.RemainingItems = missing.Count;
+            int bonusId;
+            debt.OnlyBossExclusiveDebt = !debt.CoreSetIncomplete
+                                         && KnownBonusAccessory.TryGetValue(zone, out bonusId)
+                                         && missingIds.Count > 0
+                                         && missingIds.All(id => id == bonusId)
+                                         && IsBossExclusive(c, zone, bonusId);
+            debt.ProjectedNewSlots = missingIds.Count(id => !physicallyOwned.Contains(id));
+            if (debt.CoreSetIncomplete && debt.RemainingItems == 0)
+            {
+                // Fail closed if a future game version changes the set table without updating this
+                // audit: retain one explicit unit of debt and one reserve slot rather than declaring
+                // a native-incomplete set complete.
+                debt.RemainingItems = 1;
+                debt.ProjectedNewSlots = Math.Max(1, debt.ProjectedNewSlots);
+            }
             debt.HasDebt = debt.CoreSetIncomplete || missing.Count > 0;
             var preview = string.Join(", ", missing.Take(3).ToArray());
             if (missing.Count > 3) preview += " +" + (missing.Count - 3) + " more";
@@ -373,6 +414,41 @@ namespace NGUInjector.Managers
                 ? ZoneStatHelper.UserOverrides[zone].Name : "zone " + zone;
         }
 
+        private static bool IsBossExclusive(Character c, int zone, int itemId)
+        {
+            // The installed 1.260 LootDrop methods award Normal Bonus Accessories from the shared
+            // post-enemy branch, so none of the currently audited IDs is boss-exclusive. Keep this
+            // method as the explicit extension point for a future source-proven target.
+            return false;
+        }
+
+        private static void PopulateStochasticEvidence(Character c, AdventureCollectionTarget target)
+        {
+            if (target == null || target.Target == null || c.adventureController == null) return;
+            var zone = target.Target.Zone;
+            var observed = CombatManager.ObservedKillSeconds(zone, target.BossOnly);
+            target.ObservedKillSeconds = observed;
+            try
+            {
+                var enemies = c.adventureController.enemyList[zone];
+                if (enemies != null && enemies.Count > 0)
+                {
+                    var bosses = enemies.Count(enemy => enemy.enemyType == enemyType.boss
+                        || enemy.enemyType.ToString().IndexOf("bigBoss",
+                            StringComparison.OrdinalIgnoreCase) >= 0);
+                    target.BossSpawnShare = bosses / (double)enemies.Count;
+                }
+            }
+            catch
+            {
+                target.BossSpawnShare = 0.0;
+            }
+            target.StochasticEvidence = observed > 0.0
+                ? "Observed combat signature mean is " + observed.ToString("0.00")
+                  + "s/kill; exact remaining-item probability is unknown, so no ETA is asserted"
+                : "No matching combat-signature sample and no exact remaining-item probability; no ETA is asserted";
+        }
+
         /*
         NATIVE EARLY SET REWARDS
 
@@ -400,6 +476,7 @@ namespace NGUInjector.Managers
             internal bool HasDebt;
             internal int RemainingItems;
             internal int ProjectedNewSlots;
+            internal bool OnlyBossExclusiveDebt;
             internal string MissingSummary;
         }
     }

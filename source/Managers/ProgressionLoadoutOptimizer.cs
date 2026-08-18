@@ -32,7 +32,20 @@ namespace NGUInjector.Managers
         private static Plan _authoritativePlan;
         private static Plan _pendingPlan;
         private static string _authoritativeObjective = string.Empty;
+        private static string _pendingContext = string.Empty;
         private static MajorUnlockTarget _scoreMajorUnlock;
+        private static bool _scoreItopod;
+        private static bool _probingBossLoadout;
+        private static bool _cachedBossObjective;
+        private static int _cachedBossId = int.MinValue;
+        private static int _cachedHighestBoss = int.MinValue;
+        private static double _cachedBossObjectiveAt = double.NegativeInfinity;
+        private static string _leaseKind = string.Empty;
+        private static string _leasedRoutineObjective = string.Empty;
+        private static int _leasedBossId = -1;
+        private static int _leasedHighestBoss = -1;
+        private static MajorUnlockTarget _leasedMajorUnlock;
+        private static double _leaseUntil;
 
         internal static string LastDecision { get; private set; } = "Waiting for an inventory snapshot";
         internal static double LastScoreGain { get; private set; }
@@ -40,6 +53,12 @@ namespace NGUInjector.Managers
         internal static bool LastSearchExact { get; private set; }
         private static readonly MethodInfo MemberwiseCloneMethod = typeof(object).GetMethod(
             "MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        internal static bool IsAuthoritativeItem(Equipment item)
+        {
+            return item != null && (_authoritativePlan != null && UsesReference(_authoritativePlan, item)
+                                    || _pendingPlan != null && UsesReference(_pendingPlan, item));
+        }
 
         private sealed class Plan
         {
@@ -108,8 +127,24 @@ namespace NGUInjector.Managers
             // suppression must use a monotonic process clock instead.
             var now = (double)UnityEngine.Time.realtimeSinceStartup;
             var bossObjective = UseBossObjective(c);
-            _scoreMajorUnlock = bossObjective ? null : MajorUnlockPlanner.Evaluate(c);
+            var itopodObjective = c.adventure.zone == 1000;
+            // Evaluate major unlocks independently of the currently equipped set. Once an
+            // admissible target exists, its lease must survive a combat-set swap which makes the
+            // generic Fight Boss predicate momentarily true; this was the HSB/Wandoos feedback loop.
+            var majorUnlock = itopodObjective ? null : MajorUnlockPlanner.Evaluate(c);
+            ResolveObjectiveLease(c, now, ref bossObjective, ref itopodObjective, ref majorUnlock);
+            _scoreItopod = itopodObjective;
+            _scoreMajorUnlock = majorUnlock;
             var objective = Objective(c, bossObjective, _scoreMajorUnlock);
+            if (_leaseKind == "routine" && now < _leaseUntil
+                && !string.IsNullOrEmpty(_leasedRoutineObjective))
+                objective = _leasedRoutineObjective;
+            else if (string.IsNullOrEmpty(_leaseKind))
+            {
+                _leaseKind = "routine";
+                _leasedRoutineObjective = objective;
+                _leaseUntil = now + 15.0;
+            }
             LastObjective = objective;
 
             // Full automation owns the progression loadout just as it owns resource
@@ -124,6 +159,7 @@ namespace NGUInjector.Managers
                 if (!SameLayout(live, _authoritativePlan))
                 {
                     _pendingPlan = _authoritativePlan.Clone();
+                    _pendingContext = ContextKey(c, objective);
                     if (c.adventureController.currentEnemy != null)
                     {
                         LastDecision = "Manual/foreign gear change detected; authoritative " + objective
@@ -138,12 +174,20 @@ namespace NGUInjector.Managers
             {
                 _authoritativePlan = null;
                 _pendingPlan = null;
+                _pendingContext = string.Empty;
                 _authoritativeObjective = string.Empty;
             }
 
             // This path deliberately runs before the inventory-probe cadence. The
             // enemy-free frame can be shorter than one second under continuous
             // Adventure automation.
+            if (_pendingPlan != null && _pendingContext != ContextKey(c, objective))
+            {
+                _pendingPlan = null;
+                _pendingContext = string.Empty;
+                _lastFingerprint = int.MinValue;
+                LastDecision = "Discarded a queued gear plan because its combat/resource context changed";
+            }
             if (_pendingPlan != null && c.adventureController.currentEnemy == null)
             {
                 ApplyChosenPlan(c, _pendingPlan, now, "Equipped queued");
@@ -171,12 +215,14 @@ namespace NGUInjector.Managers
             LastSearchExact = _searchExact;
             var bestScore = Score(c, best);
             LastScoreGain = bestScore - currentScore;
+            var materialGain = Math.Max(0.05, Math.Abs(currentScore) * 0.005);
             if (SameLayout(best, current)
-                || !(bestScore > currentScore + Math.Max(1e-7, Math.Abs(currentScore) * 1e-7)))
+                || !(bestScore > currentScore + materialGain))
             {
                 _authoritativePlan = current.Clone();
                 _authoritativeObjective = objective;
                 _pendingPlan = null;
+                _pendingContext = string.Empty;
                 LastDecision = (LastSearchExact ? "Globally optimal " : "Best verified bounded-search ")
                                + LastObjective + " set active: " + Describe(current);
                 return;
@@ -191,11 +237,179 @@ namespace NGUInjector.Managers
             if (c.adventureController.currentEnemy != null)
             {
                 _pendingPlan = best.Clone();
+                _pendingContext = ContextKey(c, objective);
                 LastDecision = "Verified equipment upgrade queued for the next natural post-kill frame";
                 return;
             }
 
             ApplyChosenPlan(c, best, now, "Equipped");
+        }
+
+        /*
+        STICKY OBJECTIVE LEASE
+
+        Gear changes alter Fight Boss, Adventure, and resource predicates. Recomputing ownership
+        from those post-swap predicates every second creates a controller feedback loop. A lease
+        therefore owns one objective until its success state changes, its route becomes invalid,
+        or a hard catch-up branch preempts it. Routine production leases are short; major unlock
+        and selected-boss leases end on the exact unlock/boss transition. The lease chooses policy
+        only and never bypasses native loadout/Titan/combat preflight.
+        */
+        private static void ResolveObjectiveLease(Character c, double now, ref bool bossObjective,
+            ref bool itopodObjective, ref MajorUnlockTarget majorUnlock)
+        {
+            var highest = c.settings.rebirthDifficulty == difficulty.normal ? c.highestBoss
+                : c.settings.rebirthDifficulty == difficulty.evil ? c.highestHardBoss
+                : c.highestSadisticBoss;
+            var catchupBoss = c.bossID < highest;
+
+            if (_leaseKind == "boss" && c.bossID == _leasedBossId
+                && highest == _leasedHighestBoss)
+            {
+                bossObjective = true;
+                itopodObjective = false;
+                majorUnlock = null;
+                return;
+            }
+            if (_leaseKind == "major" && _leasedMajorUnlock != null
+                && now < _leaseUntil && !MajorUnlockComplete(c, _leasedMajorUnlock))
+            {
+                bossObjective = false;
+                itopodObjective = false;
+                majorUnlock = _leasedMajorUnlock;
+                return;
+            }
+            if (_leaseKind == "itopod" && c.adventure.zone == 1000)
+            {
+                bossObjective = false;
+                itopodObjective = true;
+                majorUnlock = null;
+                return;
+            }
+            if (_leaseKind == "routine" && now < _leaseUntil && !catchupBoss
+                && majorUnlock == null && !itopodObjective)
+            {
+                bossObjective = false;
+                return;
+            }
+
+            ClearObjectiveLease();
+            // Sequential catch-up is a finite exact target. For record pushes, a one-time mechanic
+            // unlock dominates an interchangeable next boss and receives the lease first.
+            if (catchupBoss || bossObjective && majorUnlock == null && !itopodObjective)
+            {
+                _leaseKind = "boss";
+                _leasedBossId = c.bossID;
+                _leasedHighestBoss = highest;
+                bossObjective = true;
+                itopodObjective = false;
+                majorUnlock = null;
+                return;
+            }
+            if (majorUnlock != null)
+            {
+                _leaseKind = "major";
+                _leasedMajorUnlock = majorUnlock;
+                _leaseUntil = now + 120.0;
+                bossObjective = false;
+                itopodObjective = false;
+                return;
+            }
+            if (itopodObjective)
+            {
+                _leaseKind = "itopod";
+                bossObjective = false;
+                majorUnlock = null;
+                return;
+            }
+            if (bossObjective)
+            {
+                _leaseKind = "boss";
+                _leasedBossId = c.bossID;
+                _leasedHighestBoss = highest;
+                majorUnlock = null;
+                return;
+            }
+        }
+
+        private static bool MajorUnlockComplete(Character c, MajorUnlockTarget target)
+        {
+            if (target == null) return true;
+            switch (target.Mechanic)
+            {
+                case "NGU": return c.settings.nguOn;
+                case "Yggdrasil": return c.settings.yggdrasilOn;
+                case "Gold Diggers": return c.settings.diggersOn;
+                case "Beards": return c.settings.beardsOn;
+                case "THE ITOPOD": return c.settings.itopodOn;
+                case "Wandoos 98": return c.settings.wandoos98On;
+                default:
+                    return target.ItemId > 0 && c.inventory.itemList.itemDropped.Count > target.ItemId
+                           && c.inventory.itemList.itemDropped[target.ItemId];
+            }
+        }
+
+        private static void ClearObjectiveLease()
+        {
+            _leaseKind = string.Empty;
+            _leasedRoutineObjective = string.Empty;
+            _leasedBossId = -1;
+            _leasedHighestBoss = -1;
+            _leasedMajorUnlock = null;
+            _leaseUntil = 0.0;
+        }
+
+        /*
+        PRE-COMBAT ITOPOD STAGING
+
+        The Adventure router can prove that an owned set reaches the next record floor while the
+        currently equipped refill/production set does not. Entering first and waiting for a
+        post-kill frame is circular: the weak set may never earn that frame. Stage and verify the
+        exact ITOPOD plan while Adventure is enemy-free, then let the router re-check live reach.
+        */
+        internal static bool PrepareItopodRoute()
+        {
+            var c = Main.Character;
+            if (c == null || Controller == null || !Main.IsAutomationReady
+                || !LoadoutManager.CanSwap() || Controller.midDrag
+                || c.bossController.isFighting || c.bossController.nukeBoss)
+                return false;
+            if (c.challenges.inChallenge
+                && c.challenges.curChallengeType.ToString().IndexOf("equip", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+            if (c.adventureController.currentEnemy != null)
+            {
+                LastDecision = "Waiting for the natural enemy-free frame before staging the ITOPOD route set";
+                return false;
+            }
+
+            _scoreItopod = true;
+            _scoreMajorUnlock = null;
+            var objective = Objective(c, false, null);
+            LastObjective = objective;
+            var all = c.inventory.GetConvertedEquips().Concat(c.inventory.GetConvertedInventory())
+                .Where(x => x != null && x.equipment != null && x.id > 0 && x.equipment.isEquipment())
+                .Select(x => x.equipment).Distinct().ToList();
+            var current = CurrentPlan(c, true);
+            var best = Optimize(c, all);
+            var currentScore = Score(c, current);
+            var bestScore = Score(c, best);
+            var now = (double)UnityEngine.Time.realtimeSinceStartup;
+            if (!SameLayout(best, current)
+                && bestScore > currentScore + Math.Max(1e-7, Math.Abs(currentScore) * 1e-7))
+                ApplyChosenPlan(c, best, now, "Staged");
+            else
+            {
+                _authoritativePlan = current.Clone();
+                _authoritativeObjective = objective;
+                _pendingPlan = null;
+                _pendingContext = string.Empty;
+                LastDecision = "Verified live ITOPOD route set before Adventure entry: " + Describe(current);
+            }
+            var route = ZoneHelpers.LastItopodRoute;
+            var targetFloor = route.Climbing
+                ? Math.Max(1, c.adventure.highestItopodLevel) : Math.Max(0, route.FarmFloor);
+            return ZoneHelpers.CalculateBestItopodLevel() >= targetFloor;
         }
 
         private static void ApplyChosenPlan(Character c, Plan best, double now, string action)
@@ -212,6 +426,7 @@ namespace NGUInjector.Managers
                 _authoritativePlan = best.Clone();
                 _authoritativeObjective = LastObjective;
                 _pendingPlan = null;
+                _pendingContext = string.Empty;
                 _lastFingerprint = int.MinValue;
                 _lastRun = 0;
             }
@@ -222,6 +437,7 @@ namespace NGUInjector.Managers
                 _authoritativePlan = null;
                 _authoritativeObjective = string.Empty;
                 _pendingPlan = null;
+                _pendingContext = string.Empty;
                 _lastFingerprint = int.MinValue;
                 _lastRun = 0;
             }
@@ -244,6 +460,14 @@ namespace NGUInjector.Managers
             for (var i = 0; i < a.Accessories.Count; i++)
                 if (!ReferenceEquals(a.Accessories[i], b.Accessories[i])) return false;
             return true;
+        }
+
+        private static string ContextKey(Character c, string objective)
+        {
+            var route = ZoneHelpers.LastItopodRoute;
+            return objective + "|boss=" + c.bossID + "/" + c.highestBoss
+                   + "|zone=" + c.adventure.zone
+                   + "|itopod=" + route.Start + ":" + route.End + ":" + route.FarmFloor;
         }
 
         private static Plan Optimize(Character c, List<Equipment> all)
@@ -342,22 +566,50 @@ namespace NGUInjector.Managers
         {
             var groups = source.GroupBy(x => x.id).ToList();
             if (groups.Any(g => g.Count() > 2)) _searchExact = false;
-            var ranked = groups.SelectMany(g => g.OrderByDescending(x => TrimUtility(c, x)).Take(2))
+            var representatives = groups.SelectMany(g =>
+            {
+                var rankedGroup = g.OrderByDescending(x => TrimUtility(c, x)).Take(2);
+                if (!_scoreItopod) return rankedGroup;
+                // Same-ID copies cannot be equipped together, but the maximum-Attack
+                // or maximum-Respawn physical copy can be the unique route witness.
+                return rankedGroup.Concat(new[]
+                    {
+                        g.OrderByDescending(c.inventoryController.equipAttackBonus).First(),
+                        g.OrderByDescending(x => c.inventoryController.equipSpecBonus(specType.Respawn, x)).First()
+                    }).Distinct();
+            }).Distinct().ToList();
+            var ranked = representatives
                 .OrderByDescending(x => TrimUtility(c, x)).ToList();
             if (ranked.Count > count) _searchExact = false;
-            return ranked.Take(count);
+            if (!_scoreItopod) return ranked.Take(count);
+
+            // Keep the exact per-slot attack witnesses used by owned-floor admission,
+            // plus the defense and Respawn Pareto extremes that define survival and
+            // cycle time. Fill the remaining bounded beam by joint utility.
+            var sample = ranked.FirstOrDefault();
+            var needed = sample != null && sample.type == part.Accessory
+                ? Math.Max(1, c.inventoryController.accessorySpaces())
+                : sample != null && sample.type == part.Weapon && c.inventoryController.weapon2Unlocked() ? 2 : 1;
+            var mandatory = representatives.OrderByDescending(c.inventoryController.equipAttackBonus).Take(needed)
+                .Concat(representatives.OrderByDescending(c.inventoryController.equipDefenseBonus).Take(needed))
+                .Concat(representatives.OrderByDescending(x =>
+                    c.inventoryController.equipSpecBonus(specType.Respawn, x)).Take(needed))
+                .Distinct().ToList();
+            return mandatory.Concat(ranked).Distinct().Take(Math.Max(count, mandatory.Count));
         }
 
         private static double TrimUtility(Character c, Equipment e)
         {
             var attack = c.inventoryController.equipAttackBonus(e);
             var defense = c.inventoryController.equipDefenseBonus(e);
-            if (_scoreMajorUnlock != null)
+            if (_scoreMajorUnlock != null || _probingBossLoadout || _scoreItopod)
             {
                 // A combat target must never be removed from the bounded search
                 // because an Energy/Gold item had a larger generic utility score.
+                var respawn = Math.Max(0.0, c.inventoryController.equipSpecBonus(specType.Respawn, e));
                 return 8.0 * Math.Log(1.0 + Math.Max(0, attack))
-                       + 8.0 * Math.Log(1.0 + Math.Max(0, defense));
+                       + 8.0 * Math.Log(1.0 + Math.Max(0, defense))
+                       + (_scoreItopod ? 20.0 * respawn : 0.0);
             }
             return ItemUtility(c, e);
         }
@@ -411,16 +663,27 @@ namespace NGUInjector.Managers
 
         internal static double FullyBoostedLoadoutGain(Character c, Equipment e)
         {
+            return AvailableBoostedLoadoutGain(c, e, true, true, true);
+        }
+
+        internal static double AvailableBoostedLoadoutGain(Character c, Equipment e,
+            bool powerAvailable, bool toughnessAvailable, bool specialAvailable)
+        {
             if (c == null || e == null || e.id <= 0 || MemberwiseCloneMethod == null)
                 return 0.0;
             try
             {
                 var projected = (Equipment)MemberwiseCloneMethod.Invoke(e, null);
-                projected.curAttack = BoostCap(projected.capAttack, projected.level);
-                projected.curDefense = BoostCap(projected.capDefense, projected.level);
-                projected.spec1Cur = BoostCap(projected.spec1Cap, projected.level);
-                projected.spec2Cur = BoostCap(projected.spec2Cap, projected.level);
-                projected.spec3Cur = BoostCap(projected.spec3Cap, projected.level);
+                if (powerAvailable)
+                    projected.curAttack = BoostCap(projected.capAttack, projected.level);
+                if (toughnessAvailable)
+                    projected.curDefense = BoostCap(projected.capDefense, projected.level);
+                if (specialAvailable)
+                {
+                    projected.spec1Cur = BoostCap(projected.spec1Cap, projected.level);
+                    projected.spec2Cur = BoostCap(projected.spec2Cap, projected.level);
+                    projected.spec3Cur = BoostCap(projected.spec3Cap, projected.level);
+                }
                 var current = CurrentPlan(c, true);
                 var baseline = Score(c, current);
                 var best = baseline;
@@ -592,13 +855,24 @@ namespace NGUInjector.Managers
             var candidateAdvDefense = c.totalAdvDefense()
                                       * (c.adventure.defense + c.inventoryController.cubeToughness() + defenseItems)
                                       / advDefenseNumerator;
+            // Native adventureHPBonus is attackBonus*3 and totalAdvHP adds
+            // cubePower*3. Toughness/cubeToughness do not contribute HP.
             var advHpNumerator = Math.Max(1e-9, c.adventure.maxHP
-                + 3.0 * (c.inventoryController.cubeToughness() + currentDefenseItems));
+                + 3.0 * (c.inventoryController.cubePower() + currentAttackItems));
             var candidateAdvHP = c.totalAdvHP()
                                  * (c.adventure.maxHP
-                                    + 3.0 * (c.inventoryController.cubeToughness() + defenseItems))
+                                    + 3.0 * (c.inventoryController.cubePower() + attackItems))
                                  / advHpNumerator;
-            if (!bossObjective)
+            if (!bossObjective && _scoreItopod)
+            {
+                // Staging occurs before CombatManager toggles the configured ITOPOD
+                // Beast state. Normalize the attack projection out of the live state
+                // and into the target state before evaluating hit plateaus.
+                candidateAdvAttack *= ZoneHelpers.ItopodTargetAttackFactor();
+                score += ItopodThroughputUtility(c, plan, candidateAdvAttack,
+                    candidateAdvDefense, candidateAdvHP);
+            }
+            else if (!bossObjective)
             {
                 score += 6.0 * Math.Log(1.0 + Math.Max(0.0, candidateAdvAttack));
                 score += 5.0 * Math.Log(1.0 + Math.Max(0.0, candidateAdvDefense));
@@ -652,7 +926,7 @@ namespace NGUInjector.Managers
             // combat stats and may not displace an item that shortens the target
             // fight or makes it survivable. RNG-gated unlock loot is valued inside
             // MajorUnlockUtility only after the combat constraint is satisfied.
-            if (majorUnlock == null)
+            if (majorUnlock == null && !_scoreItopod)
             {
                 score += ProductionRateUtility(c, plan);
                 foreach (var item in scoringItems) score += SpecialUtility(c, item, 1.0);
@@ -668,14 +942,97 @@ namespace NGUInjector.Managers
                 : c.settings.rebirthDifficulty == difficulty.evil ? c.highestHardBoss
                 : c.highestSadisticBoss;
             if (c.bossID < highest) return true; // native sequential catch-up
+            if (_probingBossLoadout) return true;
             double killSeconds;
-            return CombatHelpers.CanNukeCurrentBoss(c)
-                   || (CombatHelpers.CanWinCurrentBoss(c, out killSeconds) && killSeconds <= 120.0);
+            if (CombatHelpers.CanNukeCurrentBoss(c)
+                || CombatHelpers.CanWinCurrentBoss(c, out killSeconds) && killSeconds <= 120.0)
+                return true;
+
+            // Searching only after the live set can win is circular: a production
+            // accessory can hide a two-minute boss set forever. Probe the complete
+            // owned topology under the boss objective, then accept that objective
+            // only when the best bounded-search plan itself passes the exact fight
+            // model. Cache briefly because Score calls this method thousands of
+            // times during a beam search.
+            var now = (double)UnityEngine.Time.realtimeSinceStartup;
+            if (_cachedBossId == c.bossID && _cachedHighestBoss == highest
+                && now - _cachedBossObjectiveAt < 1.0)
+                return _cachedBossObjective;
+
+            var previousMajor = _scoreMajorUnlock;
+            var previousItopod = _scoreItopod;
+            try
+            {
+                _probingBossLoadout = true;
+                _scoreMajorUnlock = null;
+                _scoreItopod = false;
+                var all = c.inventory.GetConvertedEquips().Concat(c.inventory.GetConvertedInventory())
+                    .Where(x => x != null && x.equipment != null && x.id > 0
+                                && x.equipment.isEquipment())
+                    .Select(x => x.equipment).Distinct().ToList();
+                var best = Optimize(c, all);
+                _cachedBossObjective = PlanCanBeatSelectedBoss(c, best, out killSeconds)
+                                       && killSeconds <= 120.0;
+            }
+            catch
+            {
+                _cachedBossObjective = false;
+            }
+            finally
+            {
+                _probingBossLoadout = false;
+                _scoreMajorUnlock = previousMajor;
+                _scoreItopod = previousItopod;
+                _cachedBossId = c.bossID;
+                _cachedHighestBoss = highest;
+                _cachedBossObjectiveAt = now;
+            }
+            return _cachedBossObjective;
+        }
+
+        private static bool PlanCanBeatSelectedBoss(Character c, Plan plan, out double killSeconds)
+        {
+            killSeconds = double.PositiveInfinity;
+            if (plan == null || c.bossMaxHP <= 0) return false;
+            var controller = c.inventoryController;
+            var scoringItems = plan.PrimaryItems().Where(x => x != null && x.id > 0).ToList();
+            var attackItems = scoringItems.Sum(x => (double)controller.equipAttackBonus(x));
+            var defenseItems = scoringItems.Sum(x => (double)controller.equipDefenseBonus(x));
+            var weapon2Factor = plan.Weapon2 == null || plan.Weapon2.id <= 0 ? 0.0 : controller.weapon2Factor();
+            if (plan.Weapon2 != null && plan.Weapon2.id > 0)
+            {
+                attackItems += controller.equipAttackBonus(plan.Weapon2) * weapon2Factor;
+                defenseItems += controller.equipDefenseBonus(plan.Weapon2) * weapon2Factor;
+            }
+            var currentAttackItems = Math.Max(0.0, controller.attackBonus());
+            var currentDefenseItems = Math.Max(0.0, controller.defenseBonus());
+            var attackBase = Math.Max(0.0, c.training.getTotalAttack());
+            var defenseBase = Math.Max(0.0, c.training.getTotalDefense());
+            var attackCommon = c.attackMulti * c.adventureController.itopod.totalStatBonus() * c.attackBoost;
+            var defenseCommon = c.defenseMulti * c.adventureController.itopod.totalStatBonus() * c.defenseBoost;
+            var currentAttackCore = 100.0 + attackBase * attackCommon * (1.0 + currentAttackItems / 100.0);
+            var currentDefenseCore = 100.0 + defenseBase * defenseCommon * (1.0 + currentDefenseItems / 100.0);
+            var projectedAttack = c.attack
+                                  * (100.0 + attackBase * attackCommon * (1.0 + attackItems / 100.0))
+                                  / Math.Max(1e-9, currentAttackCore);
+            var projectedDefense = c.defense
+                                   * (100.0 + defenseBase * defenseCommon * (1.0 + defenseItems / 100.0))
+                                   / Math.Max(1e-9, currentDefenseCore);
+            double survivalSeconds;
+            return CombatHelpers.EvaluateFixedBossFight(c, projectedAttack, projectedDefense,
+                10.0 + projectedAttack * 10.0, c.bossMaxHP, out killSeconds, out survivalSeconds);
         }
 
         private static string Objective(Character c, bool bossObjective, MajorUnlockTarget major)
         {
             if (bossObjective) return "selected Fight Boss defeat";
+            if (_scoreItopod)
+            {
+                var route = ZoneHelpers.LastItopodRoute;
+                return route.Climbing
+                    ? "ITOPOD first-clear climb to floor " + route.End
+                    : "ITOPOD PP/AP/EXP throughput at floor " + route.FarmFloor;
+            }
             if (major != null) return "major unlock: " + major.Mechanic + " via " + major.Goal;
             var energyFill = c.energyPerSecond() <= 0 ? 0.0
                 : Math.Max(0.0, c.totalCapEnergy() - c.curEnergy) / c.energyPerSecond();
@@ -759,6 +1116,59 @@ namespace NGUInjector.Managers
                 worst = Math.Min(worst, value);
             }
             return double.IsPositiveInfinity(worst) ? -500000000.0 : worst;
+        }
+
+        /*
+        ITOPOD CYCLE OBJECTIVE
+
+        ITOPOD Drop Chance is fixed, so ordinary Looting gear has zero value there.  Equipment can
+        improve rewards only by crossing a hit-count/survival plateau or shortening native respawn.
+        Evaluate those quantities jointly at the configured farm/climb floor.  A one-shot candidate
+        receives no Toughness value; a multi-hit candidate must survive the expected enemy attacks.
+        */
+        private static double ItopodThroughputUtility(Character c, Plan plan, double attack,
+            double defense, double maxHP)
+        {
+            var route = ZoneHelpers.LastItopodRoute;
+            var floor = Math.Max(0, Math.Min(1600, route.Climbing ? route.End - 1 : route.FarmFloor));
+            var scale = Math.Pow(1.05, floor);
+            // Native spawn independently rolls HP/Defense in [0.98,1.02] and the
+            // player hit in [0.8,1.2]. Optimize the guaranteed one-hit plateau so
+            // poison/charger/paralyze/rapid/grower AI never receives an action.
+            var enemyHP = 600.0 * scale * 1.02;
+            var enemyDefense = 10.0 * scale * 1.02;
+            var manualClimb = route.Climbing && Main.Settings.ITOPODCombatMode != 1
+                              && c.training.attackTraining[1] != 0;
+            var attackPower = manualClimb ? c.regAttackPower() : c.idleAttackPower();
+            var damage = 0.8 * Math.Max(0.0, attack - enemyDefense / 2.0) * attackPower;
+            if (damage <= 0.0) return -1000000000.0;
+            var hits = Math.Max(1.0, Math.Ceiling(enemyHP / damage));
+            var attackInterval = Math.Max(0.02, c.adventure.attackSpeed);
+            var killSeconds = hits * attackInterval;
+            if (hits > 1.0)
+                return -500000000.0 - 1000000.0 * hits;
+
+            var controller = c.inventoryController;
+            var currentRespawnGear = Math.Max(0.0, controller.bonuses[specType.Respawn]);
+            var candidateRespawnGear = Math.Max(0.0, PlanBonus(controller, plan, specType.Respawn));
+            var currentRespawnFactor = Math.Max(0.2, 1.0 - currentRespawnGear);
+            var candidateRespawnFactor = Math.Max(0.2, 1.0 - candidateRespawnGear);
+            var respawn = c.adventureController.respawnTime()
+                          * candidateRespawnFactor / Math.Max(1e-9, currentRespawnFactor);
+            var cycle = Math.Max(0.02, killSeconds + Math.Max(0.0, respawn));
+            var progress = (c.settings.rebirthDifficulty == difficulty.normal ? 200.0
+                : c.settings.rebirthDifficulty == difficulty.evil ? 700.0 : 2000.0) + floor;
+            // First-clear climbing is a discrete permanent award, so reaching the requested floor
+            // dominates small farm-rate differences.  Farming maximizes exact cycle throughput.
+            // First-clear routing is justified by a one-shot proof. Preserve that
+            // constraint lexicographically; respawn bonuses may optimize only among
+            // candidate plans that retain it.
+            var viableClimb = !route.Climbing || damage >= enemyHP;
+            if (!viableClimb)
+                return -1000000000.0 + 1000.0 / hits;
+            return (route.Climbing ? 200000000.0 : 0.0)
+                   + 10000000.0 * progress / cycle
+                   - 1000.0 * hits;
         }
 
         private static double SpecialUtility(Character c, Equipment e, double slotFactor)
@@ -881,31 +1291,9 @@ namespace NGUInjector.Managers
             utility += 20.0 * ((currentEnergyFill - candidateEnergyFill)
                                + (currentMagicFill - candidateMagicFill));
 
-            // When Blood is waiting on Gold, compare Gold-specialized sets by the
-            // seconds they remove from the actual shortfall. Do not let this compete
-            // with an active major-unlock combat floor; that target is lexicographically
-            // more valuable and owns its own loot-special scoring above.
-            if (_scoreMajorUnlock == null
-                && AllocationProfiles.BreakpointTypes.BR.LastDecision.StartsWith("Waiting for another ",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                var candidateGoldAmount = PlanBonus(controller, plan, specType.GoldDropAmount)
-                                          + PlanBonus(controller, plan, specType.GoldDrop2);
-                var candidateGoldRng = PlanBonus(controller, plan, specType.GoldDropRNG);
-                var currentGoldAmount = controller.bonuses[specType.GoldDropAmount]
-                                        + controller.bonuses[specType.GoldDrop2];
-                var currentGoldRng = controller.bonuses[specType.GoldDropRNG];
-                var goldRateRatio = (1.0 + candidateGoldAmount) * (1.0 + candidateGoldRng)
-                                    / Math.Max(1e-9,
-                                        (1.0 + currentGoldAmount) * (1.0 + currentGoldRng));
-                var currentGoldRate = Math.Max(1e-9, c.grossGoldPerSecond());
-                var shortfall = Math.Max(0.0,
-                    AllocationProfiles.BreakpointTypes.BR.LastGoldShortfall);
-                var currentGoldEta = Math.Min(600.0, shortfall / currentGoldRate);
-                var candidateGoldEta = Math.Min(600.0,
-                    shortfall / Math.Max(1e-9, currentGoldRate * goldRateRatio));
-                utility += 20.0 * (currentGoldEta - candidateGoldEta);
-            }
+            // Gold Drop specials affect Adventure enemy drops, not Character.grossGoldPerSecond(),
+            // whose native formula is entirely Time Machine and permanent multipliers. Do not equip
+            // a Gold Drop set to resolve a Blood/TM GPS shortfall; it has exactly zero modeled effect.
 
             var currentLootBonus = controller.bonuses[specType.Looting]
                                    + controller.bonuses[specType.Looting2];
@@ -940,6 +1328,11 @@ namespace NGUInjector.Managers
         private static double ProductionTrimUtility(Character c, Equipment e)
         {
             var controller = c.inventoryController;
+            if (_scoreItopod)
+            {
+                var respawn = Math.Max(0.0, controller.equipSpecBonus(specType.Respawn, e));
+                return 12.0 * Math.Log(1.0 + respawn);
+            }
             var energySpeed = Math.Max(0.0, controller.equipSpecBonus(specType.EnergySpeed, e));
             var magicSpeed = Math.Max(0.0, controller.equipSpecBonus(specType.MagicSpeed, e));
             var loot = Math.Max(0.0, controller.equipSpecBonus(specType.Looting, e)

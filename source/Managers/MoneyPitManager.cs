@@ -3,14 +3,17 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using NGUInjector.Autopilot;
 
 /*
 FILE PURPOSE
 
 MoneyPitManager decides when reset-local Gold can be safely tossed, chooses required special
 loadouts/diggers, invokes the native Pit/Spin controllers, and verifies cooldown/reward deltas.
-The Pit consumes all Gold and has cumulative thresholds; callers supply working-capital reserves
-so Augments and other nearer gates are not starved.
+Because the Pit consumes all Gold, it consults ResourceHorizonModel's shared claim ledger and will
+not toss while an active Augment/Time-Machine charge or valued Blood target owns working capital.
+Cumulative permanent tiers are source-proven from native flags; a plan horizon, never the legacy
+AutoRebirth checkbox or a fictitious hour, decides whether a not-yet-funded tier is reachable.
 */
 namespace NGUInjector.Managers
 {
@@ -31,6 +34,25 @@ namespace NGUInjector.Managers
             if (Main.Character.realGold < reserve) return;
             if (Main.Character.realGold < 1e5) return;
 
+            if (Main.Autopilot != null && Main.Autopilot.CanExecuteSafe)
+            {
+                var plan = Main.Autopilot.Plan;
+                var remaining = plan != null && !plan.RebirthExecutionHold
+                    ? (int)Math.Max(1.0, Math.Ceiling(plan.EffectiveAllocationTarget(Main.Character)
+                                                     - Main.Character.rebirthTime.totalseconds))
+                    : 1;
+                var ledger = ResourceHorizonModel.EvaluateGold(Main.Character, remaining);
+                var protectedSpend = ledger.ProtectedSpendBefore(GoldClaimKind.MoneyPitPermanentTier);
+                if (protectedSpend > 0)
+                {
+                    LogHold("Money Pit ready, but the joint Gold ledger protects "
+                            + protectedSpend.ToString("0.###e+0") + " Gold for "
+                            + string.Join(" + ", ledger.Claims.Where(x => x.Hard)
+                                .Select(x => x.Label).ToArray()));
+                    return;
+                }
+            }
+
             double tierTarget;
             string tierLabel;
             if (TryGetPermanentTierTarget(out tierTarget, out tierLabel)
@@ -39,18 +61,14 @@ namespace NGUInjector.Managers
                 var reason = "Money Pit ready, but preserving gold for " + tierLabel
                              + " at " + tierTarget.ToString("0.###e+0")
                              + " current-run gold (permanent one-time reward)";
-                if (reason != _lastHoldReason || (DateTime.UtcNow - _lastHoldLog).TotalSeconds >= 30)
-                {
-                    Main.LogAction("HOLD", reason);
-                    _lastHoldReason = reason;
-                    _lastHoldLog = DateTime.UtcNow;
-                }
+                LogHold(reason);
                 return;
             }
 
             var gearSwapped = false;
             var diggersSwapped = false;
-            if (Main.Settings.MoneyPitLoadout.Length > 0)
+            if (Main.Settings.MoneyPitLoadout.Length > 0
+                || Main.AutopilotWants(x => x.ManageMoneyPit))
             {
                 if (!LoadoutManager.TryMoneyPitSwap()) return;
                 gearSwapped = true;
@@ -70,7 +88,11 @@ namespace NGUInjector.Managers
 
                     DiggerManager.SaveDiggers();
                     diggersSwapped = true;
-                    DiggerManager.EquipDiggers(new[] {10});
+                    if (!DiggerManager.EquipDiggers(new[] {10}))
+                    {
+                        Main.LogAction("REJECTED", "Money Pit postponed because the Blood Digger transaction rolled back");
+                        return;
+                    }
                 }
                 DoMoneyPit();
             }
@@ -80,8 +102,8 @@ namespace NGUInjector.Managers
                     DiggerManager.RestoreDiggers();
                 if (gearSwapped)
                 {
-                    LoadoutManager.RestoreGear();
-                    LoadoutManager.ReleaseLock();
+                    if (LoadoutManager.RestoreGear())
+                        LoadoutManager.ReleaseLock();
                 }
             }
         }
@@ -124,11 +146,20 @@ namespace NGUInjector.Managers
             if (rate <= 0) return false;
             var seconds = Math.Max(0.0, (target - c.realGold) / rate);
             var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
-            if (plan == null || plan.RebirthSeconds < 0 || !Main.Settings.AutoRebirth)
-                return seconds <= 3600;
+            if (plan == null || plan.RebirthSeconds < 0 || plan.RebirthExecutionHold)
+                return target <= c.realGold;
             var remaining = Math.Max(0.0,
                 plan.EffectiveAllocationTarget(c) - c.rebirthTime.totalseconds);
             return seconds <= remaining;
+        }
+
+        private static void LogHold(string reason)
+        {
+            if (reason == _lastHoldReason && (DateTime.UtcNow - _lastHoldLog).TotalSeconds < 30)
+                return;
+            Main.LogAction("HOLD", reason);
+            _lastHoldReason = reason;
+            _lastHoldLog = DateTime.UtcNow;
         }
 
         private static void DoMoneyPit()

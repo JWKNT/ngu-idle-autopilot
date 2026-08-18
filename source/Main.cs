@@ -7,6 +7,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.Remoting.Messaging;
 using System.Security.Policy;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -22,10 +23,15 @@ using Application = UnityEngine.Application;
 /*
 FILE PURPOSE
 
-Main is the Unity orchestration host. It discovers the live Character/controllers, establishes
-the active-game synchronization barrier, schedules fast allocation/combat and one-second policy
-loops, owns managers, and writes confirmed action logs. No mutation may run before
-IsAutomationReady; focused managers should own mechanics while Main remains cadence authority.
+Main is the Unity orchestration and native-mutation dispatch host. It discovers live controllers,
+establishes the active-game synchronization barrier, snapshots a sticky ExecutionSafety lease for
+each scheduled pass, selects exactly one allocation owner, and writes confirmed action/deployment
+telemetry. Inputs are Unity state, legacy settings, autopilot config/plans, and watched files;
+outputs are leased manager/controller calls plus append-only runtime evidence. No mutation may run
+before IsAutomationReady, dry-run can never inherit authority from GlobalEnabled, assist cannot
+spend finite resources through legacy fallbacks, and a state-version change invalidates the whole
+pass. Focused managers own mechanics and native postconditions; Main owns cadence and permission,
+not progression strategy.
 */
 namespace NGUInjector
 {
@@ -66,7 +72,11 @@ namespace NGUInjector
         private volatile bool _allocationListReloadRequested;
         private static bool _isUnloading;
         private static readonly Queue<Action> MainThreadActions = new Queue<Action>();
+        private static readonly Queue<Action> MainThreadLifecycleActions = new Queue<Action>();
         private static readonly object MainThreadActionsLock = new object();
+        private static long _rejectionEpoch;
+        private static bool _allocationOwnerKnown;
+        private static bool _autopilotOwnsAllocations;
 
         internal static bool Test { get; set; }
 
@@ -77,6 +87,12 @@ namespace NGUInjector
         {
             if (action == null) return;
             lock (MainThreadActionsLock) MainThreadActions.Enqueue(action);
+        }
+
+        internal static void RunLifecycleOnMainThread(Action action)
+        {
+            if (action == null) return;
+            lock (MainThreadActionsLock) MainThreadLifecycleActions.Enqueue(action);
         }
 
         private static void DrainMainThreadActions()
@@ -94,8 +110,29 @@ namespace NGUInjector
             }
         }
 
+        private static void DrainLifecycleActions()
+        {
+            Action action;
+            lock (MainThreadActionsLock)
+            {
+                if (MainThreadLifecycleActions.Count == 0) return;
+                action = MainThreadLifecycleActions.Dequeue();
+            }
+            try { action(); }
+            catch (Exception ex) { LogAction("REJECTED", "Queued lifecycle action failed: " + ex.Message); }
+        }
+
         private static string _dir;
         private static string _profilesDir;
+        private static string _sessionId = string.Empty;
+
+        internal static string SessionId
+        {
+            get { return _sessionId; }
+        }
+        internal static string ActiveLocationSha256AtObservation { get; private set; } = string.Empty;
+        internal static string DiskArtifactSha256 { get; private set; } = string.Empty;
+        internal static string GameAssemblySha256 { get; private set; } = string.Empty;
 
         private static bool _tempSwapped = false;
 
@@ -138,6 +175,8 @@ namespace NGUInjector
 
         internal static void LogAction(string category, string msg)
         {
+            if (string.Equals(category, "REJECTED", StringComparison.OrdinalIgnoreCase))
+                System.Threading.Interlocked.Increment(ref _rejectionEpoch);
             if (ActionWriter == null || string.IsNullOrEmpty(msg)) return;
             lock (ActionLogLock)
             {
@@ -182,6 +221,11 @@ namespace NGUInjector
             return Autopilot != null && Autopilot.CanExecuteSafe && Autopilot.Config != null && selector(Autopilot.Config);
         }
 
+        internal static AutopilotConfig CurrentAutopilotConfig
+        {
+            get { return Autopilot == null ? null : Autopilot.Config; }
+        }
+
         internal static bool IsGameplayReady
         {
             get
@@ -218,6 +262,9 @@ namespace NGUInjector
             if (!_syncStateInitialized || ready != _lastGameplayReady)
             {
                 LogAction("SYNC", ready ? "Active gameplay verified; automation enabled" : "Main menu detected; automation paused");
+                ExecutionSafety.Invalidate(ready
+                    ? "active gameplay synchronization acquired"
+                    : "active gameplay synchronization lost");
                 _syncStateInitialized = true;
                 _lastGameplayReady = ready;
             }
@@ -230,13 +277,95 @@ namespace NGUInjector
                 return;
 
             _lastAutoEnterAttempt = DateTime.Now;
-            LogAction("SYNC", "Verified local autosave found; invoking the game's own Load Autosave controller");
-            Character.mainMenu.loadAutosave();
+            using (ExecutionSafety.BeginCycle("gameplay synchronization", CurrentAutopilotConfig))
+            {
+                TryRunMutation("automatic Load Autosave", MutationClass.Synchronization,
+                    MutationOwner.Autopilot, () =>
+                    {
+                        LogAction("SYNC", "Verified local autosave found; invoking the game's own Load Autosave controller");
+                        Character.mainMenu.loadAutosave();
+                    });
+            }
         }
 
         private static CustomAllocation ActiveProfile
         {
-            get { return Autopilot != null && Autopilot.CanExecuteSafe && Autopilot.Profile != null ? Autopilot.Profile : _profile; }
+            get
+            {
+                return Autopilot != null && Autopilot.CanExecuteSafe && Autopilot.Config != null
+                       && Autopilot.Config.ManageAllocations && Autopilot.Profile != null
+                    ? Autopilot.Profile : _profile;
+            }
+        }
+
+        /*
+        ALLOCATION WRITER OWNERSHIP
+
+        The generated profile is a concrete mutation program, not passive planner telemetry. A
+        stale generated instance must become unreachable the moment ManageAllocations is disabled;
+        conversely the legacy profile must not race the generated writer. Refresh ownership after
+        Autopilot.Tick has observed config changes and before opening the scheduler lease. The
+        state-version bump invalidates any older pass that retained the previous profile reference.
+        */
+        private static void RefreshAllocationOwnership()
+        {
+            var owns = Autopilot != null && Autopilot.CanExecuteSafe && Autopilot.Config != null
+                       && Autopilot.Config.ManageAllocations && Autopilot.Profile != null;
+            if (!_allocationOwnerKnown)
+            {
+                _allocationOwnerKnown = true;
+                _autopilotOwnsAllocations = owns;
+                return;
+            }
+            if (_autopilotOwnsAllocations == owns) return;
+            _autopilotOwnsAllocations = owns;
+            ExecutionSafety.Invalidate("allocation profile ownership changed");
+            LogAction("OWNERSHIP", owns
+                ? "Autopilot generated profile acquired exclusive allocation ownership"
+                : "Legacy selected profile acquired allocation ownership; generated profile invalidated");
+        }
+
+        private static MutationOwner AllocationOwner
+        {
+            get { return _autopilotOwnsAllocations ? MutationOwner.Autopilot : MutationOwner.Legacy; }
+        }
+
+        internal static bool HasExecutableAllocationOwner
+        {
+            get
+            {
+                return ActiveProfile != null && (_autopilotOwnsAllocations
+                    || Settings != null && Settings.GlobalEnabled);
+            }
+        }
+
+        private static CustomAllocation RebirthProfile(MutationOwner owner)
+        {
+            return owner == MutationOwner.Autopilot && Autopilot != null
+                   && Autopilot.Config != null && Autopilot.Config.ManageAllocations
+                   && Autopilot.Profile != null
+                ? Autopilot.Profile : _profile;
+        }
+
+        private static bool TryRunMutation(string name, MutationClass mutationClass,
+            MutationOwner owner, Action action)
+        {
+            MutationLease lease;
+            string reason;
+            if (!ExecutionSafety.TryAcquire(mutationClass, owner, out lease, out reason))
+            {
+                ExecutionSafety.ReportHold("lease:" + name + ":" + owner,
+                    name + " held: " + reason);
+                return false;
+            }
+            if (!lease.IsCurrent)
+            {
+                ExecutionSafety.ReportHold("stale-lease:" + name,
+                    name + " held because its execution lease became stale");
+                return false;
+            }
+            action();
+            return true;
         }
 
         /*
@@ -252,12 +381,14 @@ namespace NGUInjector
         {
             if (!IsAutomationReady || ActiveProfile == null)
                 return;
-            ActiveProfile.DoAllocations();
+            TryRunMutation("post-gear allocation restoration", MutationClass.Allocation,
+                AllocationOwner, () => ActiveProfile.DoAllocations());
         }
 
         internal void Unload()
         {
             _isUnloading = true;
+            ExecutionSafety.Invalidate("assembly host is unloading");
             try
             {
                 CancelInvoke("AutomationRoutine");
@@ -281,6 +412,11 @@ namespace NGUInjector
                 ConfigWatcher?.Dispose();
                 AllocationWatcher?.Dispose();
                 ZoneWatcher?.Dispose();
+                lock (MainThreadActionsLock)
+                {
+                    MainThreadActions.Clear();
+                    MainThreadLifecycleActions.Clear();
+                }
             }
             catch (Exception e)
             {
@@ -291,6 +427,9 @@ namespace NGUInjector
 
         public void Start()
         {
+            _isUnloading = false;
+            _allocationOwnerKnown = false;
+            ExecutionSafety.Invalidate("assembly host started");
             try
             {
                 var assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
@@ -320,12 +459,27 @@ namespace NGUInjector
                     Directory.CreateDirectory(logDir);
                 }
 
-                OutputWriter = new StreamWriter(Path.Combine(logDir, "inject.log")) {AutoFlush = true};
-                LootWriter = new StreamWriter(Path.Combine(logDir, "loot.log")) {AutoFlush = true};
-                CombatWriter = new StreamWriter(Path.Combine(logDir, "combat.log")) {AutoFlush = true};
-                AllocationWriter = new StreamWriter(Path.Combine(logDir, "allocation.log")) {AutoFlush = true};
+                // Append-only session evidence survives reinjection, crash recovery, and rejected
+                // duplicate-injection attempts. Truncating here erased the only audit trail for
+                // irreversible actions. Every stream receives the same build/session boundary.
+                OutputWriter = new StreamWriter(Path.Combine(logDir, "inject.log"), true) {AutoFlush = true};
+                LootWriter = new StreamWriter(Path.Combine(logDir, "loot.log"), true) {AutoFlush = true};
+                CombatWriter = new StreamWriter(Path.Combine(logDir, "combat.log"), true) {AutoFlush = true};
+                AllocationWriter = new StreamWriter(Path.Combine(logDir, "allocation.log"), true) {AutoFlush = true};
                 PitSpinWriter = new StreamWriter(Path.Combine(logDir, "pitspin.log"), true) {AutoFlush = true};
-                ActionWriter = new StreamWriter(Path.Combine(logDir, "actions.log")) {AutoFlush = true};
+                ActionWriter = new StreamWriter(Path.Combine(logDir, "actions.log"), true) {AutoFlush = true};
+                _sessionId = Guid.NewGuid().ToString("N");
+                var sessionMarker = "=== SESSION " + DateTime.UtcNow.ToString("o") + " id "
+                                    + _sessionId + " build "
+                                    + typeof(Main).Assembly.ManifestModule.ModuleVersionId + " pid "
+                                    + Process.GetCurrentProcess().Id + " ===";
+                OutputWriter.WriteLine(sessionMarker);
+                LootWriter.WriteLine(sessionMarker);
+                CombatWriter.WriteLine(sessionMarker);
+                AllocationWriter.WriteLine(sessionMarker);
+                PitSpinWriter.WriteLine(sessionMarker);
+                ActionWriter.WriteLine(sessionMarker);
+                PublishDeploymentIdentity(assemblyDir, installDir);
 
                 _profilesDir = Path.Combine(_dir, "profiles");
                 if (!Directory.Exists(_profilesDir))
@@ -524,6 +678,8 @@ namespace NGUInjector
 
                 LoadAllocation();
                 LoadAllocationProfiles();
+                ExecutionSafety.ObserveConfig(Autopilot.Config);
+                RefreshAllocationOwnership();
 
                 ZoneWatcher = new FileSystemWatcher
                 {
@@ -603,6 +759,11 @@ namespace NGUInjector
                 Log(e.ToString());
                 Log(e.StackTrace);
                 if (e.InnerException != null) Log(e.InnerException.ToString());
+                // Dispose every partially-created watcher/form/writer before the
+                // unified loader destroys the named host. Otherwise a failed Start
+                // permanently blocks reinjection while background callbacks survive.
+                Unload();
+                Loader.Unload();
             }
         }
 
@@ -613,8 +774,13 @@ namespace NGUInjector
 
         public void Update()
         {
-            DrainMainThreadActions();
             if (_isUnloading) return;
+            // Ejection must remain available when gameplay synchronization is lost;
+            // ordinary settings/game mutations stay behind IsAutomationReady.
+            DrainLifecycleActions();
+            if (_isUnloading) return;
+            if (IsAutomationReady)
+                DrainMainThreadActions();
             _timeLeft -= Time.deltaTime;
             if (IsAutomationReady)
                 _combManager.UpdateFightTimer(Time.deltaTime);
@@ -658,18 +824,28 @@ namespace NGUInjector
 
             if (Input.GetKeyDown(KeyCode.F8))
             {
+                using (ExecutionSafety.BeginCycle("manual quick equipment", CurrentAutopilotConfig))
+                {
+                var quickChanged = false;
                 if (Settings.QuickLoadout.Length > 0)
                 {
                     if (_tempSwapped)
                     {
                         Log("Restoring Previous Loadout");
-                        LoadoutManager.RestoreTempLoadout();
+                        quickChanged = TryRunMutation("manual loadout restoration",
+                            MutationClass.Loadout, MutationOwner.User,
+                            () => LoadoutManager.RestoreTempLoadout()) || quickChanged;
                     }
                     else
                     {
                         Log("Equipping Quick Loadout");
-                        LoadoutManager.SaveTempLoadout();
-                        LoadoutManager.ChangeGear(Settings.QuickLoadout);
+                        quickChanged = TryRunMutation("manual quick loadout",
+                            MutationClass.Loadout, MutationOwner.User, () =>
+                            {
+                                LoadoutManager.SaveTempLoadout();
+                                LoadoutManager.ChangeGear(Settings.QuickLoadout, false,
+                                    MutationOwner.User);
+                            }) || quickChanged;
                     }
                 }
 
@@ -678,17 +854,23 @@ namespace NGUInjector
                     if (_tempSwapped)
                     {
                         Log("Equipping Previous Diggers");
-                        DiggerManager.RestoreTempDiggers();
+                        quickChanged = TryRunMutation("manual digger restoration", MutationClass.Diggers,
+                            MutationOwner.User, () => DiggerManager.RestoreTempDiggers()) || quickChanged;
                     }
                     else
                     {
                         Log("Equipping Quick Diggers");
-                        DiggerManager.SaveTempDiggers();
-                        DiggerManager.EquipDiggers(Settings.QuickDiggers);
+                        quickChanged = TryRunMutation("manual quick diggers", MutationClass.Diggers,
+                            MutationOwner.User, () =>
+                            {
+                                DiggerManager.SaveTempDiggers();
+                                DiggerManager.EquipDiggers(Settings.QuickDiggers);
+                            }) || quickChanged;
                     }
                 }
 
-                _tempSwapped = !_tempSwapped;
+                if (quickChanged) _tempSwapped = !_tempSwapped;
+                }
             }
 
             // F11 reserved for testing
@@ -700,14 +882,21 @@ namespace NGUInjector
 
         private void QuickSave()
         {
-            Log("Writing quicksave and json");
-            var data = Character.importExport.getBase64Data();
-            WriteTextAtomic(Path.Combine(_dir, "NGUSave.txt"), data + Environment.NewLine);
+            using (ExecutionSafety.BeginCycle("manual quicksave", CurrentAutopilotConfig))
+            {
+                TryRunMutation("manual quicksave and Steam Cloud write",
+                    MutationClass.SaveLoad, MutationOwner.User, () =>
+                    {
+                        Log("Writing quicksave and json");
+                        var data = Character.importExport.getBase64Data();
+                        WriteTextAtomic(Path.Combine(_dir, "NGUSave.txt"), data + Environment.NewLine);
 
-            data = JsonUtility.ToJson(Character.importExport.gameStateToData());
-            WriteTextAtomic(Path.Combine(_dir, "NGUSave.json"), data + Environment.NewLine);
+                        data = JsonUtility.ToJson(Character.importExport.gameStateToData());
+                        WriteTextAtomic(Path.Combine(_dir, "NGUSave.json"), data + Environment.NewLine);
 
-            Character.saveLoad.saveGamestateToSteamCloud();
+                        Character.saveLoad.saveGamestateToSteamCloud();
+                    });
+            }
         }
 
         private static void WriteTextAtomic(string path, string contents)
@@ -724,6 +913,79 @@ namespace NGUInjector
                 if (File.Exists(path)) File.Delete(path);
                 File.Move(temp, path);
             }
+        }
+
+        /*
+        ACTIVE-VERSUS-DISK DEPLOYMENT IDENTITY
+
+        Unity keeps the injected assembly in memory even when a newer DLL replaces the install
+        artifact. Publish the active module MVID and hash separately from the expected disk DLL so
+        operators never infer deployment from a timestamp alone. This is observational filesystem
+        telemetry: it does not load the disk assembly, inject, restart, or touch game/save state.
+        */
+        private static void PublishDeploymentIdentity(string assemblyDir, string installDir)
+        {
+            try
+            {
+                var assembly = Assembly.GetExecutingAssembly();
+                var activePath = assembly.Location ?? string.Empty;
+                var diskPath = Path.Combine(installDir ?? assemblyDir ?? string.Empty,
+                    "NGUIdleAutopilot.dll");
+                // Assembly.Location can point at a DLL that was replaced after injection;
+                // its current bytes are disk evidence, never the already-loaded image.
+                var activeLocationHash = File.Exists(activePath) ? Sha256(activePath) : string.Empty;
+                var diskHash = File.Exists(diskPath) ? Sha256(diskPath) : string.Empty;
+                var activeInfo = File.Exists(activePath) ? new FileInfo(activePath) : null;
+                var diskInfo = File.Exists(diskPath) ? new FileInfo(diskPath) : null;
+                var process = Process.GetCurrentProcess();
+                var gameAssembly = typeof(Character).Assembly;
+                var gamePath = gameAssembly.Location ?? string.Empty;
+                var gameHash = File.Exists(gamePath) ? Sha256(gamePath) : string.Empty;
+                ActiveLocationSha256AtObservation = activeLocationHash;
+                DiskArtifactSha256 = diskHash;
+                GameAssemblySha256 = gameHash;
+                var activeBuild = assembly.ManifestModule.ModuleVersionId.ToString();
+                var handshake = process.Id + ":" + _sessionId + ":" + activeBuild;
+                var json = "{\n"
+                           + "  \"schemaVersion\": 1,\n"
+                           + "  \"observedAt\": \"" + DateTime.UtcNow.ToString("o") + "\",\n"
+                           + "  \"producerPid\": " + process.Id + ",\n"
+                           + "  \"producerProcessStartUtc\": \"" + process.StartTime.ToUniversalTime().ToString("o") + "\",\n"
+                           + "  \"producerSessionId\": \"" + _sessionId + "\",\n"
+                           + "  \"telemetryHandshake\": \"" + handshake + "\",\n"
+                           + "  \"activeBuildId\": \"" + activeBuild + "\",\n"
+                           + "  \"activeAssemblyPath\": \"" + JsonEscape(activePath) + "\",\n"
+                           + "  \"activeLocationSha256AtObservation\": \"" + activeLocationHash + "\",\n"
+                           + "  \"activeAssemblyBytes\": " + (activeInfo == null ? -1 : activeInfo.Length) + ",\n"
+                           + "  \"diskArtifactPath\": \"" + JsonEscape(diskPath) + "\",\n"
+                           + "  \"diskArtifactSha256\": \"" + diskHash + "\",\n"
+                           + "  \"diskArtifactBytes\": " + (diskInfo == null ? -1 : diskInfo.Length) + ",\n"
+                           + "  \"diskArtifactModifiedUtc\": \""
+                           + (diskInfo == null ? string.Empty : diskInfo.LastWriteTimeUtc.ToString("o")) + "\",\n"
+                           + "  \"gameAssemblyPath\": \"" + JsonEscape(gamePath) + "\",\n"
+                           + "  \"gameAssemblySha256\": \"" + gameHash + "\",\n"
+                           + "  \"activeImageHashAvailable\": false,\n"
+                           + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\"\n"
+                           + "}\n";
+                WriteTextAtomic(Path.Combine(_dir, "deployment.json"), json);
+            }
+            catch (Exception e)
+            {
+                LogAction("SYSTEM", "Deployment identity telemetry unavailable: " + e.Message);
+            }
+        }
+
+        private static string Sha256(string path)
+        {
+            using (var stream = File.OpenRead(path))
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
+        }
+
+        private static string JsonEscape(string value)
+        {
+            return (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"")
+                .Replace("\r", "\\r").Replace("\n", "\\n");
         }
 
         private void QuickLoad()
@@ -780,14 +1042,21 @@ namespace NGUInjector
                     return;
                 }
 
-                // Publish the pause before the game's load mutates controllers.  All
-                // repeating bot routines remain behind this barrier until the normal
-                // gameplay synchronization probe verifies the new save is active.
-                _syncStateInitialized = true;
-                _lastGameplayReady = false;
-                if (Autopilot != null)
-                    Autopilot.ReportSynchronization(false, "quicksave load is in progress; waiting for a verified gameplay state");
-                Character.saveLoad.loadintoGame(saveDataFromString);
+                using (ExecutionSafety.BeginCycle("manual quickload", CurrentAutopilotConfig))
+                {
+                    TryRunMutation("manual quickload", MutationClass.SaveLoad, MutationOwner.User, () =>
+                    {
+                        // Publish the pause before the game's load mutates controllers. All
+                        // repeating bot routines remain behind this barrier until the normal
+                        // gameplay synchronization probe verifies the new save is active.
+                        _syncStateInitialized = true;
+                        _lastGameplayReady = false;
+                        if (Autopilot != null)
+                            Autopilot.ReportSynchronization(false, "quicksave load is in progress; waiting for a verified gameplay state");
+                        Character.saveLoad.loadintoGame(saveDataFromString);
+                        ExecutionSafety.Invalidate("manual quickload began");
+                    });
+                }
             }
             catch (Exception e)
             {
@@ -803,21 +1072,28 @@ namespace NGUInjector
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
 
-            try
+            RefreshAllocationOwnership();
+            using (ExecutionSafety.BeginCycle("fast allocation", CurrentAutopilotConfig))
             {
-                if ((Settings.ManageInventory || AutopilotWants(x => x.ManageInventory || x.ManageAdventure || x.ManageBosses))
-                    && !Controller.midDrag)
-                    ProgressionLoadoutOptimizer.Manage();
-                if (ActiveProfile != null && AutopilotWants(x => x.ManageAllocations))
-                    ActiveProfile.DoAllocations();
-            }
-            catch (Exception e)
-            {
-                Log("Fast allocation error: " + e.Message);
-                _pendingTransactionComplete = false;
-                _pendingTransactionError = string.IsNullOrEmpty(_pendingTransactionError)
-                    ? "Fast allocation " + e.GetType().Name + ": " + e.Message
-                    : _pendingTransactionError + "; fast allocation " + e.GetType().Name + ": " + e.Message;
+                try
+                {
+                    if ((Settings.ManageInventory || AutopilotWants(x => x.ManageInventory || x.ManageAdventure || x.ManageBosses))
+                        && !Controller.midDrag)
+                        TryRunMutation("fast progression loadout", MutationClass.Loadout,
+                            ExecutionSafety.OwnerFor(MutationClass.Loadout),
+                            () => ProgressionLoadoutOptimizer.Manage());
+                    if (ActiveProfile != null && AutopilotWants(x => x.ManageAllocations))
+                        TryRunMutation("fast allocations", MutationClass.Allocation,
+                            AllocationOwner, () => ActiveProfile.DoAllocations());
+                }
+                catch (Exception e)
+                {
+                    Log("Fast allocation error: " + e.Message);
+                    _pendingTransactionComplete = false;
+                    _pendingTransactionError = string.IsNullOrEmpty(_pendingTransactionError)
+                        ? "Fast allocation " + e.GetType().Name + ": " + e.Message
+                        : _pendingTransactionError + "; fast allocation " + e.GetType().Name + ": " + e.Message;
+                }
             }
 
             /*
@@ -852,14 +1128,31 @@ namespace NGUInjector
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
 
+            RefreshAllocationOwnership();
+            using (ExecutionSafety.BeginCycle("quick combat and rewards", CurrentAutopilotConfig))
+            {
+
             //Turn on autoattack if we're in ITOPOD and its not on
             if (Settings.AutoQuestITOPOD && Character.adventureController.zone >= 1000 && !Character.adventure.autoattacking && !Settings.CombatEnabled)
             {
-                Character.adventureController.idleAttackMove.setToggle();
+                TryRunMutation("ITOPOD autoattack toggle", MutationClass.Combat,
+                    MutationOwner.Legacy, () => Character.adventureController.idleAttackMove.setToggle());
             }
 
             if (Settings.AutoFight || AutopilotWants(x => x.ManageBosses))
             {
+                var combatOwner = AutopilotWants(x => x.ManageBosses)
+                    ? MutationOwner.Autopilot : MutationOwner.Legacy;
+                MutationLease combatLease;
+                string combatHold;
+                if (!ExecutionSafety.TryAcquire(MutationClass.Combat, combatOwner,
+                    out combatLease, out combatHold) || !combatLease.IsCurrent)
+                {
+                    ExecutionSafety.ReportHold("lease:quick-boss-combat",
+                        "Boss combat held: " + (string.IsNullOrEmpty(combatHold)
+                            ? "execution lease became stale" : combatHold));
+                    return;
+                }
                 if (Autopilot != null && Autopilot.TryTitan7PuzzleStep())
                     return;
                 var needsAllocation = false;
@@ -896,32 +1189,35 @@ namespace NGUInjector
 
                 if (needsAllocation)
                 {
-                    ActiveProfile.DoAllocations();
+                    if (ActiveProfile != null)
+                        TryRunMutation("post-boss allocations", MutationClass.Allocation,
+                            AllocationOwner, () => ActiveProfile.DoAllocations());
                 }
             }
 
             if (Settings.AutoMoneyPit || AutopilotWants(x => x.ManageMoneyPit))
             {
                 var autopilotPit = AutopilotWants(x => x.ManageMoneyPit);
-                var workingCapital = autopilotPit
-                    ? AutopilotManager.RequiredAugmentWorkingCapital(Character) : 0.0;
-                // Native Pit tosses every gold piece, so a numeric threshold cannot
-                // preserve an unpaid concurrent charge. Wait for that charge to start
-                // (progress > 0 proves it was paid) before engaging the Pit.
-                if (workingCapital <= 0)
-                    MoneyPitManager.CheckMoneyPit(autopilotPit
-                        ? Autopilot.Config.MoneyPitReserve
-                        : Settings.MoneyPitThreshold);
+                TryRunMutation("Money Pit", MutationClass.MoneyPit,
+                    autopilotPit ? MutationOwner.Autopilot : MutationOwner.Legacy,
+                    // Full autopilot's shared Gold ledger inside MoneyPitManager is the only
+                    // reserve authority. 1e5 is the native minimum toss, not a second policy.
+                    () => MoneyPitManager.CheckMoneyPit(autopilotPit
+                        ? 1e5 : Settings.MoneyPitThreshold));
             }
 
             if (Settings.AutoSpin || AutopilotWants(x => x.ManageDailySpin))
             {
-                MoneyPitManager.DoDailySpin();
+                TryRunMutation("daily spin", MutationClass.DailySpin,
+                    AutopilotWants(x => x.ManageDailySpin)
+                        ? MutationOwner.Autopilot : MutationOwner.Legacy,
+                    () => MoneyPitManager.DoDailySpin());
             }
 
             if (Settings.AutoQuestITOPOD)
             {
-                MoveToITOPOD();
+                TryRunMutation("legacy ITOPOD routing", MutationClass.Adventure,
+                    MutationOwner.Legacy, MoveToITOPOD);
             }
 
             if (Settings.AutoSpellSwap || AutopilotWants(x => x.ManageBloodMagic))
@@ -933,15 +1229,20 @@ namespace NGUInjector
                 // Native automation divides Blood equally, then lets invalid low shares
                 // fail while Rebirth still consumes its share. Full mode owns the cast
                 // decision, so disable that lossy splitter and cast one best spell.
-                Character.bloodMagic.rebirthAutoSpell = !autopilotBlood
-                                                         && Settings.BloodNumberThreshold > 0 && number < Settings.BloodNumberThreshold;
-                Character.bloodMagic.goldAutoSpell = !autopilotBlood
-                                                      && Settings.CounterfeitThreshold > 0 && counterfeit < Settings.CounterfeitThreshold;
-                Character.bloodMagic.lootAutoSpell = !autopilotBlood
-                                                      && Settings.SpaghettiThreshold > 0 && spaghetti < Settings.SpaghettiThreshold;
-                Character.bloodSpells.updateGoldToggleState();
-                Character.bloodSpells.updateLootToggleState();
-                Character.bloodSpells.updateRebirthToggleState();
+                TryRunMutation("Blood spell automation toggles", MutationClass.BloodMagic,
+                    autopilotBlood ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
+                    {
+                        Character.bloodMagic.rebirthAutoSpell = !autopilotBlood
+                                                                 && Settings.BloodNumberThreshold > 0 && number < Settings.BloodNumberThreshold;
+                        Character.bloodMagic.goldAutoSpell = !autopilotBlood
+                                                              && Settings.CounterfeitThreshold > 0 && counterfeit < Settings.CounterfeitThreshold;
+                        Character.bloodMagic.lootAutoSpell = !autopilotBlood
+                                                              && Settings.SpaghettiThreshold > 0 && spaghetti < Settings.SpaghettiThreshold;
+                        Character.bloodSpells.updateGoldToggleState();
+                        Character.bloodSpells.updateLootToggleState();
+                        Character.bloodSpells.updateRebirthToggleState();
+                    });
+            }
             }
         }
 
@@ -950,6 +1251,10 @@ namespace NGUInjector
         {
             var transactionComplete = false;
             var transactionError = string.Empty;
+            var transactionErrors = new List<string>();
+            var rejectionEpochBefore = System.Threading.Interlocked.Read(ref _rejectionEpoch);
+            ExecutionCycle executionCycle = null;
+            long executionStateVersion = -1;
             try
             {
                 if (!IsAutomationReady)
@@ -964,6 +1269,10 @@ namespace NGUInjector
                 ProcessPendingFileChanges();
                 if (Autopilot != null)
                     Autopilot.Tick();
+                RefreshAllocationOwnership();
+                executionCycle = ExecutionSafety.BeginCycle("one-second automation transaction",
+                    CurrentAutopilotConfig);
+                executionStateVersion = ExecutionSafety.StateVersion;
 
                 if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 {
@@ -971,53 +1280,79 @@ namespace NGUInjector
                     return;
                 }
 
-                ZoneHelpers.OptimizeITOPOD();
+                RunAutomationStep("ITOPOD routing", MutationClass.Adventure,
+                    MutationOwner.Legacy, () => ZoneHelpers.OptimizeITOPOD(), transactionErrors);
 
                 if (AutopilotWants(x => x.ManageBeards))
-                    BeardManager.Manage();
+                    RunAutomationStep("Beards", MutationClass.Beards,
+                        MutationOwner.Autopilot, () => BeardManager.Manage(), transactionErrors);
 
-                if ((Settings.ManageInventory || AutopilotWants(x => x.ManageInventory)) && !Controller.midDrag)
+                RunAutomationStep("Inventory", MutationClass.Inventory,
+                    AutopilotWants(x => x.ManageInventory)
+                        ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
                 {
-                    var converted = Character.inventory.GetConvertedInventory().ToArray();
-                    _invManager.EnsureFiltered(converted);
-                    _invManager.ManageConvertibles(converted);
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    _invManager.MergeEquipped(converted);
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    _invManager.MergeInventory(converted);
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    _invManager.MergeBoosts(converted);
-                    // Native set-completion flags are awarded by the Item List
-                    // controller, not by mergeAll itself.  Claim them immediately
-                    // so an item that just reached level 100 cannot leave Adventure
-                    // stuck in boss-snipe mode until the player opens that menu.
-                    Character.allItemList.checkforBonuses();
-                    _invManager.TrashProvenRedundantItem();
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    _invManager.MergeGuffs(converted);
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    var immediateBoostSlots = _invManager.GetImmediateBoostSlots(converted);
-                    _invManager.BoostInventory(immediateBoostSlots);
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    _invManager.BoostInfinityCubeToSoftcaps();
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    var boostSlots = _invManager.GetBoostSlots(converted);
-                    _invManager.BoostInventory(boostSlots);
-                    _invManager.BoostInfinityCube();
-                    converted = Character.inventory.GetConvertedInventory().ToArray();
-                    boostSlots = _invManager.GetBoostSlots(converted);
-                    _invManager.ManageBoostConversion(boostSlots);
+                    if ((Settings.ManageInventory || AutopilotWants(x => x.ManageInventory)) && !Controller.midDrag)
+                    {
+                        var converted = Character.inventory.GetConvertedInventory().ToArray();
+                        _invManager.EnsureFiltered(converted);
+                        // A transient event loadout keeps exact physical references
+                        // for rollback. While that lock is held, any merge, boost,
+                        // conversion, trash, or daycare move could consume one of
+                        // those temporarily unequipped objects and make restoration
+                        // impossible. Filters remain fail-closed, but topology waits.
+                        if (LoadoutManager.CurrentLock != LockType.None)
+                            return;
+                        _invManager.ManageConvertibles(converted);
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        _invManager.MergeEquipped(converted);
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        _invManager.MergeInventory(converted);
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        _invManager.MergeBoosts(converted);
+                        // Native set-completion flags are awarded by the Item List
+                        // controller, not by mergeAll itself.  Claim them immediately
+                        // so an item that just reached level 100 cannot leave Adventure
+                        // stuck in boss-snipe mode until the player opens that menu.
+                        Character.allItemList.checkforBonuses();
+                        _invManager.TrashProvenRedundantItem();
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        _invManager.MergeGuffs(converted);
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        var immediateBoostSlots = _invManager.GetImmediateBoostSlots(converted);
+                        _invManager.BoostInventory(immediateBoostSlots);
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        _invManager.BoostInfinityCubeToSoftcaps();
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        var boostSlots = _invManager.GetBoostSlots(converted);
+                        _invManager.BoostInventory(boostSlots);
+                        _invManager.BoostInfinityCube();
+                        converted = Character.inventory.GetConvertedInventory().ToArray();
+                        _invManager.ManageBoostConversion();
 
-                    // Re-evaluate the whole equipped set after merges/boosts because
-                    // those operations can change both candidate stats and legality.
-                    ProgressionLoadoutOptimizer.Manage();
-                }
+                        // Re-evaluate the whole equipped set after merges/boosts because
+                        // those operations can change both candidate stats and legality.
+                        ProgressionLoadoutOptimizer.Manage();
+                    }
+                }, transactionErrors);
+
+                if (AutopilotWants(x => x.AllowEndSequence))
+                    RunAutomationStep("terminal END placement and trigger", MutationClass.EndSequence,
+                        MutationOwner.Autopilot, () => _invManager.TryExecuteEndSequence(),
+                        transactionErrors);
+
+                // MacGuffin selection occurs inside the inventory transaction. Cast permanent
+                // MacGuffin Blood spells only afterward so their levels compound the chosen set.
+                if (AutopilotWants(x => x.ManageBloodMagic))
+                    RunAutomationStep("Blood spell policy", MutationClass.BloodMagic,
+                        MutationOwner.Autopilot, () => Autopilot.ManageBloodSpell(), transactionErrors);
 
                 // Daycare timers and completed-item rotation are independent of bulk
                 // inventory manipulation, so a drag or disabled merge policy must not
                 // stall this permanent progression system.
-                if (Autopilot != null && Autopilot.CanExecuteSafe && !Controller.midDrag)
-                    DaycareManager.Manage();
+                if (AutopilotWants(x => x.ManageInventory) && !Controller.midDrag
+                    && LoadoutManager.CurrentLock == LockType.None)
+                    RunAutomationStep("Daycare", MutationClass.Daycare,
+                        MutationOwner.Autopilot, () => DaycareManager.Manage(), transactionErrors);
 
                 //if (Settings.ManageInventory && !Controller.midDrag)
                 //{
@@ -1058,20 +1393,50 @@ namespace NGUInjector
                 //}
 
                 if (LoadoutManager.CurrentLock == LockType.Titan || Settings.SwapTitanLoadouts
+                    || AutopilotWants(x => x.ManageAdventure)
                     || Settings.ManageGoldLoadouts && Settings.NeedsGoldSwap())
                 {
-                    LoadoutManager.TryTitanSwap();
-                    DiggerManager.TryTitanSwap();
+                    RunAutomationStep("Titan loadout", MutationClass.TitanLoadout,
+                        ExecutionSafety.OwnerFor(MutationClass.TitanLoadout),
+                        () => LoadoutManager.TryTitanSwap(), transactionErrors);
+                    // Do not let the clock alone stage/lock Titan diggers. Gear preflight
+                    // either acquired the Titan lock or the currently equipped set already
+                    // satisfies the authoritative combat gate.
+                    var titanDiggerOwnerEnabled = AutopilotWants(x => x.ManageDiggers)
+                                                  || Settings.GlobalEnabled && Settings.ManageDiggers;
+                    if (titanDiggerOwnerEnabled && (LoadoutManager.CurrentLock == LockType.Titan
+                        || ZoneHelpers.HighestAvailableTitan() >= 0))
+                        RunAutomationStep("Titan diggers", MutationClass.Diggers,
+                            ExecutionSafety.OwnerFor(MutationClass.Diggers),
+                            () => DiggerManager.TryTitanSwap(), transactionErrors);
                 }
 
                 if ((Settings.ManageYggdrasil || AutopilotWants(x => x.ManageYggdrasil)) && Character.buttons.yggdrasil.interactable)
                 {
-                    _yggManager.ManageYggHarvest();
-                    _yggManager.CheckFruits();
+                    RunAutomationStep("Yggdrasil", MutationClass.Yggdrasil,
+                        AutopilotWants(x => x.ManageYggdrasil)
+                            ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
+                    {
+                        _yggManager.ManageYggHarvest();
+                        _yggManager.CheckFruits();
+                    }, transactionErrors);
                 }
 
                 if (Settings.AutoBuyEM && Character.highestBoss >= 17)
                 {
+                    MutationLease purchaseLease;
+                    string purchaseHold;
+                    if (!ExecutionSafety.TryAcquire(MutationClass.PermanentSpend,
+                        MutationOwner.Legacy, out purchaseLease, out purchaseHold)
+                        || !purchaseLease.IsCurrent)
+                    {
+                        ExecutionSafety.ReportHold("lease:legacy-em-purchases",
+                            "Legacy Energy/Magic/R3 purchases held: "
+                            + (string.IsNullOrEmpty(purchaseHold)
+                                ? "execution lease became stale" : purchaseHold));
+                    }
+                    else
+                    {
                     var ePurchase = Character.energyPurchases;
                     var mPurchase = Character.magicPurchases;
                     var r3Purchase = Character.res3Purchases;
@@ -1147,30 +1512,63 @@ namespace NGUInjector
                             }
                         }
                     }
-                }
-
-                if (!AutopilotWants(x => x.ManageAllocations))
-                    ActiveProfile.DoAllocations();
-
-                if (Settings.CastBloodSpells || AutopilotWants(x => x.ManageBloodMagic))
-                    ActiveProfile.CastBloodSpells();
-
-                if ((Settings.AutoQuest || AutopilotWants(x => x.ManageQuests)) && Character.buttons.beast.interactable)
-                {
-                    if (!Character.inventoryController.midDrag)
-                    {
-                        var converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.ManageQuestItems(converted);
-                        _questManager.CheckQuestTurnin();
-                        _questManager.ManageQuests();
                     }
                 }
 
-                if (Settings.AutoRebirth || Autopilot != null && Autopilot.CanExecuteIrreversible && Autopilot.Config.AllowRebirths)
+                if (!AutopilotWants(x => x.ManageAllocations) && Settings.GlobalEnabled
+                    && ActiveProfile != null)
+                    RunAutomationStep("Allocations", MutationClass.Allocation,
+                        MutationOwner.Legacy, () => ActiveProfile.DoAllocations(), transactionErrors);
+
+                // Full autopilot already made one conservation-aware Blood decision
+                // after MacGuffin selection.  Running the legacy threshold caster as
+                // well can spend the remainder on a second spell in the same sweep.
+                if (Settings.CastBloodSpells && !AutopilotWants(x => x.ManageBloodMagic))
                 {
-                    ActiveProfile.DoRebirth();
+                    if (ActiveProfile != null)
+                    RunAutomationStep("Blood spells", MutationClass.BloodMagic,
+                        MutationOwner.Legacy, () => ActiveProfile.CastBloodSpells(), transactionErrors);
                 }
-                transactionComplete = true;
+
+                if ((Settings.AutoQuest || AutopilotWants(x => x.ManageQuests)) && Character.buttons.beast.interactable)
+                {
+                    RunAutomationStep("Quests", MutationClass.Quests,
+                        AutopilotWants(x => x.ManageQuests)
+                            ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
+                    {
+                        if (!Character.inventoryController.midDrag)
+                        {
+                            var converted = Character.inventory.GetConvertedInventory().ToArray();
+                            _invManager.ManageQuestItems(converted);
+                            _questManager.CheckQuestTurnin();
+                            _questManager.ManageQuests();
+                        }
+                    }, transactionErrors);
+                }
+
+                // Rebirth is the transaction commit boundary. Exceptions and normal-return
+                // REJECTED mutations both leave the live snapshot uncertain, so preserve the
+                // run and retry after a clean full sweep.
+                if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore)
+                    transactionErrors.Add("one or more native mutations were rejected during this sweep");
+                if (executionStateVersion != ExecutionSafety.StateVersion)
+                    transactionErrors.Add("execution state changed during this sweep; commit lease invalidated");
+                if (transactionErrors.Count == 0 && (Settings.AutoRebirth
+                    || Autopilot != null && Autopilot.CanExecuteIrreversible && Autopilot.Config.AllowRebirths))
+                {
+                    var rebirthOwner = Autopilot != null && Autopilot.CanExecuteIrreversible
+                                      && Autopilot.Config.AllowRebirths
+                        ? MutationOwner.Autopilot : MutationOwner.Legacy;
+                    var rebirthProfile = RebirthProfile(rebirthOwner);
+                    if (rebirthProfile != null)
+                        RunAutomationStep("Rebirth", MutationClass.Rebirth, rebirthOwner,
+                            () => rebirthProfile.DoRebirth(), transactionErrors);
+                }
+                if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore
+                    && transactionErrors.Count == 0)
+                    transactionErrors.Add("the rebirth/challenge mutation was rejected");
+                transactionComplete = transactionErrors.Count == 0;
+                transactionError = string.Join(" | ", transactionErrors.ToArray());
             }
             catch (Exception e)
             {
@@ -1178,12 +1576,34 @@ namespace NGUInjector
                 Log(e.Message);
                 Log(e.StackTrace);
             }
+            finally
+            {
+                if (executionCycle != null) executionCycle.Dispose();
+            }
             // Queue publication for the next fast-allocation sweep. Gear work above may
             // have reclaimed resource pools that are intentionally restored on that cadence.
             _pendingTransactionComplete = transactionComplete;
             _pendingTransactionError = transactionError;
             _decisionPublishPending = Autopilot != null;
             _timeLeft = 1f;
+        }
+
+        private static void RunAutomationStep(string name, MutationClass mutationClass,
+            MutationOwner owner, Action action, ICollection<string> errors)
+        {
+            try
+            {
+                TryRunMutation(name, mutationClass, owner, action);
+            }
+            catch (Exception e)
+            {
+                var detail = name + ": " + e.GetType().Name + ": " + e.Message;
+                errors.Add(detail);
+                Log(detail);
+                Log(e.StackTrace);
+                LogAction("REJECTED", name + " subsystem was quarantined for this sweep: "
+                                      + e.GetType().Name + ": " + e.Message);
+            }
         }
 
         internal static void LoadAllocation()
@@ -1197,6 +1617,8 @@ namespace NGUInjector
             {
                 Log(e.Message);
             }
+            ExecutionSafety.Invalidate("legacy allocation profile reloaded");
+            RefreshAllocationOwnership();
         }
 
         private void ProcessPendingFileChanges()
@@ -1218,6 +1640,7 @@ namespace NGUInjector
                 else
                 {
                     Settings.LoadSettings();
+                    ExecutionSafety.Invalidate("legacy settings reloaded");
                     settingsForm.UpdateFromSettings(Settings);
                     LoadAllocation();
                 }
@@ -1245,6 +1668,22 @@ namespace NGUInjector
                 return;
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
+
+            RefreshAllocationOwnership();
+            using (ExecutionSafety.BeginCycle("Adventure routing", CurrentAutopilotConfig))
+            {
+            var adventureOwner = AutopilotWants(x => x.ManageAdventure)
+                ? MutationOwner.Autopilot : MutationOwner.Legacy;
+            MutationLease adventureLease;
+            string adventureHold;
+            if (!ExecutionSafety.TryAcquire(MutationClass.Adventure, adventureOwner,
+                out adventureLease, out adventureHold) || !adventureLease.IsCurrent)
+            {
+                ExecutionSafety.ReportHold("lease:adventure-routing",
+                    "Adventure routing held: " + (string.IsNullOrEmpty(adventureHold)
+                        ? "execution lease became stale" : adventureHold));
+                return;
+            }
 
             //If tm ever drops to 0, reset our gold loadout stuff
             if (Character.machine.realBaseGold == 0.0 && !Settings.DoGoldSwap)
@@ -1340,6 +1779,7 @@ namespace NGUInjector
             {
                 _combManager.IdleZone(tempZone, Settings.SnipeBossOnly, Settings.RecoverHealth);
             }
+            }
         }
 
         private void MoveToITOPOD()
@@ -1393,7 +1833,10 @@ namespace NGUInjector
         public void OnGUI()
         {
             if (Settings.DisableOverlay) return;
-            var effectiveActive = Settings.GlobalEnabled || Autopilot != null && Autopilot.CanExecuteSafe;
+            var dryRunVeto = Autopilot != null && Autopilot.Config != null
+                             && Autopilot.Config.Enabled && Autopilot.Config.IsDryRun;
+            var effectiveActive = !dryRunVeto
+                                  && (Settings.GlobalEnabled || Autopilot != null && Autopilot.CanExecuteSafe);
             GUI.Label(new Rect(10, 0, 240, 40), $"Automation - {(effectiveActive ? "Active" : "Inactive")}");
             GUI.Label(new Rect(10, 10, 200, 40), $"Next Loop - {_timeLeft:00.0}s");
             GUI.Label(new Rect(10, 20, 200, 40), $"Profile - {Settings.AllocationFile}");

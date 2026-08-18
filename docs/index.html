@@ -1,28 +1,29 @@
 <!--
 FILE PURPOSE
 
-This is the public and locally served NGU Idle dashboard shell. It renders only telemetry supplied
-by assets/app.js, uses the shared JWKNT theme before its local dashboard stylesheet, and never
-mutates the game. The public copy fetches a live read-only snapshot through a supervised tunnel; the
-same static files are served by monitor/dashboard_server.py so public and local views stay aligned.
+This is the public and locally served NGU Idle dashboard shell. It organizes the bot's read-only
+telemetry as a game-state reference: the current/next rebirth decision, explicit no-reset holds,
+recovery alternatives, challenge admission, deployment identity, and action failures precede the
+broader resource, combat, inventory, and permanent-system reference. The shared JWKNT theme remains
+the visual foundation; this page has no mutation controls.
 -->
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="A live public dashboard for the NGU Idle progression autopilot.">
+    <meta name="description" content="A thorough live, read-only NGU Idle progression dashboard.">
     <meta property="og:type" content="website">
     <meta property="og:title" content="NGU Idle Dashboard">
-    <meta property="og:description" content="Inspect the bot's current route, resources, combat model, equipment, and verified key events.">
+    <meta property="og:description" content="Inspect the current route, rebirth safety, resources, stats, gear, inventory, permanent systems, unlocks, and key events.">
     <meta property="og:url" content="https://jehlp.net/ngu-idle-dashboard/">
     <meta name="twitter:card" content="summary">
     <meta name="theme-color" content="#ffffff">
     <title>NGU Idle Dashboard</title>
     <script src="https://jehlp.net/site-theme/v1/theme.js"></script>
     <link rel="stylesheet" href="https://jehlp.net/site-theme/v1/base.css">
-    <link rel="stylesheet" href="assets/styles.css?v=20260817.1">
-    <script src="assets/app.js?v=20260817.4" defer></script>
+    <link rel="stylesheet" href="assets/styles.css?v=20260818.1">
+    <script src="assets/app.js?v=20260818.1" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#dashboard">Skip to dashboard</a>
@@ -38,189 +39,120 @@ same static files are served by monitor/dashboard_server.py so public and local 
 
     <main id="dashboard" class="dashboard-shell">
       <section class="dashboard-intro" aria-labelledby="page-title">
-        <div>
-          <p class="eyebrow">Live progression client</p>
-          <h1 id="page-title">Current run</h1>
-          <p id="objective" class="intro-copy">Waiting for the live autopilot state.</p>
-        </div>
-        <div class="connection-block">
-          <p id="connection-state" class="connection-state" data-state="connecting">Connecting to laptop…</p>
-          <p id="connection-detail">Live state is served read-only from the laptop.</p>
-        </div>
+        <div><p class="eyebrow">Live progression client</p><h1 id="page-title">Current run</h1><p id="objective" class="intro-copy">Waiting for the live autopilot state.</p></div>
+        <div class="connection-block"><p id="connection-state" class="connection-state" data-state="connecting">Connecting to laptop…</p><p id="connection-detail">Live state is served read-only from the laptop.</p></div>
       </section>
 
       <dl class="headline-metrics" aria-label="Current progression summary">
-        <div>
-          <dt>Rebirth</dt>
-          <dd id="metric-rebirth">—</dd>
-          <dd id="metric-rebirth-note" class="metric-note">waiting for optimizer</dd>
-        </div>
-        <div>
-          <dt id="metric-boss-label">Next boss</dt>
-          <dd id="metric-boss">—</dd>
-          <dd id="metric-boss-note" class="metric-note">waiting for combat model</dd>
-        </div>
-        <div>
-          <dt>Adventure</dt>
-          <dd id="metric-adventure">—</dd>
-          <dd id="metric-adventure-note" class="metric-note">waiting for route</dd>
-        </div>
-        <div>
-          <dt>EXP purchase</dt>
-          <dd id="metric-exp">—</dd>
-          <dd id="metric-exp-note" class="metric-note">waiting for purchase model</dd>
-        </div>
+        <div><dt>Rebirth</dt><dd id="metric-rebirth">—</dd><dd id="metric-rebirth-note" class="metric-note">waiting for optimizer</dd></div>
+        <div><dt>Challenge</dt><dd id="metric-challenge">—</dd><dd id="metric-challenge-note" class="metric-note">waiting for admission evidence</dd></div>
+        <div><dt id="metric-boss-label">Next boss</dt><dd id="metric-boss">—</dd><dd id="metric-boss-note" class="metric-note">waiting for combat model</dd></div>
+        <div><dt>Adventure</dt><dd id="metric-adventure">—</dd><dd id="metric-adventure-note" class="metric-note">waiting for route</dd></div>
+        <div><dt>EXP purchase</dt><dd id="metric-exp">—</dd><dd id="metric-exp-note" class="metric-note">waiting for purchase model</dd></div>
       </dl>
-
       <div id="stale-banner" class="notice" role="status" aria-live="polite" hidden></div>
+      <div id="action-error-banner" class="notice notice-error" role="alert" aria-live="assertive" hidden></div>
+      <nav class="section-index" aria-label="Dashboard sections"><a href="#now">Now</a><a href="#alerts">Alerts</a><a href="#resources">Resources</a><a href="#combat">Combat</a><a href="#character">Character</a><a href="#inventory">Inventory</a><a href="#permanent">Permanent</a><a href="#unlocks">Unlocks</a><a href="#events">Events</a></nav>
 
-      <section class="section-block" aria-labelledby="route-heading">
-        <div class="section-heading">
-          <div>
-            <p class="section-kicker">Route</p>
-            <h2 id="route-heading">What the bot is doing</h2>
-          </div>
-          <p id="run-stage" class="section-meta">—</p>
-        </div>
+      <section id="now" class="section-block" aria-labelledby="route-heading">
+        <div class="section-heading"><div><p class="section-kicker">Now</p><h2 id="route-heading">Route, proof, and reset risk</h2></div><p id="run-stage" class="section-meta">—</p></div>
         <div class="route-grid">
-          <div class="route-primary">
-            <h3 id="route-title">Waiting for a synchronized transaction</h3>
-            <p id="route-reason">The dashboard reports confirmed game state, not intended inputs.</p>
-          </div>
-          <dl class="compact-facts">
-            <div><dt>Mode</dt><dd id="fact-mode">—</dd></div>
-            <div><dt>Snapshot</dt><dd id="fact-snapshot">—</dd></div>
-            <div><dt>Run age</dt><dd id="fact-run-age">—</dd></div>
-            <div><dt>Build</dt><dd id="fact-build">—</dd></div>
-          </dl>
+          <div class="route-primary"><h3 id="route-title">Waiting for a synchronized transaction</h3><p id="route-reason">The dashboard reports confirmed game state, not intended inputs.</p></div>
+          <dl class="compact-facts"><div><dt>Mode</dt><dd id="fact-mode">—</dd></div><div><dt>Snapshot</dt><dd id="fact-snapshot">—</dd></div><div><dt>Run age</dt><dd id="fact-run-age">—</dd></div><div><dt>Active MVID</dt><dd id="fact-build">—</dd></div><div><dt>Disk artifact</dt><dd id="fact-disk">—</dd></div><div><dt>Game DLL</dt><dd id="fact-game">—</dd></div><div><dt>Producer epoch</dt><dd id="fact-producer">—</dd></div><div><dt>Build identity</dt><dd id="fact-identity">—</dd></div></dl>
+        </div>
+        <div class="subsection rebirth-panel" aria-labelledby="rebirth-heading">
+          <div class="subsection-heading"><div><p class="section-kicker">Rebirth model</p><h3 id="rebirth-heading">Reset, continue, or hold</h3></div><p id="rebirth-state" class="section-meta">—</p></div>
+          <p id="rebirth-reason" class="lead-note">Waiting for optimizer evidence.</p>
+          <dl class="decision-strip"><div><dt>Current policy</dt><dd id="rebirth-policy">—</dd></div><div><dt>Next action</dt><dd id="rebirth-next-action">—</dd></div><div><dt>Reset ETA</dt><dd id="rebirth-reset-eta">—</dd></div><div><dt>No-reset hold</dt><dd id="rebirth-hold">—</dd></div></dl>
+          <dl class="rebirth-facts"><div><dt>Current Number A / D</dt><dd id="rebirth-current">—</dd></div><div><dt>Native preview A / D</dt><dd id="rebirth-preview">—</dd></div><div><dt>Native preview ratios A / D</dt><dd id="rebirth-ratio">—</dd></div><div><dt>Selected checkpoint worst ratio</dt><dd id="rebirth-selected-ratio">—</dd></div><div><dt>Reset + replay ETA</dt><dd id="rebirth-reset-recovery">—</dd></div><div><dt>Continue-run ETA</dt><dd id="rebirth-continue-recovery">—</dd></div><div><dt>Selected cycle recovery</dt><dd id="rebirth-cycle-recovery">—</dd></div><div><dt>Next finite reset candidate</dt><dd id="rebirth-next-positive">—</dd></div><div><dt>Next model evaluation</dt><dd id="rebirth-next-evaluation">—</dd></div><div><dt>Catch-up EXP</dt><dd id="rebirth-catchup">—</dd></div><div><dt>Projected AP</dt><dd id="rebirth-ap">—</dd></div><div><dt>Candidate search</dt><dd id="rebirth-candidates">—</dd></div></dl>
+          <p id="rebirth-safety" class="section-note">Waiting for mutation-boundary evidence.</p>
+        </div>
+        <div class="subsection challenge-panel" aria-labelledby="challenge-heading">
+          <div class="subsection-heading"><div><p class="section-kicker">Challenge scheduler</p><h3 id="challenge-heading">Next challenge and admission proof</h3></div><p id="challenge-state" class="section-meta">—</p></div>
+          <p id="challenge-reason" class="lead-note">Waiting for source-specific challenge evidence.</p>
+          <dl class="challenge-facts"><div><dt>Candidate</dt><dd id="challenge-name">—</dd></div><div><dt>Entry ETA</dt><dd id="challenge-entry-eta">—</dd></div><div><dt>Pessimistic clear ETA</dt><dd id="challenge-clear-eta">—</dd></div><div><dt>Recovery ETA</dt><dd id="challenge-recovery-eta">—</dd></div><div><dt>Target gate</dt><dd id="challenge-target-boss">—</dd></div><div><dt>Admission</dt><dd id="challenge-admission">—</dd></div></dl>
         </div>
       </section>
 
-      <section class="section-block" aria-labelledby="resources-heading">
-        <div class="section-heading">
-          <div>
-            <p class="section-kicker">Resources</p>
-            <h2 id="resources-heading">Allocation and purchasing</h2>
-          </div>
-          <p id="resource-summary" class="section-meta">—</p>
-        </div>
+      <section id="alerts" class="section-block" aria-labelledby="alerts-heading">
+        <div class="section-heading"><div><p class="section-kicker">Execution health</p><h2 id="alerts-heading">Action errors and safety rejections</h2></div><p id="alerts-summary" class="section-meta">—</p></div>
+        <p class="lead-note">Repeated identical messages are grouped; counts cover the bounded recent log tail.</p>
+        <ol id="action-error-list" class="event-list alert-list"><li>No action failures are present in the current feed.</li></ol>
+      </section>
 
+      <section id="resources" class="section-block" aria-labelledby="resources-heading">
+        <div class="section-heading"><div><p class="section-kicker">Resources</p><h2 id="resources-heading">Allocation, balances, and horizon</h2></div><p id="resource-summary" class="section-meta">—</p></div>
         <div class="allocation-grid">
-          <article class="allocation-row">
-            <div class="allocation-copy">
-              <h3>Energy</h3>
-              <p id="energy-decision">Waiting for a verified allocation sweep.</p>
-            </div>
-            <div class="allocation-value"><strong id="energy-value">—</strong><span id="energy-rate">—</span></div>
-            <div class="meter" aria-hidden="true"><span id="energy-meter"></span></div>
-            <dl class="allocation-parts">
-              <div><dt>Basic Training</dt><dd id="energy-bt">—</dd></div>
-              <div><dt>Other systems</dt><dd id="energy-other">—</dd></div>
-              <div><dt>Idle</dt><dd id="energy-idle">—</dd></div>
-            </dl>
-          </article>
-
-          <article class="allocation-row">
-            <div class="allocation-copy">
-              <h3>Magic</h3>
-              <p id="magic-decision">Waiting for a verified allocation sweep.</p>
-            </div>
-            <div class="allocation-value"><strong id="magic-value">—</strong><span id="magic-rate">—</span></div>
-            <div class="meter" aria-hidden="true"><span id="magic-meter"></span></div>
-            <dl class="allocation-parts">
-              <div><dt>Blood</dt><dd id="magic-blood">—</dd></div>
-              <div><dt>Time Machine</dt><dd id="magic-tm">—</dd></div>
-              <div><dt>Idle</dt><dd id="magic-idle">—</dd></div>
-            </dl>
-          </article>
+          <article class="allocation-row"><div class="allocation-copy"><h3>Energy</h3><p id="energy-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="energy-value">—</strong><span id="energy-rate">—</span></div><div class="meter" aria-hidden="true"><span id="energy-meter"></span></div><dl class="allocation-parts"><div><dt>Basic Training</dt><dd id="energy-bt">—</dd></div><div><dt>Other systems</dt><dd id="energy-other">—</dd></div><div><dt>Idle</dt><dd id="energy-idle">—</dd></div></dl></article>
+          <article class="allocation-row"><div class="allocation-copy"><h3>Magic</h3><p id="magic-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="magic-value">—</strong><span id="magic-rate">—</span></div><div class="meter" aria-hidden="true"><span id="magic-meter"></span></div><dl class="allocation-parts"><div><dt>Blood</dt><dd id="magic-blood">—</dd></div><div><dt>Time Machine</dt><dd id="magic-tm">—</dd></div><div><dt>Idle</dt><dd id="magic-idle">—</dd></div></dl></article>
+          <article class="allocation-row allocation-row-wide"><div class="allocation-copy"><h3 id="res3-name">Resource 3</h3><p id="res3-decision">Not yet unlocked.</p></div><div class="allocation-value"><strong id="res3-value">—</strong><span id="res3-rate">persistent systems</span></div><div class="meter" aria-hidden="true"><span id="res3-meter"></span></div><dl class="allocation-parts"><div><dt>Power</dt><dd id="res3-power">—</dd></div><div><dt>Cap</dt><dd id="res3-cap">—</dd></div><div><dt>Idle</dt><dd id="res3-idle">—</dd></div></dl></article>
         </div>
-
-        <div class="purchase-list" aria-label="Purchase targets">
-          <article>
-            <h3>EXP</h3><strong id="exp-balance">—</strong>
-            <p id="exp-decision">Waiting for purchase model.</p><span id="exp-eta">—</span>
-          </article>
-          <article>
-            <h3>AP</h3><strong id="ap-balance">—</strong>
-            <p id="ap-decision">Waiting for purchase model.</p><span id="ap-eta">—</span>
-          </article>
-          <article>
-            <h3>Gold</h3><strong id="gold-balance">—</strong>
-            <p id="gold-decision">Waiting for horizon model.</p><span id="gold-rate">—</span>
-          </article>
+        <div class="purchase-list" aria-label="Resource purchase targets">
+          <article><h3>EXP</h3><strong id="exp-balance">—</strong><p id="exp-decision">Waiting for purchase model.</p><span id="exp-eta">—</span></article>
+          <article><h3>AP</h3><strong id="ap-balance">—</strong><p id="ap-decision">Waiting for purchase model.</p><span id="ap-eta">—</span></article>
+          <article><h3>Gold</h3><strong id="gold-balance">—</strong><p id="gold-decision">Waiting for horizon model.</p><span id="gold-rate">—</span></article>
+          <article><h3>ITOPOD</h3><strong id="pp-balance">—</strong><p id="pp-decision">Waiting for floor model.</p><span id="pp-progress">—</span></article>
+          <article><h3>Quests</h3><strong id="qp-balance">—</strong><p id="qp-decision">Waiting for quest state.</p><span id="qp-progress">—</span></article>
+          <article><h3>Yggdrasil / Blood</h3><strong id="seed-blood-balance">—</strong><p id="seed-blood-decision">Permanent resources survive rebirth.</p><span id="seed-blood-detail">—</span></article>
         </div>
       </section>
 
-      <div class="two-column">
-        <section class="section-block" aria-labelledby="combat-heading">
-          <div class="section-heading">
-            <div><p class="section-kicker">Combat</p><h2 id="combat-heading">Boss and Adventure</h2></div>
-          </div>
-          <dl class="data-list">
-            <div><dt>Boss target</dt><dd id="combat-boss">—</dd></div>
-            <div><dt>Defeat model</dt><dd id="combat-eta">—</dd></div>
-            <div><dt>Adventure route</dt><dd id="combat-zone">—</dd></div>
-            <div><dt>Power / toughness</dt><dd id="combat-stats">—</dd></div>
-            <div><dt>HP</dt><dd id="combat-hp">—</dd></div>
-            <div><dt>Collection</dt><dd id="combat-collection">—</dd></div>
-          </dl>
-          <p id="combat-reason" class="section-note">Waiting for combat telemetry.</p>
-        </section>
-
-        <section class="section-block" aria-labelledby="inventory-heading">
-          <div class="section-heading">
-            <div><p class="section-kicker">Equipment</p><h2 id="inventory-heading">Loadout and inventory</h2></div>
-          </div>
-          <dl class="data-list">
-            <div><dt>Objective</dt><dd id="gear-objective">—</dd></div>
-            <div><dt>Inventory</dt><dd id="inventory-space">—</dd></div>
-            <div><dt>Pressure</dt><dd id="inventory-pressure">—</dd></div>
-            <div><dt>Boost target</dt><dd id="boost-target">—</dd></div>
-            <div><dt>Trash policy</dt><dd id="trash-policy">—</dd></div>
-          </dl>
-          <p id="gear-decision" class="section-note">Waiting for loadout optimizer.</p>
-        </section>
-      </div>
-
-      <section class="section-block" aria-labelledby="rebirth-heading">
-        <div class="section-heading">
-          <div><p class="section-kicker">Long-run model</p><h2 id="rebirth-heading">Rebirth decision</h2></div>
-          <p id="rebirth-state" class="section-meta">—</p>
-        </div>
-        <p id="rebirth-reason" class="lead-note">Waiting for optimizer evidence.</p>
-        <dl class="rebirth-facts">
-          <div><dt>Current multiplier</dt><dd id="rebirth-current">—</dd></div>
-          <div><dt>Preview multiplier</dt><dd id="rebirth-preview">—</dd></div>
-          <div><dt>Preview ratio</dt><dd id="rebirth-ratio">—</dd></div>
-          <div><dt>Candidate search</dt><dd id="rebirth-candidates">—</dd></div>
-        </dl>
-        <p id="rebirth-safety" class="section-note">No reset will execute without a valid native preview.</p>
-      </section>
-
-      <section class="section-block" aria-labelledby="training-heading">
-        <div class="section-heading">
-          <div><p class="section-kicker">Basic Training</p><h2 id="training-heading">Exact allocation</h2></div>
-          <p id="training-policy" class="section-meta">—</p>
-        </div>
-        <div class="table-scroll">
-          <table>
-            <thead><tr><th>Pair</th><th>Attack</th><th>Defense</th><th>Energy</th><th>Rate</th></tr></thead>
-            <tbody id="training-body"><tr><td colspan="5">Waiting for allocation breakdown.</td></tr></tbody>
-          </table>
+      <section id="combat" class="section-block" aria-labelledby="combat-heading">
+        <div class="section-heading"><div><p class="section-kicker">Combat</p><h2 id="combat-heading">Fight Boss, Adventure, and ITOPOD</h2></div><p id="combat-meta" class="section-meta">—</p></div>
+        <div class="three-column">
+          <article><h3>Fight Boss</h3><dl class="data-list"><div><dt>Target</dt><dd id="combat-boss">—</dd></div><div><dt>Defeat model</dt><dd id="combat-eta">—</dd></div><div><dt>Attack / defense</dt><dd id="fight-stats">—</dd></div><div><dt>HP</dt><dd id="fight-hp">—</dd></div></dl><p id="combat-reason" class="section-note">Waiting for combat telemetry.</p></article>
+          <article><h3>Adventure</h3><dl class="data-list"><div><dt>Route</dt><dd id="combat-zone">—</dd></div><div><dt>Power / toughness</dt><dd id="combat-stats">—</dd></div><div><dt>HP</dt><dd id="combat-hp">—</dd></div><div><dt>Collection</dt><dd id="combat-collection">—</dd></div></dl></article>
+          <article><h3>ITOPOD</h3><dl class="data-list"><div><dt>Route</dt><dd id="itopod-route">—</dd></div><div><dt>Current / record</dt><dd id="itopod-floor">—</dd></div><div><dt>Range</dt><dd id="itopod-range">—</dd></div><div><dt>PP progress</dt><dd id="itopod-pp">—</dd></div></dl></article>
         </div>
       </section>
 
-      <section class="section-block" aria-labelledby="events-heading">
-        <div class="section-heading">
-          <div><p class="section-kicker">Timeline</p><h2 id="events-heading">Key events</h2></div>
-          <p class="section-meta">bosses, purchases, rare drops, and major milestones</p>
+      <section id="character" class="section-block" aria-labelledby="character-heading">
+        <div class="section-heading"><div><p class="section-kicker">Character</p><h2 id="character-heading">Stats, equipped gear, and Basic Training</h2></div><p id="gear-objective" class="section-meta">—</p></div>
+        <dl class="stat-ledger"><div><dt>Fight Attack</dt><dd id="stat-fight-attack">—</dd></div><div><dt>Fight Defense</dt><dd id="stat-fight-defense">—</dd></div><div><dt>Fight HP</dt><dd id="stat-fight-hp">—</dd></div><div><dt>Adventure Power</dt><dd id="stat-adventure-power">—</dd></div><div><dt>Adventure Toughness</dt><dd id="stat-adventure-toughness">—</dd></div><div><dt>Adventure HP</dt><dd id="stat-adventure-hp">—</dd></div><div><dt>Energy P / C / B</dt><dd id="stat-energy-pcb">—</dd></div><div><dt>Magic P / C / B</dt><dd id="stat-magic-pcb">—</dd></div><div><dt id="stat-res3-label">R3 P / C / B</dt><dd id="stat-res3-pcb">—</dd></div></dl>
+        <p id="gear-decision" class="section-note">Waiting for loadout optimizer.</p>
+        <details open><summary>Equipped gear <span id="gear-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>Slot</th><th>Item</th><th>Level</th><th>Attack</th><th>Defense</th><th>Specials</th></tr></thead><tbody id="gear-body"><tr><td colspan="6">Waiting for gear telemetry.</td></tr></tbody></table></div></details>
+        <details><summary>Basic Training <span id="training-policy">—</span></summary><div class="table-scroll"><table><thead><tr><th>Pair</th><th>Attack</th><th>Defense</th><th>Energy</th><th>Rate</th></tr></thead><tbody id="training-body"><tr><td colspan="5">Waiting for allocation breakdown.</td></tr></tbody></table></div></details>
+      </section>
+
+      <section id="inventory" class="section-block" aria-labelledby="inventory-heading">
+        <div class="section-heading"><div><p class="section-kicker">Inventory</p><h2 id="inventory-heading">Physical items and Item List</h2></div><p id="inventory-space" class="section-meta">—</p></div>
+        <div class="inventory-policy"><dl class="data-list"><div><dt>Pressure</dt><dd id="inventory-pressure">—</dd></div><div><dt>Boost target</dt><dd id="boost-target">—</dd></div><div><dt>Trash policy</dt><dd id="trash-policy">—</dd></div></dl></div>
+        <details open><summary>Inventory slots <span id="inventory-summary">—</span></summary><label class="table-search">Filter inventory <input type="search" data-filter-target="inventory-body" placeholder="name, part, special"></label><div class="table-scroll"><table><thead><tr><th>Slot</th><th>Item</th><th>Part</th><th>Level</th><th>Attack</th><th>Defense</th><th>Specials</th><th>State</th></tr></thead><tbody id="inventory-body"><tr><td colspan="8">Waiting for inventory telemetry.</td></tr></tbody></table></div></details>
+        <div class="two-column detail-pair">
+          <details open><summary>Daycare <span id="daycare-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>Slot</th><th>Item</th><th>Level</th><th>State</th></tr></thead><tbody id="daycare-body"><tr><td colspan="4">Waiting for Daycare telemetry.</td></tr></tbody></table></div></details>
+          <details open><summary>MacGuffins <span id="macguffin-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>Slot</th><th>Item</th><th>Level</th><th>Specials</th></tr></thead><tbody id="macguffin-body"><tr><td colspan="4">Waiting for MacGuffin telemetry.</td></tr></tbody></table></div></details>
         </div>
+        <details><summary>Item List <span id="item-list-summary">—</span></summary><label class="table-search">Filter discovered items <input type="search" data-filter-target="item-list-body" placeholder="item name or ID"></label><div class="table-scroll"><table><thead><tr><th>ID</th><th>Item</th><th>Dropped</th><th>MAXXED</th><th>Filtered</th></tr></thead><tbody id="item-list-body"><tr><td colspan="5">Waiting for Item List telemetry.</td></tr></tbody></table></div></details>
+      </section>
+
+      <section id="permanent" class="section-block" aria-labelledby="permanent-heading">
+        <div class="section-heading"><div><p class="section-kicker">Permanent progression</p><h2 id="permanent-heading">Perks, purchases, and persistent systems</h2></div><p class="section-meta">locked rows remain visible</p></div>
+        <details open><summary>ITOPOD perks <span id="perks-summary">—</span></summary><label class="table-search">Filter perks <input type="search" data-filter-target="perks-body" placeholder="perk name, type, status"></label><div class="table-scroll"><table><thead><tr><th>ID</th><th>Perk</th><th>Type</th><th>Level</th><th>Cost</th><th>Status</th></tr></thead><tbody id="perks-body"><tr><td colspan="6">Waiting for perk telemetry.</td></tr></tbody></table></div></details>
+        <div class="two-column detail-pair">
+          <details><summary>EXP purchases <span id="exp-purchases-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>Upgrade</th><th>Value</th><th>Status</th></tr></thead><tbody id="exp-purchases-body"><tr><td colspan="3">Waiting for purchase telemetry.</td></tr></tbody></table></div></details>
+          <details><summary>AP purchases <span id="ap-purchases-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>ID</th><th>Upgrade</th><th>Status</th></tr></thead><tbody id="ap-purchases-body"><tr><td colspan="3">Waiting for AP purchase telemetry.</td></tr></tbody></table></div></details>
+        </div>
+        <details><summary>NGUs <span id="ngu-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>Resource</th><th>NGU</th><th>Normal</th><th>Evil</th><th>Sadistic</th><th>Allocated</th></tr></thead><tbody id="ngu-body"><tr><td colspan="6">Waiting for NGU telemetry.</td></tr></tbody></table></div></details>
+        <details><summary>Hacks <span id="hacks-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>Hack</th><th>Level</th><th>Target</th><th>Progress</th><th>R3</th><th>Status</th></tr></thead><tbody id="hacks-body"><tr><td colspan="6">Waiting for Hack telemetry.</td></tr></tbody></table></div></details>
+        <details><summary>Wishes <span id="wishes-summary">—</span></summary><label class="table-search">Filter wishes <input type="search" data-filter-target="wishes-body" placeholder="wish name or status"></label><div class="table-scroll"><table><thead><tr><th>ID</th><th>Wish</th><th>Level</th><th>Progress</th><th>E / M / R3</th><th>Status</th></tr></thead><tbody id="wishes-body"><tr><td colspan="6">Waiting for Wish telemetry.</td></tr></tbody></table></div></details>
+        <div class="two-column detail-pair">
+          <details><summary>Yggdrasil <span id="fruit-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>Fruit</th><th>Tier</th><th>Levels</th><th>State</th></tr></thead><tbody id="fruit-body"><tr><td colspan="4">Waiting for Yggdrasil telemetry.</td></tr></tbody></table></div></details>
+          <details><summary>Diggers and Beards <span id="digger-beard-summary">—</span></summary><div class="table-scroll"><table><thead><tr><th>System</th><th>Name</th><th>Level</th><th>Permanent / max</th><th>State</th></tr></thead><tbody id="digger-beard-body"><tr><td colspan="5">Waiting for Digger/Beard telemetry.</td></tr></tbody></table></div></details>
+        </div>
+      </section>
+
+      <section id="unlocks" class="section-block" aria-labelledby="unlocks-heading">
+        <div class="section-heading"><div><p class="section-kicker">Game map</p><h2 id="unlocks-heading">Mechanic unlock catalog</h2></div><p id="unlocks-summary" class="section-meta">—</p></div>
+        <p class="lead-note">Every tracked system stays listed. Locked mechanics are a progression forecast, not missing dashboard data.</p>
+        <ul id="unlock-list" class="unlock-list"><li>Waiting for unlock telemetry.</li></ul>
+      </section>
+
+      <section id="events" class="section-block" aria-labelledby="events-heading">
+        <div class="section-heading"><div><p class="section-kicker">Consequential timeline</p><h2 id="events-heading">Key events</h2></div><p class="section-meta">permanent gains, resets, records, unlocks, rare loot, deaths, and safety failures</p></div>
         <ol id="event-list" class="event-list"><li>Waiting for the live event stream.</li></ol>
       </section>
 
-      <footer class="dashboard-footer">
-        <p>Read-only live telemetry from NGU Idle Autopilot. The <a href="https://github.com/JWKNT/ngu-idle-dashboard">dashboard source</a> contains no save data and cannot control the game.</p>
-      </footer>
+      <footer class="dashboard-footer"><p>Read-only live telemetry from NGU Idle Autopilot. The <a href="https://github.com/JWKNT/ngu-idle-dashboard">dashboard source</a> contains no save data and cannot control the game.</p></footer>
     </main>
   </body>
 </html>

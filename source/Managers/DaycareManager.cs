@@ -37,10 +37,20 @@ namespace NGUInjector.Managers
                     effectiveLevel += c.inventoryController.daycares[slot].levelsAdded();
                 }
 
-                // Ordinary items are complete at 100. MacGuffins have no level cap and
-                // remain assigned until a future marginal-value policy explicitly replaces them.
-                if (current != null && current.id > 0 && ((int)current.type == 11 || effectiveLevel < 100))
-                    continue;
+                // Ordinary items stay until MAXX. MacGuffins have no cap, so bank at
+                // least one native daycare level and then rotate toward the lowest-
+                // level available guff (or an unfinished permanent item). This keeps
+                // otherwise-idle slots balanced instead of pinning the first guff forever.
+                if (current != null && current.id > 0)
+                {
+                    var isGuff = (int)current.type == 11;
+                    var added = c.inventoryController.daycares != null
+                                && slot < c.inventoryController.daycares.Count
+                                && c.inventoryController.daycares[slot] != null
+                        ? c.inventoryController.daycares[slot].levelsAdded() : 0;
+                    if (!isGuff && effectiveLevel < 100 || isGuff && added < 1)
+                        continue;
+                }
 
                 if (current != null && current.id > 0)
                     occupied.Remove(current.id);
@@ -77,8 +87,15 @@ namespace NGUInjector.Managers
                 var item = c.inventory.inventory[i];
                 if (item == null || item.id <= 0 || !item.removable || occupied.Contains(item.id))
                     continue;
+                // Daycare removes a physical object from the pool that native and
+                // optimizer loadouts can equip. Preserve both the exact object in
+                // the active authoritative plan and every explicit user loadout.
+                if (ProgressionLoadoutOptimizer.IsAuthoritativeItem(item)
+                    || InventoryManager.IsNativeLoadoutReference(c, i)
+                    || IsConfiguredLoadoutItem(item.id))
+                    continue;
                 var isMacGuffin = (int)item.type == 11;
-                if (isMacGuffin || (item.id >= 335 && item.id <= 341))
+                if (isMacGuffin || IsStateMachineItem(item.id))
                     continue;
                 if (item.level >= 100 || item.id >= c.itemInfo.daycareRate.Length)
                     continue;
@@ -132,6 +149,28 @@ namespace NGUInjector.Managers
                 default:
                     return false;
             }
+        }
+
+        private static bool IsStateMachineItem(int id)
+        {
+            // Quest offerings, Exile clues/puzzle pieces, and one-use mechanic unlock keys must
+            // remain in ordinary inventory where their native consumers can find them. Daycare is
+            // not a safe storage location for an item whose presence drives a game state machine.
+            return id >= 278 && id <= 287
+                   || id >= 335 && id <= 341
+                   || id >= 367 && id <= 372
+                   || id == 66 || id == 92 || id == 102 || id == 120
+                   || id == 141 || id == 154 || id == 163 || id == 172 || id == 195;
+        }
+
+        private static bool IsConfiguredLoadoutItem(int id)
+        {
+            return Main.Settings != null
+                   && (Main.Settings.TitanLoadout.Contains(id)
+                       || Main.Settings.YggdrasilLoadout.Contains(id)
+                       || Main.Settings.GoldDropLoadout.Contains(id)
+                       || Main.Settings.MoneyPitLoadout.Contains(id)
+                       || Main.Settings.QuickLoadout.Contains(id));
         }
     }
 }

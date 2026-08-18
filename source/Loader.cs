@@ -8,18 +8,25 @@ using Object = UnityEngine.Object;
 /*
 FILE PURPOSE
 
-This file owns assembly lifecycle inside Unity: injection creates the single persistent Main
-component and ejection destroys it. Exactly-one-host is the critical invariant preventing
-duplicated timers and double mutations. Gameplay policy belongs in Main, Autopilot, or Managers.
+This file owns assembly lifecycle inside Unity: injection creates the single named persistent Main
+component and ejection destroys it while invalidating every outstanding execution lease. Inputs are
+the injector's Init/Unload calls and Unity's object registry; output is exactly one scheduler host.
+Exactly-one-host and lease invalidation prevent duplicated timers, stale callbacks, and double
+mutations. Gameplay policy, deployment selection, and manager mechanics do not belong here.
 */
 namespace NGUInjector
 {
     public class Loader
     {
+        private const string HostName = "NGU Autopilot";
         private static GameObject _load;
         public static void Init()
         {
-            _load = new GameObject();
+            if (_load != null || GameObject.Find(HostName) != null)
+                throw new InvalidOperationException("NGU Autopilot is already injected; refusing to create a second scheduler host.");
+
+            NGUInjector.Autopilot.ExecutionSafety.Invalidate("injector lifecycle Init");
+            _load = new GameObject(HostName);
             _load.AddComponent<Main>();
             Object.DontDestroyOnLoad(_load);
         }
@@ -31,6 +38,7 @@ namespace NGUInjector
 
         private static void _Unload()
         {
+            NGUInjector.Autopilot.ExecutionSafety.Invalidate("injector lifecycle Unload");
             if (Main.reference != null)
                 Main.reference.Unload();
             if (_load == null) return;

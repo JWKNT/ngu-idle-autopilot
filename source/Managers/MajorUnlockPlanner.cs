@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using NGUInjector.Autopilot;
 
 /*
 FILE PURPOSE
@@ -35,6 +36,9 @@ namespace NGUInjector.Managers
         internal bool GuaranteedFirstDrop;
         internal bool ValuesLoot;
         internal double DropChance;
+        internal double ExpectedDropSeconds = -1.0;
+        internal double P90DropSeconds = -1.0;
+        internal double EligibleTrialSeconds = -1.0;
         internal double MinimumPower;
         internal double MinimumToughness;
         internal int ConsecutiveFailures;
@@ -91,6 +95,7 @@ namespace NGUInjector.Managers
                 {
                     key.BossOnly = true;
                     key.Reason += "; rerolling normal spawns because the native key branch is boss-only";
+                    PopulateDropForecast(c, key);
                 }
                 if (CanAttempt(c, key)) return Remember(key);
             }
@@ -98,14 +103,13 @@ namespace NGUInjector.Managers
             // Wandoos is a persistent mechanic rather than ordinary collection debt.
             // Its Sky drop is RNG-gated, so a stat-safe loadout may deliberately use
             // Drop Chance even when that set is weaker in raw Power/Toughness.
-            if (c.settings.itopodOn
-                && (c.adventure.highestItopodLevel > 1 || c.adventure.itopod.perkPoints > 0)
-                && !c.settings.wandoos98On && !HasPhysicalItem(c, 66))
+            if (c.settings.itopodOn && !c.settings.wandoos98On && !HasPhysicalItem(c, 66))
             {
                 var wandoos = OrdinaryTarget(c, 4, 66, "Wandoos 98",
                     "obtain and install Wandoos 98 from a Sky boss", false, true,
                     Math.Min(1.0, .003 * c.lootFactor()));
                 if (wandoos != null) wandoos.BossOnly = true;
+                PopulateDropForecast(c, wandoos);
                 if (CanAttempt(c, wandoos)) return Remember(wandoos);
             }
 
@@ -156,6 +160,41 @@ namespace NGUInjector.Managers
                 Reason = "Major unlock push: " + goal + " in " + stats.Name
                          + "; accepting Safe-Zone recovery between active fights"
             };
+        }
+
+        private static void PopulateDropForecast(Character c, MajorUnlockTarget target)
+        {
+            if (c == null || target == null || target.DropChance <= 0.0
+                || target.Zone < 0 || c.adventureController == null) return;
+            var observed = CombatManager.ObservedKillSeconds(target.Zone, target.BossOnly);
+            var respawn = Math.Max(0.0, c.adventureController.respawnTime());
+            var bossShare = 1.0;
+            if (target.BossOnly)
+            {
+                try
+                {
+                    var enemies = c.adventureController.enemyList[target.Zone];
+                    var bosses = enemies.Count(x => x.enemyType == enemyType.boss
+                        || x.enemyType.ToString().IndexOf("bigBoss",
+                            StringComparison.OrdinalIgnoreCase) >= 0);
+                    bossShare = enemies.Count <= 0 ? 0.0 : bosses / (double)enemies.Count;
+                }
+                catch
+                {
+                    bossShare = 0.0;
+                }
+            }
+            if (bossShare <= 0.0) return;
+            var fight = observed > 0.0 ? observed : 1.0;
+            target.EligibleTrialSeconds = fight + respawn / bossShare;
+            target.ExpectedDropSeconds = MechanicsStochastic.GeometricMeanSeconds(
+                target.DropChance, target.EligibleTrialSeconds);
+            var p90Trials = MechanicsStochastic.GeometricQuantileTrials(target.DropChance, 0.90);
+            target.P90DropSeconds = p90Trials == long.MaxValue ? double.PositiveInfinity
+                : p90Trials * target.EligibleTrialSeconds;
+            target.Reason += "; source probability forecasts mean "
+                             + target.ExpectedDropSeconds.ToString("0") + "s and p90 "
+                             + target.P90DropSeconds.ToString("0") + "s at the current measured/fallback cadence";
         }
 
         private static MajorUnlockTarget TitanTarget(Character c, int titanIndex, int zone)
@@ -227,7 +266,14 @@ namespace NGUInjector.Managers
                                * c.regAttackPower();
                 var conservativeFirstHit = 1.2 * Math.Max(enemy.attack * .1,
                     enemy.attack - c.totalAdvDefense() / 2.0);
-                return outgoing > 0.0 && conservativeFirstHit < c.totalAdvHP() * .95;
+                if (outgoing <= Math.Max(0.0, enemy.regen)
+                    || conservativeFirstHit >= c.totalAdvHP() * .95)
+                    return false;
+                var effectiveDamage = outgoing - Math.Max(0.0, enemy.regen);
+                var attacks = Math.Ceiling(enemy.maxHP / Math.Max(1e-9, effectiveDamage));
+                var projectedHits = Math.Max(0.0, attacks - 1.0);
+                var projectedDamage = projectedHits * conservativeFirstHit;
+                return attacks <= 300.0 && projectedDamage < c.totalAdvHP() * .95;
             });
         }
 

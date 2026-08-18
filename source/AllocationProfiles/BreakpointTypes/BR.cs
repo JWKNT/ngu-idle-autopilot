@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using NGUInjector.Autopilot;
 
 /*
 FILE PURPOSE
@@ -51,6 +52,16 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         private void CastRituals()
         {
             LastGoldShortfall = 0.0;
+            double valuedTarget;
+            string valuedTargetLabel;
+            if (!ResourceHorizonModel.TryGetValuedBloodDemand(Character,
+                    Math.Max(1, SecondsRemaining()), out valuedTarget, out valuedTargetLabel))
+            {
+                ClearRitualAllocations();
+                LastDecision = "Holding Magic: no concrete Blood spell or terminal item demand "
+                               + "can be funded before the selected rebirth checkpoint";
+                return;
+            }
             var allocationLeft = (long)MaxAllocation;
             var allocated = 0L;
             var allocatedTracks = new List<string>();
@@ -152,6 +163,16 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         private void CastRitualEndTime(int endTime)
         {
+            double valuedTarget;
+            string valuedTargetLabel;
+            if (!ResourceHorizonModel.TryGetValuedBloodDemand(Character,
+                    Math.Max(1, SecondsRemaining()), out valuedTarget, out valuedTargetLabel))
+            {
+                ClearRitualAllocations();
+                LastDecision = "Holding Magic: no route-valued Blood target is reachable before "
+                               + "the configured ritual deadline";
+                return;
+            }
             var allocationLeft = (long)MaxAllocation;
             for (var i = Character.bloodMagic.ritual.Count - 1; i >= 0; i--)
             {
@@ -239,6 +260,26 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 && Main.Autopilot.Plan != null && Main.Autopilot.Plan.RebirthSeconds > 0)
                 return (int)Math.Ceiling(Main.Autopilot.Plan.EffectiveAllocationTarget(Character));
             return RebirthTime;
+        }
+
+        private int SecondsRemaining()
+        {
+            var target = EffectiveRebirthTarget();
+            if (target <= 0) return 86400;
+            return Math.Max(1, target - (int)Math.Floor(Character.rebirthTime.totalseconds));
+        }
+
+        private void ClearRitualAllocations()
+        {
+            if (Character == null || Character.bloodMagic == null
+                || Character.bloodMagic.ritual == null || Character.bloodMagicController == null
+                || Character.bloodMagicController.bloodMagics == null)
+                return;
+            var count = Math.Min(Character.bloodMagic.ritual.Count,
+                Character.bloodMagicController.bloodMagics.Length);
+            for (var i = 0; i < count; i++)
+                if (Character.bloodMagic.ritual[i].magic > 0)
+                    Character.bloodMagicController.bloodMagics[i].removeAllMagic();
         }
 
         private static string FormatGold(double amount)

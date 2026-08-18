@@ -2,9 +2,11 @@
 FILE PURPOSE
 
 This dependency-free client discovers and polls the laptop's current read-only public tunnel,
-validates its telemetry envelope, and renders confirmed NGU state into the static dashboard. Local
-and private-host copies use their own origin. The discovery record contains only the tunnel URL;
-this client sends no commands, persists no game data, and exposes no mutation endpoint.
+validates its telemetry envelope, and renders the full confirmed NGU state into a hierarchy that
+keeps rebirth/challenge decisions, deployment identity, and action errors ahead of large reference
+tables. Missing optional fields stay visibly unavailable rather than becoming false zero values or
+ETAs. Local copies use their own origin. The client sends no commands, persists no game data, and
+exposes no mutation endpoint.
 */
 (() => {
   "use strict";
@@ -19,7 +21,8 @@ this client sends no commands, persists no game data, and exposes no mutation en
   let lastSequence = -1;
 
   const byId = (id) => document.getElementById(id);
-  const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const number = (value, fallback = 0) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const optionalNumber = (value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
   const text = (value, fallback = "—") => value === null || value === undefined || value === "" ? fallback : String(value);
   const setText = (id, value, fallback) => { const node = byId(id); if (node) node.textContent = text(value, fallback); };
 
@@ -52,6 +55,19 @@ this client sends no commands, persists no game data, and exposes no mutation en
     if (minutes && parts.length < 2) parts.push(`${minutes}m`);
     if (!days && !hours && secs && parts.length < 2) parts.push(`${secs}s`);
     return `${approximate ? "about " : ""}${parts.join(" ")}`;
+  }
+
+  function optionalDuration(seconds, unavailable = "Unavailable") {
+    const value = optionalNumber(seconds);
+    return value === null || value < 0 ? unavailable : duration(value, true);
+  }
+
+  function multiplierRatio(value) {
+    const ratio = optionalNumber(value);
+    if (ratio === null) return "Unavailable";
+    if (ratio === 0) return "0×";
+    if (ratio >= 0.01 && ratio < 1000) return `${compactDecimal(ratio, ratio >= 1 ? 3 : 6)}×`;
+    return `${ratio.toExponential(3).replace("e+", "e")}×`;
   }
 
   function scientific(value) {
@@ -121,11 +137,93 @@ this client sends no commands, persists no game data, and exposes no mutation en
     return match ? match[1].trim() : "next validated purchase";
   }
 
-  function renderHeadline(s) {
-    const hold = Boolean(s.rebirthExecutionHold);
-    const rebirthRemaining = Math.max(0, number(s.rebirthSeconds) - number(s.rebirthElapsed));
-    setText("metric-rebirth", hold ? "Unscheduled hold" : duration(rebirthRemaining));
-    setText("metric-rebirth-note", hold ? "waiting for a strict Number improvement" : `target run age ${duration(s.rebirthSeconds)}`);
+  function fallbackObservability(s) {
+    const target = optionalNumber(s.rebirthSeconds);
+    const elapsed = optionalNumber(s.rebirthElapsed);
+    const hold = Boolean(s.rebirthExecutionHold) || (target !== null && target < 0);
+    const resetEta = !hold && target !== null && elapsed !== null ? Math.max(0, target - elapsed) : null;
+    const executionEnabled = typeof s.rebirthExecutionEnabled === "boolean" ? s.rebirthExecutionEnabled : null;
+    const action = target !== null && target < 0 ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) ? "hold"
+      : executionEnabled === false ? "disabled" : resetEta === 0 ? "reset-due" : resetEta !== null ? "reset-at-checkpoint" : "unknown";
+    const labels = {
+      "no-reset-challenge": "NO RESET — active challenge forbids rebirth",
+      hold: "HOLD — no executable reset is scheduled",
+      disabled: "DISABLED — rebirth execution is off",
+      "reset-due": "RESET DUE — waiting for the verified native boundary",
+      "reset-at-checkpoint": "RESET at the selected checkpoint",
+      unknown: "Rebirth decision telemetry is incomplete",
+    };
+    const previewRatios = [optionalNumber(s.rebirthProjectedAttackMultiplier), optionalNumber(s.rebirthProjectedDefenseMultiplier)].filter((value) => value !== null);
+    const challengeActive = String(s.stage || "").toLowerCase().includes("active challenge");
+    return {
+      rebirth: {
+        action,
+        actionLabel: labels[action],
+        reason: s.rebirthSafetyBlockReason || s.rebirthReason || "No decision reason was emitted.",
+        noResetHold: hold || executionEnabled === false,
+        targetRunAgeSeconds: target !== null && target >= 0 ? target : null,
+        currentRunAgeSeconds: elapsed !== null && elapsed >= 0 ? elapsed : null,
+        resetEtaSeconds: resetEta,
+        nextPositiveEtaSeconds: optionalNumber(s.rebirthNextPositiveEtaSeconds),
+        nextEvaluationEtaSeconds: optionalNumber(s.rebirthNextEvaluationEtaSeconds),
+        etaReason: s.rebirthEtaReason || null,
+        resetRecoveryEtaSeconds: optionalNumber(s.rebirthRecoveryResetRouteEtaSeconds),
+        continueRecoveryEtaSeconds: optionalNumber(s.rebirthRecoveryContinueRouteEtaSeconds),
+        selectedCycleRecoveryEtaSeconds: optionalNumber(s.rebirthOptimizerRecordRecoveryEtaSeconds),
+        recoveryRemainingBosses: optionalNumber(s.rebirthRecoveryRemainingBosses),
+        recoveryReason: s.rebirthRecoveryReason || s.rebirthOptimizerRecoveryReason || "",
+        currentAttack: optionalNumber(s.rebirthCurrentAttackMultiplier),
+        currentDefense: optionalNumber(s.rebirthCurrentDefenseMultiplier),
+        previewAttack: optionalNumber(s.rebirthNextAttackMultiplierPreview),
+        previewDefense: optionalNumber(s.rebirthNextDefenseMultiplierPreview),
+        previewAttackRatio: optionalNumber(s.rebirthProjectedAttackMultiplier),
+        previewDefenseRatio: optionalNumber(s.rebirthProjectedDefenseMultiplier),
+        previewWorstRatio: previewRatios.length ? Math.min(...previewRatios) : null,
+        selectedCheckpointWorstRatio: optionalNumber(s.rebirthMinimumNumberRatio),
+      },
+      challenge: {
+        status: challengeActive ? "active" : "none-admitted",
+        label: challengeActive ? "Active challenge (type unavailable)" : "No challenge admitted",
+        admitted: false,
+        active: challengeActive,
+        entryEtaSeconds: null,
+        clearEtaSeconds: optionalNumber(s.nextChallengeEtaSeconds || s.challengeEtaSeconds),
+        recoveryEtaSeconds: optionalNumber(s.challengeRecoveryEtaSeconds),
+        targetBoss: optionalNumber(s.challengeTargetBoss),
+        targetLevel: optionalNumber(s.challengeTargetLevel),
+        reason: s.challengeEvidenceSummary || "The producer emitted no challenge-admission evidence.",
+      },
+      identity: {
+        verifiedEnvelope: Boolean(s.buildId && s.producerSessionId && number(s.producerPid) > 0),
+        buildId: s.buildId || null,
+        producerPid: optionalNumber(s.producerPid),
+        producerSessionId: s.producerSessionId || null,
+        diskArtifactSha256: s.diskArtifactSha256 || null,
+        gameAssemblySha256: s.gameAssemblySha256 || null,
+        activeMatchesDisk: s.activeMatchesDisk || "unknown",
+      },
+      transaction: {
+        status: s.automationTransactionError ? "error" : s.automationTransactionComplete ? "complete" : "partial",
+        complete: Boolean(s.automationTransactionComplete),
+        error: s.automationTransactionError || null,
+      },
+    };
+  }
+
+  function renderHeadline(s, observability) {
+    const rebirth = observability.rebirth;
+    const challenge = observability.challenge;
+    const headline = rebirth.action === "reset-at-checkpoint" ? optionalDuration(rebirth.resetEtaSeconds)
+      : rebirth.action === "reset-due" ? "Reset due"
+        : rebirth.action === "no-reset-challenge" ? "No reset"
+          : rebirth.action === "hold" ? "Planner hold"
+            : rebirth.action === "disabled" ? "Disabled" : "Unavailable";
+    setText("metric-rebirth", headline);
+    setText("metric-rebirth-note", rebirth.actionLabel);
+
+    setText("metric-challenge", challenge.active ? "Active" : challenge.admitted ? text(challenge.label) : "None admitted");
+    setText("metric-challenge-note", challenge.active ? text(challenge.label) : challenge.admitted
+      ? `entry ${optionalDuration(challenge.entryEtaSeconds)}` : text(challenge.reason, "admission evidence unavailable"));
 
     const boss = number(s.bossRecordTargetId || s.nextBoss);
     setText("metric-boss-label", `Boss #${boss}`);
@@ -143,7 +241,8 @@ this client sends no commands, persists no game data, and exposes no mutation en
     setText("metric-exp-note", `${expShortfall > 0 ? "until" : "for"} ${expName}`);
   }
 
-  function renderRoute(s) {
+  function renderRoute(s, observability) {
+    const identity = observability.identity;
     setText("objective", s.objective, "Re-evaluating progression route.");
     setText("run-stage", `${text(s.stage, "unknown stage")} · ${text(s.syncState, "unsynchronized")}`);
     setText("route-title", s.loadoutObjective || s.objective, "Waiting for a synchronized transaction");
@@ -151,7 +250,12 @@ this client sends no commands, persists no game data, and exposes no mutation en
     setText("fact-mode", `${text(s.mode, "unknown")} · ${s.mutationsEnabled ? "automation active" : "read only"}`);
     setText("fact-snapshot", `#${number(s.decisionSequence).toLocaleString()}`);
     setText("fact-run-age", duration(s.rebirthElapsed));
-    setText("fact-build", text(s.buildId, "—").slice(0, 8));
+    setText("fact-build", text(identity.buildId, "unavailable").slice(0, 12));
+    setText("fact-disk", text(identity.diskArtifactSha256, "unavailable").slice(0, 12));
+    setText("fact-game", text(identity.gameAssemblySha256, "unavailable").slice(0, 12));
+    setText("fact-producer", identity.producerPid && identity.producerSessionId
+      ? `${identity.producerPid.toLocaleString()} · ${identity.producerSessionId.slice(0, 12)}` : "unverified");
+    setText("fact-identity", `${identity.verifiedEnvelope ? "epoch verified" : "epoch incomplete"} · ${text(identity.activeMatchesDisk, "disk match unknown").replaceAll("-", " ")}`);
   }
 
   function renderResources(s) {
@@ -186,6 +290,26 @@ this client sends no commands, persists no game data, and exposes no mutation en
     setText("gold-balance", `${shortNumber(s.gold)} Gold`);
     setText("gold-decision", sentence(s.goldDecision));
     setText("gold-rate", `${shortNumber(s.goldIncomePerSecond)} net Gold/s`);
+
+    const stats = s.characterStats || {};
+    const res3Unlocked = Boolean(stats.res3Unlocked);
+    setText("res3-name", stats.res3Name || "Resource 3");
+    setText("res3-decision", res3Unlocked ? sentence(s.res3AllocationDecision || "Allocated to persistent Hacks and Wishes by marginal value") : "Not yet unlocked.");
+    setText("res3-value", res3Unlocked ? `${shortNumber(stats.res3Current - stats.res3Idle)} / ${shortNumber(stats.res3Current)}` : "Locked");
+    setText("res3-power", res3Unlocked ? shortNumber(stats.res3Power) : "—");
+    setText("res3-cap", res3Unlocked ? shortNumber(stats.res3Cap) : "—");
+    setText("res3-idle", res3Unlocked ? shortNumber(stats.res3Idle) : "—");
+    byId("res3-meter").style.width = `${res3Unlocked ? percent(number(stats.res3Current) - number(stats.res3Idle), stats.res3Current) : 0}%`;
+
+    setText("pp-balance", `${shortNumber(s.itopodPerkPoints)} PP`);
+    setText("pp-decision", sentence(s.itopodRouteReason));
+    setText("pp-progress", `${shortNumber(s.itopodPointProgress)} / ${shortNumber(s.itopodPointThreshold)} · ${shortNumber(s.itopodProgressPerKill)} per kill`);
+    setText("qp-balance", `${shortNumber(s.questPoints)} QP`);
+    setText("qp-decision", s.questUnlocked ? sentence(s.questInProgress ? `Quest ${number(s.questId)} in progress` : "No active quest") : "Not yet unlocked.");
+    setText("qp-progress", s.questUnlocked ? `${shortNumber(s.questQpPreview)} QP preview · ${number(s.questBanked)}/${number(s.questBankCap)} banked` : "Defeat the Beast to unlock quests");
+    setText("seed-blood-balance", `${shortNumber(stats.seeds)} seeds · ${shortNumber(stats.blood)} blood`);
+    setText("seed-blood-decision", s.yggFruitDecision || s.bloodMagicAllocationDecision, "Persistent-resource policy pending.");
+    setText("seed-blood-detail", `${text(s.yggSeedDecision, "Yggdrasil locked")} · ${text(s.bloodMagicAllocationDecision, "Blood Magic locked")}`);
   }
 
   function renderCombatInventory(s) {
@@ -197,6 +321,15 @@ this client sends no commands, persists no game data, and exposes no mutation en
     setText("combat-collection", s.collectionMissingSummary || s.collectionReason, "—");
     setText("combat-reason", sentence(s.bossViabilityReason));
 
+    const stats = s.characterStats || {};
+    setText("fight-stats", `${shortNumber(stats.fightBossAttack)} / ${shortNumber(stats.fightBossDefense)}`);
+    setText("fight-hp", `${shortNumber(stats.fightBossCurrentHP)} / ${shortNumber(stats.fightBossMaxHP)}`);
+    setText("combat-meta", `${s.bossFighting ? "Fight Boss active" : "Fight Boss idle"} · ${text(s.nextTitanName, "Titan timing pending")}`);
+    setText("itopod-route", `${text(s.itopodMode, "locked")} · ${text(s.itopodRouteReason, "route pending")}`);
+    setText("itopod-floor", s.itopodRouteConfirmed ? `${number(s.itopodCurrentFloor)} / ${number(s.itopodHighestFloor)}` : "Not yet confirmed");
+    setText("itopod-range", `${number(s.itopodRangeStart)}–${number(s.itopodRangeEnd)} · one-hit ${number(s.itopodReachableOneHitFloor)}`);
+    setText("itopod-pp", `${shortNumber(s.itopodPointProgress)} / ${shortNumber(s.itopodPointThreshold)} · ${number(s.itopodKillsOnFloor)} kills on floor`);
+
     setText("gear-objective", s.loadoutObjective, "—");
     setText("inventory-space", `${number(s.inventoryUsedSlots)}/${number(s.inventoryTotalSlots)} used · ${number(s.inventoryFreeSlots)} free`);
     setText("inventory-pressure", text(s.inventoryPressure, "unknown"));
@@ -205,15 +338,48 @@ this client sends no commands, persists no game data, and exposes no mutation en
     setText("gear-decision", sentence(s.loadoutDecision));
   }
 
-  function renderRebirth(s) {
-    const hold = Boolean(s.rebirthExecutionHold);
-    setText("rebirth-state", hold ? "unscheduled safety hold" : `${duration(Math.max(0, number(s.rebirthSeconds) - number(s.rebirthElapsed)))} remaining`);
-    setText("rebirth-reason", sentence(s.rebirthReason));
-    setText("rebirth-current", scientific(s.rebirthCurrentAttackMultiplier));
-    setText("rebirth-preview", scientific(s.rebirthNextAttackMultiplierPreview));
-    setText("rebirth-ratio", `${number(s.rebirthProjectedAttackMultiplier).toFixed(4)}×`);
+  function renderRebirth(s, observability) {
+    const rebirth = observability.rebirth;
+    setText("rebirth-state", rebirth.actionLabel);
+    setText("rebirth-reason", sentence(rebirth.reason));
+    setText("rebirth-policy", rebirth.actionLabel);
+    setText("rebirth-next-action", rebirth.action === "reset-at-checkpoint" ? "Execute verified native rebirth"
+      : rebirth.action === "reset-due" ? "Verify and execute now"
+        : rebirth.action === "no-reset-challenge" ? "Continue the active challenge"
+          : rebirth.action === "hold" ? "Wait for a finite admitted checkpoint"
+            : rebirth.action === "disabled" ? "Observe only" : "Await complete telemetry");
+    setText("rebirth-reset-eta", optionalDuration(rebirth.resetEtaSeconds, rebirth.noResetHold ? "No reset scheduled" : "Unavailable"));
+    setText("rebirth-hold", rebirth.noResetHold ? "Yes" : "No");
+    setText("rebirth-current", rebirth.currentAttack === null || rebirth.currentDefense === null
+      ? "Unavailable" : `${scientific(rebirth.currentAttack)} / ${scientific(rebirth.currentDefense)}`);
+    setText("rebirth-preview", rebirth.previewAttack === null || rebirth.previewDefense === null
+      ? "Unavailable" : `${scientific(rebirth.previewAttack)} / ${scientific(rebirth.previewDefense)}`);
+    setText("rebirth-ratio", `${multiplierRatio(rebirth.previewAttackRatio)} / ${multiplierRatio(rebirth.previewDefenseRatio)}`);
+    setText("rebirth-selected-ratio", multiplierRatio(rebirth.selectedCheckpointWorstRatio));
+    setText("rebirth-reset-recovery", optionalDuration(rebirth.resetRecoveryEtaSeconds));
+    setText("rebirth-continue-recovery", optionalDuration(rebirth.continueRecoveryEtaSeconds));
+    setText("rebirth-cycle-recovery", optionalDuration(rebirth.selectedCycleRecoveryEtaSeconds));
+    setText("rebirth-next-positive", optionalDuration(rebirth.nextPositiveEtaSeconds, rebirth.noResetHold ? "No finite candidate yet" : "Not needed"));
+    setText("rebirth-next-evaluation", optionalDuration(rebirth.nextEvaluationEtaSeconds, "Every live control tick"));
+    setText("rebirth-catchup", `${shortNumber(s.rebirthExpectedCatchupExp)} XP · ${shortNumber(s.rebirthExpectedCatchupExpPerHour)}/h`);
+    setText("rebirth-ap", `${shortNumber(s.rebirthOptimizerProjectedAp || s.rebirthProjectedAp)} AP`);
     setText("rebirth-candidates", `${number(s.rebirthCandidateCount).toLocaleString()} · ${text(s.rebirthOptimizerModel, "model pending")}`);
-    setText("rebirth-safety", sentence(s.rebirthSafetyBlockReason));
+    setText("rebirth-safety", sentence(rebirth.etaReason || rebirth.recoveryReason || s.rebirthSafetyBlockReason
+      || (s.rebirthNumberNonRegression ? "Native Number is non-decreasing at this selected event boundary" : "Native Number loss is priced by the selected branch; it is not an execution prohibition")));
+  }
+
+  function renderChallenge(observability) {
+    const challenge = observability.challenge;
+    setText("challenge-state", challenge.active ? "active" : challenge.admitted ? "admitted" : "not admitted");
+    setText("challenge-reason", sentence(challenge.reason));
+    setText("challenge-name", challenge.label);
+    setText("challenge-entry-eta", challenge.active ? "Already active" : optionalDuration(challenge.entryEtaSeconds));
+    setText("challenge-clear-eta", optionalDuration(challenge.clearEtaSeconds));
+    setText("challenge-recovery-eta", optionalDuration(challenge.recoveryEtaSeconds));
+    setText("challenge-target-boss", challenge.targetLevel !== null && challenge.targetLevel !== undefined
+      ? `Level ${challenge.targetLevel}` : challenge.targetBoss === null ? "Unavailable" : `Boss ${challenge.targetBoss}`);
+    setText("challenge-admission", challenge.active ? "Native challenge state active"
+      : challenge.admitted ? "Source-specific admission passed" : "Fail-closed; no entry scheduled");
   }
 
   function renderTraining(s) {
@@ -238,6 +404,158 @@ this client sends no commands, persists no game data, and exposes no mutation en
     }));
   }
 
+  function renderTable(bodyId, records, mapRow, emptyMessage) {
+    const body = byId(bodyId);
+    if (!body) return;
+    const rows = Array.isArray(records) ? records : [];
+    if (!rows.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = body.closest("table")?.querySelectorAll("thead th").length || 1;
+      td.textContent = emptyMessage;
+      tr.append(td);
+      body.replaceChildren(tr);
+      return;
+    }
+    body.replaceChildren(...rows.map((record, index) => {
+      const mapped = mapRow(record, index);
+      const tr = document.createElement("tr");
+      if (mapped.className) tr.className = mapped.className;
+      for (const value of mapped.values) {
+        const td = document.createElement("td");
+        td.textContent = text(value);
+        tr.append(td);
+      }
+      tr.dataset.search = mapped.values.join(" ").toLowerCase();
+      return tr;
+    }));
+  }
+
+  function specialSummary(item) {
+    const specials = Array.isArray(item?.specials) ? item.specials : [];
+    return specials.length ? specials.map((entry) => `${text(entry.type)} ${shortNumber(entry.current)}/${shortNumber(entry.cap)}`).join(", ") : "—";
+  }
+
+  function renderCharacter(s) {
+    const stats = s.characterStats || {};
+    setText("stat-fight-attack", shortNumber(stats.fightBossAttack));
+    setText("stat-fight-defense", shortNumber(stats.fightBossDefense));
+    setText("stat-fight-hp", `${shortNumber(stats.fightBossCurrentHP)} / ${shortNumber(stats.fightBossMaxHP)}`);
+    setText("stat-adventure-power", shortNumber(stats.adventureAttack || s.adventurePower));
+    setText("stat-adventure-toughness", shortNumber(stats.adventureDefense || s.adventureToughness));
+    setText("stat-adventure-hp", `${shortNumber(stats.adventureCurrentHP || s.adventureHP)} / ${shortNumber(stats.adventureMaxHP || s.adventureMaxHP)}`);
+    setText("stat-energy-pcb", `${shortNumber(stats.energyPower)} / ${shortNumber(stats.energyCap)} / ${shortNumber(stats.energyBars)}`);
+    setText("stat-magic-pcb", `${shortNumber(stats.magicPower)} / ${shortNumber(stats.magicCap)} / ${shortNumber(stats.magicBars)}`);
+    setText("stat-res3-label", `${text(stats.res3Name, "R3")} P / C / B`);
+    setText("stat-res3-pcb", stats.res3Unlocked ? `${shortNumber(stats.res3Power)} / ${shortNumber(stats.res3Cap)} / ${shortNumber(stats.res3Bars)}` : "Not yet unlocked");
+
+    const gear = Array.isArray(s.equippedGear) ? s.equippedGear : [];
+    const equipped = gear.filter((item) => number(item.id) > 0);
+    setText("gear-summary", `${equipped.length}/${gear.length} slots filled · ${text(s.loadoutObjective, "objective pending")}`);
+    renderTable("gear-body", gear, (item) => ({
+      className: number(item.id) > 0 ? "" : "is-locked",
+      values: [item.slot, item.name, number(item.id) > 0 ? `${number(item.level)}${item.maxxed ? " · MAXX" : ""}` : "—", shortNumber(item.attack), shortNumber(item.defense), specialSummary(item)],
+    }), "Gear telemetry is not available from the installed build.");
+  }
+
+  function renderInventory(s) {
+    const inventory = Array.isArray(s.inventoryItems) ? s.inventoryItems : [];
+    const daycare = Array.isArray(s.daycareItems) ? s.daycareItems : [];
+    const macguffins = Array.isArray(s.macguffins) ? s.macguffins : [];
+    const list = Array.isArray(s.itemListEntries) ? s.itemListEntries : [];
+    setText("inventory-summary", `${inventory.length} physical items · ${number(s.inventoryFreeSlots)} free slots`);
+    renderTable("inventory-body", inventory, (item) => ({
+      className: item.maxxed ? "is-complete" : "",
+      values: [number(item.index) + 1, item.name, item.part, `${number(item.level)}${item.maxxed ? " · MAXX" : ""}`, shortNumber(item.attack), shortNumber(item.defense), specialSummary(item), item.locked ? "Locked" : "Removable"],
+    }), s.inventoryTotalSlots ? "Every physical inventory slot is empty." : "Inventory telemetry is not available from the installed build.");
+
+    setText("daycare-summary", daycare.length ? `${daycare.length} occupied` : "empty or not yet unlocked");
+    renderTable("daycare-body", daycare, (item) => ({ values: [number(item.index) + 1, item.name, `${number(item.level)}${item.maxxed ? " · MAXX" : ""}`, item.locked ? "Locked" : "Removable"] }), "No Item Daycare slots are occupied, or Daycare is not yet unlocked.");
+    setText("macguffin-summary", macguffins.length ? `${macguffins.length} equipped` : "not yet unlocked or empty");
+    renderTable("macguffin-body", macguffins, (item) => ({ values: [number(item.index) + 1, item.name, number(item.level), specialSummary(item)] }), "No MacGuffins are equipped; the system may not be unlocked yet.");
+
+    const maxxed = list.filter((item) => item.maxxed).length;
+    const catalog = number(s.itemListCatalogueCount, list.length);
+    setText("item-list-summary", `${list.length}/${catalog} discovered · ${maxxed} MAXXED · ${Math.max(0, catalog - list.length)} unseen`);
+    renderTable("item-list-body", list, (item) => ({
+      className: item.maxxed ? "is-complete" : "",
+      values: [item.id, item.name, item.dropped ? "Yes" : "No", item.maxxed ? "Yes" : "No", item.filtered ? "Yes" : "No"],
+    }), "No Item List entries have been discovered yet.");
+  }
+
+  function renderPermanent(s) {
+    const perks = Array.isArray(s.itopodPerks) ? s.itopodPerks : [];
+    const boughtPerks = perks.filter((perk) => number(perk.level) > 0).length;
+    setText("perks-summary", perks.length ? `${boughtPerks}/${perks.length} purchased · ${shortNumber(s.itopodPerkPoints)} PP available` : "not yet unlocked");
+    renderTable("perks-body", perks, (perk) => ({
+      className: !perk.unlocked ? "is-locked" : number(perk.level) >= number(perk.maxLevel) ? "is-complete" : "",
+      values: [perk.id, perk.name, perk.type, `${shortNumber(perk.level)} / ${shortNumber(perk.maxLevel)}`, shortNumber(perk.baseCost), perk.unlocked ? (number(perk.level) >= number(perk.maxLevel) ? "MAXXED" : "Available") : `Not yet unlocked · difficulty ${number(perk.difficulty)}`],
+    }), "ITOPOD perks are not yet unlocked.");
+
+    const expPurchases = Array.isArray(s.expPurchases) ? s.expPurchases : [];
+    setText("exp-purchases-summary", `${expPurchases.filter((entry) => entry.owned).length}/${expPurchases.length} active`);
+    renderTable("exp-purchases-body", expPurchases, (entry) => ({ className: entry.owned ? "is-complete" : "is-locked", values: [entry.name, typeof entry.value === "number" ? shortNumber(entry.value) : entry.value, entry.owned ? "Bought / active" : "Not bought"] }), "No permanent EXP purchase telemetry is available.");
+
+    const apPurchases = Array.isArray(s.apPurchases) ? s.apPurchases : [];
+    setText("ap-purchases-summary", `${apPurchases.filter((entry) => entry.owned).length}/${apPurchases.length} bought`);
+    renderTable("ap-purchases-body", apPurchases, (entry) => ({ className: entry.owned ? "is-complete" : "is-locked", values: [entry.id, entry.name, entry.owned ? "Bought" : entry.unlocked ? "Available" : "Not yet unlocked"] }), "No AP purchase telemetry is available.");
+
+    const ngus = Array.isArray(s.nguProgress) ? s.nguProgress : [];
+    setText("ngu-summary", ngus.length ? `${ngus.filter((entry) => entry.unlocked).length}/${ngus.length} tracks available` : "not yet unlocked");
+    renderTable("ngu-body", ngus, (entry) => ({ className: entry.unlocked ? "" : "is-locked", values: [entry.resource, `${entry.name}${entry.unlocked ? "" : " · not yet unlocked"}`, shortNumber(entry.normalLevel), shortNumber(entry.evilLevel), shortNumber(entry.sadisticLevel), shortNumber(entry.allocated)] }), "NGUs are not yet unlocked.");
+
+    const hacks = Array.isArray(s.hackProgress) ? s.hackProgress : [];
+    setText("hacks-summary", hacks.length && hacks.some((entry) => entry.unlocked) ? `${hacks.length} tracks · ${hacks.filter((entry) => number(entry.allocated) > 0).length} active` : "not yet unlocked");
+    renderTable("hacks-body", hacks, (entry) => ({ className: entry.unlocked ? "" : "is-locked", values: [entry.name, shortNumber(entry.level), shortNumber(entry.target), `${(number(entry.progress) * 100).toFixed(1)}%`, shortNumber(entry.allocated), entry.unlocked ? (number(entry.allocated) > 0 ? "Active" : "Idle") : "Not yet unlocked"] }), "Hacks are not yet unlocked.");
+
+    const wishes = Array.isArray(s.wishProgress) ? s.wishProgress : [];
+    setText("wishes-summary", wishes.length && wishes.some((entry) => entry.unlocked) ? `${wishes.filter((entry) => entry.unlocked).length}/${wishes.length} available` : "not yet unlocked");
+    renderTable("wishes-body", wishes, (entry) => ({ className: !entry.unlocked ? "is-locked" : number(entry.level) >= number(entry.maxLevel) ? "is-complete" : "", values: [entry.id, entry.name, `${shortNumber(entry.level)} / ${shortNumber(entry.maxLevel)}`, `${(number(entry.progress) * 100).toFixed(1)}%`, `${shortNumber(entry.energy)} / ${shortNumber(entry.magic)} / ${shortNumber(entry.res3)}`, entry.unlocked ? (number(entry.level) >= number(entry.maxLevel) ? "MAXXED" : number(entry.energy) + number(entry.magic) + number(entry.res3) > 0 ? "Active" : "Available") : "Not yet unlocked"] }), "Wishes are not yet unlocked.");
+
+    const fruits = Array.isArray(s.fruitProgress) ? s.fruitProgress : [];
+    setText("fruit-summary", fruits.length && fruits.some((entry) => entry.unlocked) ? `${fruits.filter((entry) => entry.unlocked).length}/${fruits.length} unlocked` : "not yet unlocked");
+    renderTable("fruit-body", fruits, (entry) => ({ className: entry.unlocked ? "" : "is-locked", values: [entry.name, entry.unlocked ? shortNumber(entry.maxTier) : "—", entry.unlocked ? shortNumber(entry.totalLevels) : "—", !entry.unlocked ? "Not yet unlocked" : entry.activated ? "Growing" : entry.permanentActivation ? "Permanent activation bought" : "Idle"] }), "Yggdrasil is not yet unlocked.");
+
+    const diggers = Array.isArray(s.diggerProgress) ? s.diggerProgress : [];
+    const beards = Array.isArray(s.beardProgress) ? s.beardProgress : [];
+    setText("digger-beard-summary", `${diggers.filter((entry) => entry.unlocked).length} diggers · ${beards.filter((entry) => entry.unlocked).length} beards unlocked`);
+    const combined = diggers.map((entry) => ({ system: "Digger", ...entry, permanent: entry.maxLevel }))
+      .concat(beards.map((entry) => ({ system: "Beard", ...entry, permanent: entry.permanentLevel })));
+    renderTable("digger-beard-body", combined, (entry) => ({ className: entry.unlocked ? "" : "is-locked", values: [entry.system, entry.name, entry.unlocked ? shortNumber(entry.level) : "—", entry.unlocked ? shortNumber(entry.permanent) : "—", !entry.unlocked ? "Not yet unlocked" : entry.active ? "Active" : "Idle"] }), "Diggers and Beards are not yet unlocked.");
+  }
+
+  function renderUnlocks(s) {
+    const unlocks = Array.isArray(s.mechanicUnlocks) ? s.mechanicUnlocks : [];
+    const list = byId("unlock-list");
+    if (!unlocks.length) {
+      list.innerHTML = "<li>Mechanic unlock telemetry is not available from the installed build.</li>";
+      setText("unlocks-summary", "telemetry pending");
+      return;
+    }
+    const unlocked = unlocks.filter((entry) => entry.unlocked).length;
+    setText("unlocks-summary", `${unlocked}/${unlocks.length} systems unlocked`);
+    list.replaceChildren(...unlocks.map((entry) => {
+      const item = document.createElement("li");
+      item.dataset.state = entry.unlocked ? "unlocked" : "locked";
+      const name = document.createElement("strong");
+      name.textContent = entry.name;
+      const status = document.createElement("span");
+      status.textContent = entry.unlocked ? "Unlocked" : "Not yet unlocked";
+      const hint = document.createElement("small");
+      hint.textContent = entry.unlocked ? "Available in this save" : entry.hint;
+      item.append(name, status, hint);
+      return item;
+    }));
+  }
+
+  function refreshTableFilters() {
+    document.querySelectorAll("[data-filter-target]").forEach((input) => {
+      const query = input.value.trim().toLowerCase();
+      const body = byId(input.dataset.filterTarget);
+      body?.querySelectorAll("tr").forEach((row) => { row.hidden = Boolean(query) && !(row.dataset.search || row.textContent.toLowerCase()).includes(query); });
+    });
+  }
+
   function renderEvents(events) {
     const list = byId("event-list");
     if (!Array.isArray(events) || !events.length) {
@@ -251,7 +569,7 @@ this client sends no commands, persists no game data, and exposes no mutation en
       timeNode.textContent = text(event.clock || event.time, "—");
       const kind = document.createElement("span");
       kind.className = "event-kind";
-      kind.textContent = text(event.category || event.kind, "event");
+      kind.textContent = `${text(event.category || event.kind, "event")}${event.importance ? ` · ${event.importance}` : ""}`;
       const message = document.createElement("span");
       message.className = "event-message";
       message.textContent = text(event.message, "—");
@@ -260,9 +578,52 @@ this client sends no commands, persists no game data, and exposes no mutation en
     }));
   }
 
+  function renderActionErrors(errors, observability) {
+    const list = byId("action-error-list");
+    const records = Array.isArray(errors) ? errors : [];
+    const transactionError = observability.transaction.error;
+    const displayed = transactionError ? [{
+      clock: "now",
+      category: "TRANSACTION",
+      severity: "critical",
+      message: transactionError,
+      count: 1,
+    }, ...records.filter((entry) => entry.message !== transactionError)] : records;
+    setText("alerts-summary", displayed.length
+      ? `${displayed.length} distinct recent signal${displayed.length === 1 ? "" : "s"}`
+      : "no current action errors");
+    if (!displayed.length) {
+      list.innerHTML = "<li>No action failures or safety rejections are present in the current feed.</li>";
+      return;
+    }
+    list.replaceChildren(...displayed.map((entry) => {
+      const item = document.createElement("li");
+      item.dataset.severity = text(entry.severity, "warning");
+      const timeNode = document.createElement("span");
+      timeNode.className = "event-time";
+      timeNode.textContent = text(entry.clock, "—");
+      const kind = document.createElement("span");
+      kind.className = "event-kind";
+      kind.textContent = `${text(entry.category, "error")}${number(entry.count, 1) > 1 ? ` ×${number(entry.count, 1)}` : ""}`;
+      const message = document.createElement("span");
+      message.className = "event-message";
+      message.textContent = text(entry.message, "—");
+      item.append(timeNode, kind, message);
+      return item;
+    }));
+  }
+
   function renderEnvelope(envelope) {
     if (!envelope || typeof envelope !== "object" || !envelope.state) throw new Error("invalid telemetry envelope");
     const s = envelope.state;
+    const fallback = fallbackObservability(s);
+    const incoming = envelope.observability && typeof envelope.observability === "object" ? envelope.observability : {};
+    const observability = {
+      rebirth: { ...fallback.rebirth, ...(incoming.rebirth || {}) },
+      challenge: { ...fallback.challenge, ...(incoming.challenge || {}) },
+      identity: { ...fallback.identity, ...(incoming.identity || {}) },
+      transaction: { ...fallback.transaction, ...(incoming.transaction || {}) },
+    };
     const age = Math.max(0, number(envelope.stateAgeSeconds, 9999));
     const live = s.synced && s.automationTransactionComplete && age <= 5;
     setConnection(live ? "live" : "stale", live
@@ -270,13 +631,24 @@ this client sends no commands, persists no game data, and exposes no mutation en
       : `Latest snapshot is ${duration(age)} old or has not completed a synchronized transaction.`);
     byId("stale-banner").hidden = live;
     byId("stale-banner").textContent = live ? "" : `The latest ${publicFeed ? "laptop" : "local"} snapshot is stale or partial. Values below are retained for diagnosis and are not proof of current actions.`;
-    renderHeadline(s);
-    renderRoute(s);
+    const errorBanner = byId("action-error-banner");
+    errorBanner.hidden = observability.transaction.status !== "error";
+    errorBanner.textContent = observability.transaction.status === "error"
+      ? `Latest automation transaction error: ${text(observability.transaction.error, "unspecified failure")}` : "";
+    renderHeadline(s, observability);
+    renderRoute(s, observability);
     renderResources(s);
     renderCombatInventory(s);
-    renderRebirth(s);
+    renderRebirth(s, observability);
+    renderChallenge(observability);
     renderTraining(s);
+    renderCharacter(s);
+    renderInventory(s);
+    renderPermanent(s);
+    renderUnlocks(s);
+    renderActionErrors(envelope.actionErrors, observability);
     renderEvents(envelope.events);
+    refreshTableFilters();
     lastSequence = number(s.decisionSequence, lastSequence);
   }
 
@@ -302,6 +674,7 @@ this client sends no commands, persists no game data, and exposes no mutation en
   if (!document.documentElement.dataset.theme) {
     document.documentElement.dataset.theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
+  document.querySelectorAll("[data-filter-target]").forEach((input) => input.addEventListener("input", refreshTableFilters));
   poll();
   window.setInterval(poll, pollMs);
 })();

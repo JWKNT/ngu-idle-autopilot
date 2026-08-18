@@ -28,17 +28,19 @@ Use `stop.command` to unload. Restarting the game also unloads injected code.
 ## Safety gates
 
 - `dry-run`: observe and calculate only.
-- `assist`: perform routine automation—allocations, combat/zone selection, inventory handling, quests, fruits, wishes, diggers, card tags/mayo generation, and recipe optimization.
-- `full`: allows consumption actions such as playing suitable cards and eating an optimized dish. High-impact actions still have separate switches.
+- `assist`: perform only reversible routing/policy actions such as combat/zone selection, Beards, Wish targeting, card-generator targeting, and recipe planning. It cannot allocate finite resources, change loadouts/diggers, harvest, quest, merge/trash, consume, or purchase.
+- `full`: allows the enabled finite-resource managers to execute. Permanent spending, resets, challenge entry, card yeeting, and the final END trigger still have separate switches.
 
 These remain disabled until individually enabled in full mode:
 
 - `AllowExpSpending`
+- `AllowApSpending`
 - `AllowRebirths`
 - `AllowChallenges` (also requires rebirths)
 - `AllowCardYeeting`
 - `AllowPerkSpending`
 - `AllowQuirkSpending`
+- `AllowEndSequence` (requires all sixteen END pieces in their canonical slots; placement is transactional and defaults off)
 
 Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam Cloud/save backups enabled, and test assist mode on a copied save before enabling rebirths or challenges.
 
@@ -52,7 +54,7 @@ Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam C
 - Normal post-NGU: longer runs emphasizing Adventure/Drop NGUs, Yggdrasil, beards, PP and Titan gear.
 - Early Evil: boss climb via TM then augments; later switch to Normal NGUs/Advanced Training and finish with Evil NGUs.
 - Mature Evil: 24-hour beard cycles with Adventure NGUs, hacks, wishes and quests.
-- Sadistic: roughly 23-hour MacGuffin cycles, Sadistic NGUs, milestone-efficient hacks/wishes, and Adventure/PP/QP cards.
+- Sadistic: event-scored MacGuffin cycles, Sadistic NGUs, milestone-efficient hacks/wishes, and Adventure/PP/QP cards. The terminal dependency graph separately schedules T12 versions, Wish 203, END Hack/Card/Blood, floor-1450 ITOPOD, T13/T14, exact item placement, and the opt-in final trigger.
 
 The current decision and objective are always written to `runtime/decision.json`. The generated allocation profile is `runtime/profiles/autopilot.generated.json`. Do not edit the generated profile; edit `runtime/autopilot.json`.
 

@@ -7,9 +7,11 @@ using NGUInjector.Managers;
 FILE PURPOSE
 
 RebirthOptimizer searches one-second run ages and named mechanic events, scoring compounded
-persistent growth, bosses, AP, and cap compression. It returns winner/runner-up evidence while
-TimeRebirth mutates the game. Reset-local unfinished work and reachable boss chains must be
-modeled here rather than hidden behind fixed 30/60-minute timers.
+persistent growth, repeatable catch-up Boss EXP, AP, and cap compression. Ordinary candidates may
+project an Attack or Defense Number below the currently banked multiplier because the native game
+permits that reset and persistent rewards can repay it. The projected/current ratio is therefore a
+cost in the counterfactual score, not an eligibility gate. Reset-local unfinished work, replay time,
+and reachable boss chains must be modeled here rather than hidden behind fixed timers.
 */
 namespace NGUInjector.Autopilot
 {
@@ -30,7 +32,20 @@ namespace NGUInjector.Autopilot
         internal int RecoveryEtaSeconds = -1;
         internal int RecoveryRemainingBosses;
         internal string RecoveryReason = string.Empty;
+        internal double ExpectedCatchupExp;
+        internal double ExpectedCatchupExpPerHour;
+        internal double MinimumNumberRatio;
         internal bool ExecutionHold;
+        internal int NextPositiveEtaSeconds = -1;
+        internal int NextEvaluationEtaSeconds = 1;
+        internal string EtaReason = string.Empty;
+    }
+
+    internal sealed class RebirthMutationDecision
+    {
+        internal bool Authorized;
+        internal int PreferredRouteEtaSeconds = -1;
+        internal string Reason = string.Empty;
     }
 
     internal static class RebirthOptimizer
@@ -47,6 +62,8 @@ namespace NGUInjector.Autopilot
             internal int ProjectedAP;
             internal double RecoveryEta;
             internal int RemainingCatchupBosses;
+            internal double ExpectedCatchupExp;
+            internal double ExpectedCatchupExpPerHour;
         }
 
         private static readonly int[] TimeGates =
@@ -68,9 +85,13 @@ namespace NGUInjector.Autopilot
             }
             _lastElapsed = elapsed;
 
-            var minimum = Math.Max((int)Math.Ceiling((double)c.rebirth.minRebirthTime()), elapsed + 1);
+            // Keep candidates on the absolute run clock.  Advancing the lower bound
+            // to elapsed+1 on every planner pass turns a selected checkpoint into a
+            // moving target that can never be reached.
+            var minimum = Math.Max(1, Math.Max((int)Math.Ceiling((double)c.rebirth.minRebirthTime()), elapsed));
             var grbWindowRequired = c.highestBoss >= 58 && !c.inventory.itemList.GRBComplete;
             if (grbWindowRequired) minimum = Math.Max(minimum, 3600);
+            var horizon = Math.Max(7200, elapsed + 3600);
 
             var candidates = new List<Candidate>();
             AddCandidate(candidates, minimum, "reset-now",
@@ -84,10 +105,12 @@ namespace NGUInjector.Autopilot
                         : "take the exact " + gate.ToString("N0") + "-second Number multiplier discontinuity");
             }
 
-            // Time-based AP starts at 4,100 seconds, then repeats every 500 seconds.
-            for (var apTime = 4100; apTime <= 7200; apTime += 500)
+            // Time-based AP starts at 4,100 seconds, then repeats every 500 seconds. Long-running
+            // saves must still see the next tick; the old fixed 7,200-second ceiling left them with
+            // only an ever-moving reset candidate and could hold forever.
+            var firstAp = minimum <= 4100 ? 4100 : 4100 + (int)Math.Ceiling((minimum - 4100) / 500.0) * 500;
+            for (var apTime = firstAp; apTime <= horizon; apTime += 500)
             {
-                if (apTime < minimum) continue;
                 AddCandidate(candidates, apTime, "ap-tick-" + apTime,
                     "bank the time-based AP tick at " + apTime.ToString("N0") + " seconds");
             }
@@ -96,18 +119,18 @@ namespace NGUInjector.Autopilot
             if (trainingEvent >= 0)
             {
                 var eventAt = Math.Max(minimum, elapsed + trainingEvent + 1);
-                if (eventAt <= 7200)
+                if (eventAt <= horizon)
                     AddCandidate(candidates, eventAt, "training-event",
                         "finish the next persistent Basic Training cap reduction or 10,000-level Number step");
             }
 
             // This projection includes discrete BT growth, pending Augment/Upgrade
             // completions, exact boss tick order, regeneration, and current gear.
-            var bossEta = AutopilotManager.SelectedBossDefeatEta(c, Math.Max(0, 7200 - elapsed));
+            var bossEta = AutopilotManager.SelectedBossDefeatEta(c, Math.Max(0, horizon - elapsed));
             if (bossEta >= 0)
             {
                 var bossAt = Math.Max(minimum, elapsed + bossEta + 2);
-                if (bossAt <= 7200)
+                if (bossAt <= horizon)
                     AddCandidate(candidates, bossAt, "boss-event",
                         "finish the projected Fight Boss kill and bank its EXP, unlocks, and boss multiplier");
             }
@@ -139,35 +162,97 @@ namespace NGUInjector.Autopilot
             foreach (var candidate in candidates)
                 Score(c, candidate, elapsed, bossEta);
 
-            var viable = candidates.Where(x => x.ProjectedGainRatio > 1.000001
-                                                && !double.IsNaN(x.Score)
-                                                && !double.IsInfinity(x.Score)).ToList();
+            var viable = candidates.Where(x => !double.IsNaN(x.Score)
+                                                && !double.IsInfinity(x.Score)
+                                                && x.ProjectedMultiplier > 0
+                                                && x.ProjectedGainRatio > 0
+                                                && !double.IsNaN(x.ProjectedGainRatio)
+                                                && !double.IsInfinity(x.ProjectedGainRatio)).ToList();
             if (viable.Count == 0)
             {
-                var holdUntil = Math.Max(7200, elapsed + 60);
+                var holdUntil = minimum;
                 _stickyTarget = -1;
                 _stickyKind = string.Empty;
                 return new RebirthRecommendation
                 {
                     TargetSeconds = holdUntil,
-                    Reason = "hold: no modeled checkpoint preserves or increases the current Number multiplier",
+                    Reason = "fail-closed hold: every counterfactual candidate has an invalid native projection",
                     RunnerUpSeconds = holdUntil,
-                    RunnerUpReason = "wait for native Number preview, boss catch-up, or permanent growth to improve",
+                    RunnerUpReason = "wait one planner pass for native state to become numerically valid",
                     SelectedScorePerHour = 0,
                     RunnerUpScorePerHour = 0,
                     ProjectedMultiplier = c.nextAttackMulti,
                     ProjectedAP = holdUntil < 4100 ? 0 : 1 + (holdUntil - 4100) / 500,
-                    CandidateSummary = "all modeled candidates rejected by monotonic Number constraint",
+                    CandidateSummary = "every modeled candidate had an invalid or non-positive native preview",
                     CandidateCount = candidates.Count,
-                    ExecutionHold = true
+                    MinimumNumberRatio = Math.Min(
+                        c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
+                        c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0),
+                    ExecutionHold = true,
+                    NextEvaluationEtaSeconds = 1,
+                    EtaReason = "native preview invalid; reevaluate from a fresh snapshot in 1s"
                 };
             }
 
             var ordered = viable.OrderByDescending(x => x.Score)
                 .ThenByDescending(x => x.CapScore).ThenBy(x => x.Time).ToList();
+
+            /*
+            NO-RESET COUNTERFACTUAL
+
+            Continuing the current run is a real branch with zero incremental reset utility.  It
+            must participate in selection explicitly: choosing the least-bad negative reset still
+            destroys Number and reset-local work.  When no modeled reset beats zero, publish a hold
+            together with the first future positive-value probe (or an honest unknown) and replan on
+            the next live snapshot.  TimeRebirth repeats this admission test at the mutation boundary.
+            */
+            if (!ResetBeatsHold(ordered[0].Score))
+            {
+                var bestRejected = ordered[0];
+                var positiveEta = FindNextPositiveResetEta(c, elapsed, bossEta);
+                _stickyTarget = -1;
+                _stickyKind = string.Empty;
+                return new RebirthRecommendation
+                {
+                    TargetSeconds = Math.Max(minimum, elapsed),
+                    Reason = "hold: continuing this run (0.000000/h) beats every modeled reset",
+                    RunnerUpSeconds = bestRejected.Time,
+                    RunnerUpDeltaSeconds = Math.Abs(bestRejected.Time - elapsed),
+                    RunnerUpReason = bestRejected.Reason,
+                    SelectedScorePerHour = 0.0,
+                    RunnerUpScorePerHour = bestRejected.Score,
+                    ProjectedMultiplier = bestRejected.ProjectedMultiplier,
+                    ProjectedAP = bestRejected.ProjectedAP,
+                    CandidateSummary = "HOLD baseline=0.000000/h | " + string.Join(" | ",
+                        ordered.Take(6).Select(x => x.Time + "s " + x.Kind + "="
+                            + x.Score.ToString("0.000000") + "/h").ToArray()),
+                    CandidateCount = candidates.Count + 1,
+                    RecoveryMode = c.bossID < c.highestBoss,
+                    RecoveryEtaSeconds = -1,
+                    RecoveryRemainingBosses = Math.Max(0, c.highestBoss - c.bossID),
+                    RecoveryReason = c.bossID < c.highestBoss
+                        ? "reset recovery is not admitted while its total counterfactual value is non-positive"
+                        : "continuation is the positive control branch",
+                    ExpectedCatchupExp = bestRejected.ExpectedCatchupExp,
+                    ExpectedCatchupExpPerHour = bestRejected.ExpectedCatchupExpPerHour,
+                    MinimumNumberRatio = bestRejected.ProjectedGainRatio,
+                    ExecutionHold = true,
+                    NextPositiveEtaSeconds = positiveEta,
+                    NextEvaluationEtaSeconds = 1,
+                    EtaReason = positiveEta >= 0
+                        ? "first conservative positive-value reset probe in " + positiveEta.ToString("N0") + "s"
+                        : "positive-value reset ETA unknown outside the 48-hour modeled horizon; reevaluate in 1s"
+                };
+            }
+
             var selected = ordered[0];
-            var sticky = viable.FirstOrDefault(x => x.Time == _stickyTarget && x.Kind == _stickyKind);
-            if (sticky != null && sticky.Time >= minimum && sticky.Score >= selected.Score * 0.9995)
+            var sticky = viable.FirstOrDefault(x => x.Time == _stickyTarget);
+            // Once an absolute checkpoint is due, execute the already-selected
+            // transaction instead of chasing a newly-scored future second. A newly
+            // discovered first-GRB requirement is the one safety invalidation.
+            if (sticky != null && sticky.Time >= minimum
+                && (elapsed >= sticky.Time && (!grbWindowRequired || sticky.Time >= 3600)
+                    || sticky.Score >= selected.Score * 0.9995))
                 selected = sticky;
             _stickyTarget = selected.Time;
             _stickyKind = selected.Kind;
@@ -201,8 +286,102 @@ namespace NGUInjector.Autopilot
                 RecoveryRemainingBosses = selected.RemainingCatchupBosses,
                 RecoveryReason = c.bossID < c.highestBoss
                     ? "minimizes the repeated-cycle ETA back to the persistent boss record"
-                    : "boss record is already caught up"
+                    : "boss record is already caught up",
+                ExpectedCatchupExp = selected.ExpectedCatchupExp,
+                ExpectedCatchupExpPerHour = selected.ExpectedCatchupExpPerHour,
+                MinimumNumberRatio = selected.ProjectedGainRatio,
+                NextPositiveEtaSeconds = Math.Max(0, selected.Time - elapsed),
+                NextEvaluationEtaSeconds = 1,
+                EtaReason = selected.Time <= elapsed
+                    ? "positive-value reset is eligible now, subject to final mutation preflight"
+                    : "selected positive-value checkpoint in "
+                      + Math.Max(0, selected.Time - elapsed).ToString("N0") + "s"
             };
+        }
+
+        internal static bool ResetBeatsHold(double selectedScorePerHour)
+        {
+            return !double.IsNaN(selectedScorePerHour)
+                   && !double.IsInfinity(selectedScorePerHour)
+                   && selectedScorePerHour > 1e-12;
+        }
+
+        /*
+        FINAL MUTATION ADMISSION
+
+        This pure policy kernel is shared by the optimizer tests and TimeRebirth's irreversible
+        boundary.  A positive aggregate reset value may legitimately include a lower Number when
+        persistent AP/EXP/cap gains repay it.  During boss-record recovery, however, an executable
+        finite reset ETA must beat the finite continue ETA; unknown is a hold, never permission.
+        Challenge entry deliberately does not call this ordinary-rebirth kernel.
+        */
+        internal static RebirthMutationDecision EvaluateMutationPolicy(double selectedScorePerHour,
+            bool previewValid, double minimumNumberRatio, bool recoveryMode, int resetRouteEtaSeconds,
+            int continueRouteEtaSeconds)
+        {
+            if (!previewValid || double.IsNaN(minimumNumberRatio)
+                || double.IsInfinity(minimumNumberRatio) || minimumNumberRatio <= 0.0)
+                return new RebirthMutationDecision
+                {
+                    Reason = "hold: final native Number preview is invalid or not yet Blood-adjusted"
+                };
+            if (!ResetBeatsHold(selectedScorePerHour))
+                return new RebirthMutationDecision
+                {
+                    Reason = "hold: no-reset baseline (0/h) dominates the selected reset"
+                };
+            if (!recoveryMode)
+                return new RebirthMutationDecision
+                {
+                    Authorized = true,
+                    PreferredRouteEtaSeconds = 0,
+                    Reason = minimumNumberRatio < 1.0
+                        ? "lower Number is repaid by positive modeled persistent value; boss-record recovery is not active"
+                        : "reset has positive persistent value; boss-record recovery is not active"
+                };
+            if (resetRouteEtaSeconds < 0)
+                return new RebirthMutationDecision
+                {
+                    Reason = "hold: reset-route recovery ETA is unknown"
+                };
+            if (continueRouteEtaSeconds >= 0 && continueRouteEtaSeconds < resetRouteEtaSeconds)
+                return new RebirthMutationDecision
+                {
+                    PreferredRouteEtaSeconds = continueRouteEtaSeconds,
+                    Reason = "hold: continuing reaches the boss record sooner than resetting"
+                };
+            return new RebirthMutationDecision
+            {
+                Authorized = true,
+                PreferredRouteEtaSeconds = resetRouteEtaSeconds,
+                Reason = continueRouteEtaSeconds < 0
+                    ? "reset has the only finite boss-record recovery ETA"
+                    : "reset has the shorter finite boss-record recovery ETA"
+            };
+        }
+
+        private static int FindNextPositiveResetEta(Character c, int elapsed, int bossEta)
+        {
+            var horizon = elapsed > int.MaxValue - 172800 ? int.MaxValue : elapsed + 172800;
+            var previous = elapsed;
+            for (var target = elapsed + 60; target > elapsed && target <= horizon; target += 60)
+            {
+                var probe = new Candidate {Time = target, Kind = "positive-value-eta-probe"};
+                Score(c, probe, elapsed, bossEta);
+                if (!ResetBeatsHold(probe.Score))
+                {
+                    previous = target;
+                    continue;
+                }
+                for (var exact = Math.Max(elapsed, previous + 1); exact <= target; exact++)
+                {
+                    var exactProbe = new Candidate {Time = exact, Kind = "positive-value-eta-probe"};
+                    Score(c, exactProbe, elapsed, bossEta);
+                    if (ResetBeatsHold(exactProbe.Score)) return Math.Max(0, exact - elapsed);
+                }
+                return Math.Max(0, target - elapsed);
+            }
+            return -1;
         }
 
         private static void AddCandidate(ICollection<Candidate> candidates, int time, string kind, string reason)
@@ -228,14 +407,22 @@ namespace NGUInjector.Autopilot
                                / Math.Max(1e-300, currentBossMulti * currentNumberStep * currentTimeMulti);
             if (double.IsNaN(staticFactor) || double.IsInfinity(staticFactor) || staticFactor <= 0)
                 staticFactor = 1.0;
+            var staticDefenseFactor = (c.nextDefenseMulti - 1.0)
+                                      / Math.Max(1e-300, currentBossMulti * currentNumberStep * currentTimeMulti);
+            if (double.IsNaN(staticDefenseFactor) || double.IsInfinity(staticDefenseFactor)
+                || staticDefenseFactor <= 0)
+                staticDefenseFactor = 1.0;
 
             var includesBoss = bossEta >= 0 && remaining >= bossEta + 1;
             var projectedBossMulti = currentBossMulti * (includesBoss ? 2.0 : 1.0);
             var projected = 1.0 + staticFactor * projectedBossMulti * projectedNumberStep
                             * ExactTimeMultiplier(candidate.Time);
+            var projectedDefense = 1.0 + staticDefenseFactor * projectedBossMulti * projectedNumberStep
+                                   * ExactTimeMultiplier(candidate.Time);
             var currentMultiplier = Math.Max(1e-300, (double)c.attackMulti);
             candidate.ProjectedMultiplier = projected;
-            candidate.ProjectedGainRatio = projected / currentMultiplier;
+            candidate.ProjectedGainRatio = Math.Min(projected / currentMultiplier,
+                projectedDefense / Math.Max(1e-300, (double)c.defenseMulti));
             // While a damaged run is below its persistent record, the same
             // logarithmic-growth objective has a more useful interpretation: boss
             // requirements are multiplicative, so required log-stat distance divided
@@ -249,12 +436,79 @@ namespace NGUInjector.Autopilot
             candidate.RecoveryEta = candidate.ProjectedGainRatio <= 1.000001
                 ? double.PositiveInfinity
                 : remaining + duration * requiredBossLog / Math.Log(candidate.ProjectedGainRatio);
-            candidate.Score = candidate.ProjectedGainRatio <= 1.000001 ? double.NegativeInfinity
-                : recoveryMode
-                    ? 3600.0 / Math.Max(1.0, candidate.RecoveryEta)
-                    : 3600.0 * Math.Log(candidate.ProjectedGainRatio) / duration;
             candidate.ProjectedAP = candidate.Time < 4100 ? 0 : 1 + (candidate.Time - 4100) / 500;
-            candidate.CapScore = ProjectedCapCompression(c, remaining) / duration;
+            var capCompression = ProjectedCapCompression(c, remaining);
+            candidate.CapScore = capCompression / duration;
+            var replayableBoss = Math.Max(0, c.bossID - 1 + (includesBoss ? 1 : 0));
+            candidate.ExpectedCatchupExp = ExpectedRecurringBossExp(c, replayableBoss);
+            candidate.ExpectedCatchupExpPerHour = 3600.0 * candidate.ExpectedCatchupExp / duration;
+
+            /*
+            PERSISTENT-PROGRESSION OBJECTIVE
+
+            Absolute Number already owned by the save is not a reward from this candidate. Score only the
+            incremental projected/current multiplier ratio, plus AP and newly reached persistent cap progress;
+            otherwise the shortest candidate wins merely by amortizing the inherited baseline. During record
+            recovery, retain the exact repeated-cycle ETA when Number is improving.
+            */
+            // Catch-up Boss EXP is repeatable persistent income. Normalize it against
+            // lifetime EXP so a replay is valuable early without dominating mature
+            // multipliers. A Number loss remains visible through log(gain ratio): the
+            // optimizer can accept it, but must pay the modeled replay/stat cost.
+            var expScale = Math.Max(20.0, c.stats == null ? 20.0 : c.stats.totalExp);
+            var catchupUtility = Math.Log(1.0 + candidate.ExpectedCatchupExp / expScale);
+            var cycleUtility = Math.Log(Math.Max(1e-300, candidate.ProjectedGainRatio))
+                               + candidate.ProjectedAP * 0.05
+                               + capCompression * 8.0
+                               + catchupUtility;
+            var persistentRate = 3600.0 * cycleUtility / duration;
+            candidate.Score = recoveryMode && candidate.ProjectedGainRatio > 1.000001
+                ? persistentRate + 3600.0 / Math.Max(1.0, candidate.RecoveryEta)
+                : persistentRate;
+        }
+
+        /*
+        REPEATABLE BOSS EXP
+
+        BossController.rewardExp grants recurring EXP for Bosses 6-22 and the native scaled
+        reward from Boss 23 onward. The first-Boss and currentHighestBoss branches are one-time
+        discoveries and therefore are not counted as rebirth income. checkExpAdded is the game's
+        read-only multiplier path; sampling it at a stable integer amount incorporates the save's
+        current NGU/item/perk/digger/hack/wish/cooking EXP bonuses without mutating EXP.
+        */
+        internal static double ExpectedRecurringBossExp(Character c, int highestReplayableBoss)
+        {
+            if (c == null || highestReplayableBoss < 6) return 0.0;
+            var baseExp = 0.0;
+            for (var boss = 6; boss <= highestReplayableBoss; boss++)
+            {
+                if (boss < 23)
+                {
+                    baseExp += 1.0;
+                    continue;
+                }
+                var completions = c.allChallenges == null || c.allChallenges.hour24Challenge == null
+                    ? 0 : c.allChallenges.hour24Challenge.completions();
+                var firstCompletionBonus = completions >= 1 ? 1.0 : 0.0;
+                var reward = Math.Max(1.0, (boss - 13.0) / 10.0) + firstCompletionBonus;
+                reward *= 1.0 + completions * 0.02;
+                if (c.adventureController != null && c.adventureController.itopod != null)
+                    reward *= c.adventureController.itopod.totalBossExp();
+                baseExp += Math.Max(0.0, reward);
+            }
+
+            try
+            {
+                const long sample = 100000L;
+                var multiplied = c.checkExpAdded(sample);
+                if (multiplied > 0)
+                    baseExp *= (double)multiplied / sample;
+            }
+            catch
+            {
+                // Base native Boss reward remains a conservative lower bound.
+            }
+            return baseExp;
         }
 
         // Compare the two routes at the actual mutation boundary. Route A resets
@@ -393,7 +647,7 @@ namespace NGUInjector.Autopilot
             return 1.0 + t / 172800.0;
         }
 
-        private static int SecondsToNextTrainingEvent(Character c)
+        internal static int SecondsToNextTrainingEvent(Character c)
         {
             var best = double.MaxValue;
             var totalRate = 0.0;
@@ -434,20 +688,13 @@ namespace NGUInjector.Autopilot
 
         internal static long MaxCapReductionLevel(long cap, int tier)
         {
-            if (cap <= 1) return 0;
-            var maxReduction = cap / 10L + 1L;
-            var requiredPow = Math.Max(0.0, (maxReduction - 1.0) * 500.0 * 1000.0 / cap);
-            var estimate = 500L * tier + (long)Math.Ceiling(Math.Pow(requiredPow, 1.0 / 1.2));
-            while (estimate > 0 && CapReduction(estimate - 1, cap, tier) >= maxReduction) estimate--;
-            while (CapReduction(estimate, cap, tier) < maxReduction) estimate++;
-            return estimate;
+            return cap <= 1 ? 0
+                : MechanicsProgression.BasicTrainingLevelForMaximumReduction(cap, tier);
         }
 
         internal static long CapReduction(long level, long cap, int tier)
         {
-            var shifted = Math.Max(0.0, level - 500.0 * tier);
-            var raw = (long)(1.0 + Math.Pow(shifted, 1.2) / 500.0 * cap / 1000.0);
-            return Math.Max(1L, Math.Min(cap / 10L + 1L, raw));
+            return MechanicsProgression.BasicTrainingCap(level, cap, tier).Reduction;
         }
     }
 }

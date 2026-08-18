@@ -2,10 +2,12 @@
 FILE PURPOSE
 
 ActionMonitor is a separate read-only macOS AppKit process. It tails confirmed actions and
-schema-validated decision.json, rejects stale/build/PID/out-of-order telemetry, and renders status,
-ETAs, collection debt, inventory pressure, holds, and a sparse Key Events history. It has no game
-handle or mutation path; display features should follow explicit truthful producer fields. The
-Live Actions presentation is the visual baseline and should not be restyled by goal/event changes.
+schema-validated decision.json, rejects stale/build/PID/session/out-of-order telemetry, and renders
+current/next rebirth policy, finite and unavailable ETAs, challenge admission evidence, deployment
+identity, transaction errors, collection debt, and a sparse Key Events history. It has no game
+handle or mutation path; display features must follow explicit truthful producer fields and never
+turn a missing estimate into a zero-second countdown. The Live Actions presentation is the visual
+baseline and should not be restyled by goal/event changes.
 */
 import AppKit
 
@@ -16,6 +18,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var offset: UInt64 = 0
     private var producerPid: Int?
     private var buildId: String?
+    private var producerSessionId: String?
     private var lastDecisionSequence = 0
     private var lastRenderedSequence = -1
     private var lastAcceptedModification = Date.distantPast
@@ -179,11 +182,13 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let schema = number(object, "schemaVersion")
             let incomingPid = number(object, "producerPid")
             let incomingBuild = object["buildId"] as? String ?? ""
+            let incomingSession = object["producerSessionId"] as? String ?? ""
             let sequence = number(object, "decisionSequence")
             let attributes = try? FileManager.default.attributesOfItem(atPath: decisionPath)
             let modified = attributes?[.modificationDate] as? Date ?? .distantPast
             let age = max(0, Date().timeIntervalSince(modified))
-            if schema != 2 || incomingPid <= 0 || incomingBuild.isEmpty || sequence <= 0 {
+            if schema != 2 || incomingPid <= 0 || incomingBuild.isEmpty
+                || incomingSession.isEmpty || sequence <= 0 {
                 statusLabel.stringValue = "AUTOMATION • REJECTED UNVERIFIED OR OUT-OF-SEQUENCE TELEMETRY"
                 statusLabel.textColor = .systemRed
                 return
@@ -208,7 +213,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return
             }
             let identityChanged = producerPid != nil
-                && (producerPid != incomingPid || buildId != incomingBuild)
+                && (producerPid != incomingPid || buildId != incomingBuild
+                    || producerSessionId != incomingSession)
             let sequenceReset = producerPid != nil && sequence < lastDecisionSequence
             if identityChanged || sequenceReset {
                 let validNewEpoch = age <= 5 && modified > lastAcceptedModification
@@ -224,6 +230,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             producerPid = incomingPid
             buildId = incomingBuild
+            producerSessionId = incomingSession
             lastDecisionSequence = sequence
             if modified > lastAcceptedModification { lastAcceptedModification = modified }
             let elapsed = number(object, "rebirthElapsed")
@@ -261,10 +268,12 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let target = number(object, "rebirthSeconds")
                 let remaining = max(0, target - elapsed)
                 let executionHold = object["rebirthExecutionHold"] as? Bool ?? false
-                statusLabel.stringValue = executionHold
+                statusLabel.stringValue = target < 0
+                    ? "NO RESET • ACTIVE CHALLENGE POLICY"
+                    : executionHold
                     ? "REBIRTH HOLD • NO EXECUTABLE RESET SCHEDULED"
                     : "REBIRTH \(formatExactDuration(remaining))"
-                statusLabel.textColor = executionHold ? .systemOrange : .systemGreen
+                statusLabel.textColor = target < 0 || executionHold ? .systemOrange : .systemGreen
                 updateSummary(object)
             }
             if sequence != lastRenderedSequence {
@@ -291,17 +300,20 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
         let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
+        let noResetPolicy = rebirthTarget < 0
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
+        // Number loss and a slower reset/replay route are optimizer costs, not native
+        // mutation prohibitions. Only explicit execution authority or a planner hold
+        // may turn the status line into a route hold.
         let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
-            || !(state["rebirthPreviewMonotonic"] as? Bool ?? true)
-            || !(state["rebirthRecoveryResetEfficient"] as? Bool ?? true)
-        let rebirthText = rebirthExecutionHold ? "hold — recalculating"
+        let rebirthText = noResetPolicy ? "no reset — active challenge"
+            : rebirthExecutionHold ? "hold — recalculating"
             : rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
             : rebirthBlocked ? "route hold" : "now"
         let bossText = bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
             : "in " + formatEstimate(bossEta)
         statusLabel.stringValue = "REBIRTH \(rebirthText)   •   BOSS \(selectedBoss) \(bossText)"
-        statusLabel.textColor = rebirthExecutionHold
+        statusLabel.textColor = rebirthTarget < 0 || rebirthExecutionHold
             || rebirthBlocked && rebirthRemaining <= 0 ? .systemOrange : .systemGreen
 
         let exp = numberDouble(state, "exp")
@@ -361,8 +373,12 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
         let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
+        let noResetPolicy = rebirthTarget < 0
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
         let rebirthReason = state["rebirthReason"] as? String ?? "current highest-value checkpoint"
+        let rebirthNextPositiveETA = number(state, "rebirthNextPositiveEtaSeconds")
+        let rebirthNextEvaluationETA = number(state, "rebirthNextEvaluationEtaSeconds")
+        let rebirthETAReason = state["rebirthEtaReason"] as? String ?? ""
         let rebirthRunnerUp = number(state, "rebirthRunnerUpSeconds")
         let rebirthRunnerUpReason = state["rebirthRunnerUpReason"] as? String ?? "alternative checkpoint"
         let rebirthScore = numberDouble(state, "rebirthSelectedScorePerHour")
@@ -375,13 +391,22 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthPreviewMonotonic = state["rebirthPreviewMonotonic"] as? Bool ?? true
         let rebirthBossCatchupComplete = state["rebirthBossCatchupComplete"] as? Bool ?? true
         let rebirthRecoveryMode = state["rebirthRecoveryMode"] as? Bool ?? !rebirthBossCatchupComplete
-        let rebirthRecoveryResetEfficient = state["rebirthRecoveryResetEfficient"] as? Bool ?? rebirthBossCatchupComplete
         let rebirthRecoveryResetETA = number(state, "rebirthRecoveryResetRouteEtaSeconds")
         let rebirthRecoveryContinueETA = number(state, "rebirthRecoveryContinueRouteEtaSeconds")
         let rebirthOptimizerRecoveryETA = number(state, "rebirthOptimizerRecordRecoveryEtaSeconds")
         let rebirthRecoveryRemainingBosses = number(state, "rebirthRecoveryRemainingBosses")
         let rebirthRecoveryReason = state["rebirthRecoveryReason"] as? String ?? "recovery route calculation pending"
         let rebirthSafetyBlockReason = state["rebirthSafetyBlockReason"] as? String ?? ""
+        let challengeEvidence = state["challengeEvidenceSummary"] as? String
+            ?? "No challenge-admission evidence was emitted."
+        let transactionComplete = state["automationTransactionComplete"] as? Bool ?? false
+        let transactionError = state["automationTransactionError"] as? String ?? ""
+        let producerPid = number(state, "producerPid")
+        let producerSession = state["producerSessionId"] as? String ?? "unavailable"
+        let activeBuild = state["buildId"] as? String ?? "unavailable"
+        let diskHash = state["diskArtifactSha256"] as? String ?? "unavailable"
+        let gameHash = state["gameAssemblySha256"] as? String ?? "unavailable"
+        let activeMatchesDisk = state["activeMatchesDisk"] as? String ?? "unknown"
         let adventureUnlocked = (state["adventureUnlocked"] as? Bool) ?? (highestBoss >= 4)
         let zone = state["adventureTargetName"] as? String ?? "best reachable zone"
         let fightType = number(state, "adventureFightType")
@@ -516,11 +541,13 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if inventoryPressure == "HIGH" || inventoryPressure == "CRITICAL" {
             shortTerm.append("Protect loot capacity: only \(inventoryFree)/\(inventoryTotal) slots are free versus a \(collectionReserve)-slot live reserve; AP space is promoted ahead of larger permanent purchases.")
         }
-        if rebirthExecutionHold {
-            shortTerm.append("Rebirth is unscheduled: continuously re-evaluate until a modeled checkpoint gives a strict Number improvement.")
-        } else if !rebirthExecutionEnabled || !rebirthPreviewMonotonic || !rebirthRecoveryResetEfficient {
+        if noResetPolicy {
+            shortTerm.append("Continue the active no-reset challenge policy; no ordinary rebirth is scheduled.")
+        } else if rebirthExecutionHold {
+            shortTerm.append("Rebirth is unscheduled: continuously re-evaluate until the event model admits a valid mutation boundary.")
+        } else if !rebirthExecutionEnabled {
             let reason = rebirthSafetyBlockReason.isEmpty
-                ? "waiting for a strict Number improvement or a faster modeled recovery route" : rebirthSafetyBlockReason
+                ? "rebirth execution is disabled" : rebirthSafetyBlockReason
             shortTerm.append("Rebirth route hold: \(reason).")
         } else if rebirthRemaining <= 300 {
             shortTerm.append("Execute the selected rebirth checkpoint — ETA \(formatEstimate(rebirthRemaining)).")
@@ -579,8 +606,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if state["rebirthProjectedAttackMultiplier"] != nil {
             let attackGain = numberDouble(state, "rebirthProjectedAttackMultiplier")
             let defenseGain = numberDouble(state, "rebirthProjectedDefenseMultiplier")
-            let safety = rebirthPreviewMonotonic ? "MONOTONIC" : "BLOCKED: WOULD DECREASE NUMBER"
-            rewardForecast = "Native rebirth preview: Attack ×\(String(format: "%.4g", attackGain)), Defense ×\(String(format: "%.4g", defenseGain)) [\(safety)]; selected checkpoint yields \(number(state, "rebirthProjectedAp")) time-based AP before Titan bonuses."
+            let economics = rebirthPreviewMonotonic ? "NON-DECREASING NUMBER"
+                : "PRICED NUMBER LOSS — NOT AN EXECUTION PROHIBITION"
+            rewardForecast = "Current native preview ratios: Attack ×\(String(format: "%.4g", attackGain)), Defense ×\(String(format: "%.4g", defenseGain)) [\(economics)]; selected-checkpoint worst ratio ×\(String(format: "%.4g", numberDouble(state, "rebirthMinimumNumberRatio"))); selected checkpoint yields \(number(state, "rebirthProjectedAp")) time-based AP before Titan bonuses."
         } else {
             rewardForecast = "Forecast reward: live multiplier/AP projection will appear after the next safe controller reload."
         }
@@ -618,6 +646,30 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             recoveryForecast = "RECORD RECOVERY MODE: complete; ordinary long-run growth objective applies."
         }
 
+        let nextPositiveText = state["rebirthNextPositiveEtaSeconds"] != nil
+            && rebirthNextPositiveETA >= 0 ? formatEstimate(rebirthNextPositiveETA) : "no finite candidate emitted"
+        let nextEvaluationText = state["rebirthNextEvaluationEtaSeconds"] != nil
+            && rebirthNextEvaluationETA >= 0 ? formatEstimate(rebirthNextEvaluationETA) : "next live control tick"
+        let rebirthPolicy = noResetPolicy ? "NO RESET — active challenge forbids rebirth"
+            : rebirthExecutionHold ? "HOLD — no executable reset is scheduled"
+            : !rebirthExecutionEnabled ? "DISABLED — rebirth execution is off"
+            : rebirthRemaining <= 0 ? "RESET DUE — verify the native boundary"
+            : "RESET at the selected checkpoint"
+        let challengeAdmitted = challengeEvidence.range(
+            of: #"^[A-Z0-9]+-\d+(?:\s+\[|:\s+target Boss)"#,
+            options: .regularExpression
+        ) != nil
+        let challengeGlance = challengeAdmitted
+            ? challengeEvidence.components(separatedBy: " | ").first ?? challengeEvidence
+            : "NONE ADMITTED — \(challengeEvidence)"
+        let transactionGlance = transactionError.isEmpty
+            ? transactionComplete ? "complete" : "PARTIAL — no error detail emitted"
+            : "ERROR — \(transactionError)"
+        let shortBuild = String(activeBuild.prefix(12))
+        let shortSession = String(producerSession.prefix(12))
+        let shortDisk = String(diskHash.prefix(12))
+        let shortGame = String(gameHash.prefix(12))
+
         let roundExplanation = rebirthReason.lowercased().contains("exact")
             ? "WHY THE ROUND NUMBER: this second is a discontinuity in NGU Idle's native Number time-multiplier formula; it was evaluated, not assumed."
             : "WHY THIS SECOND: it is the highest-scoring live event or integer-second candidate in the current finite-horizon model."
@@ -631,17 +683,32 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ◆ BOSS: selected \(selectedBoss) / next record \(nextBoss) — \(bossGlance)
         ◆ ADVENTURE: \(zone) — \(majorUnlockActive ? "MAJOR UNLOCK: " + majorUnlockName.uppercased() : collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
         ◆ INVENTORY: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure) PRESSURE
-        ◆ REBIRTH: \(rebirthExecutionHold ? "UNSCHEDULED HOLD — recalculated every second; diagnostic probe is not an ETA" : rebirthExecutionEnabled && rebirthPreviewMonotonic && rebirthRecoveryResetEfficient ? formatExactDuration(rebirthRemaining) + " remaining — exact target " + formatExactDuration(rebirthTarget) : "ROUTE HOLD — " + rebirthSafetyBlockReason)
+        ◆ REBIRTH: \(rebirthPolicy)\(noResetPolicy || rebirthExecutionHold ? "" : " — " + formatExactDuration(rebirthRemaining) + " remaining")
+        ◆ CHALLENGE: \(challengeGlance)
+        ◆ TRANSACTION: \(transactionGlance)
 
         REBIRTH DECISION — LIVE MODEL
-        TARGET RUN AGE: \(rebirthExecutionHold ? "not scheduled" : formatExactDuration(rebirthTarget))
+        CURRENT POLICY: \(rebirthPolicy)
+        TARGET RUN AGE: \(noResetPolicy || rebirthExecutionHold ? "not scheduled" : formatExactDuration(rebirthTarget))
         CURRENT RUN AGE: \(formatExactDuration(rebirthElapsed))
-        REMAINING: \(rebirthExecutionHold ? "no executable countdown" : formatExactDuration(rebirthRemaining))
-        EXPECTED EXECUTION: \(rebirthExecutionHold ? "none until the Number/progression model validates a reset" : wallClockEstimate(rebirthRemaining) + " local time")
+        REMAINING: \(noResetPolicy || rebirthExecutionHold ? "no executable countdown" : formatExactDuration(rebirthRemaining))
+        EXPECTED EXECUTION: \(noResetPolicy ? "none while the active challenge forbids rebirth" : rebirthExecutionHold ? "none until the event/progression model validates a reset" : wallClockEstimate(rebirthRemaining) + " local time")
+        NEXT FINITE RESET CANDIDATE: \(nextPositiveText)
+        NEXT MODEL EVALUATION: \(nextEvaluationText)
+        ETA EVIDENCE: \(rebirthETAReason.isEmpty ? "no dedicated ETA reason emitted" : rebirthETAReason)
         \(roundExplanation)
         SELECTION REASON: \(rebirthReason)
         \(optimizerForecast)
         \(recoveryForecast)
+
+        CHALLENGE ADMISSION — LIVE MODEL
+        \(challengeGlance)
+
+        PRODUCER / BUILD IDENTITY
+        PID \(producerPid) · SESSION \(shortSession) · ACTIVE MVID \(shortBuild)
+        DISK DLL \(shortDisk) · GAME DLL \(shortGame)
+        ACTIVE/DISK MATCH: \(activeMatchesDisk)
+        LATEST TRANSACTION: \(transactionGlance)
 
         CURRENT STRATEGY
         \(objective)

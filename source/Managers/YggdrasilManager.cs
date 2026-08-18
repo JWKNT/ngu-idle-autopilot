@@ -71,13 +71,15 @@ namespace NGUInjector.Managers
         internal void ManageYggHarvest()
         {
             //We need to harvest but we dont have a loadout to manage OR we're not managing loadout
-            if (!Settings.SwapYggdrasilLoadouts || Settings.YggdrasilLoadout.Length == 0)
+            var dynamicAutopilotLoadout = Main.AutopilotWants(x => x.ManageYggdrasil);
+            if (!dynamicAutopilotLoadout
+                && (!Settings.SwapYggdrasilLoadouts || Settings.YggdrasilLoadout.Length == 0))
             {
                 //Not sure why this would be true, but safety first
                 if (LoadoutManager.CurrentLock == LockType.Yggdrasil)
                 {
-                    LoadoutManager.RestoreGear();
-                    LoadoutManager.ReleaseLock();
+                    if (LoadoutManager.RestoreGear())
+                        LoadoutManager.ReleaseLock();
                 }
 
                 if (DiggerManager.CurrentLock == LockType.Yggdrasil)
@@ -92,8 +94,8 @@ namespace NGUInjector.Managers
             //We dont need to harvest anymore and we've already swapped, so swap back
             if (!NeedsHarvest() && LoadoutManager.CurrentLock == LockType.Yggdrasil)
             {
-                LoadoutManager.RestoreGear();
-                LoadoutManager.ReleaseLock();
+                if (LoadoutManager.RestoreGear())
+                    LoadoutManager.ReleaseLock();
             }
 
             if (!NeedsHarvest() && DiggerManager.CurrentLock == LockType.Yggdrasil)
@@ -111,8 +113,8 @@ namespace NGUInjector.Managers
                         return;
                     if (!DiggerManager.TryYggSwap())
                     {
-                        LoadoutManager.RestoreGear();
-                        LoadoutManager.ReleaseLock();
+                        if (LoadoutManager.RestoreGear())
+                            LoadoutManager.ReleaseLock();
                         Main.LogAction("REJECTED", "Yggdrasil digger lock was unavailable; restored the already-swapped gear");
                         return;
                     }

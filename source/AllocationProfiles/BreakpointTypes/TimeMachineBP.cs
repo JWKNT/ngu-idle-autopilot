@@ -60,6 +60,15 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             LastHorizonDecision = evaluation.Decision;
             if (!evaluation.TimeMachineUseful)
                 return false;
+            var marginalGps = Type == ResourceType.Energy
+                ? evaluation.NextSpeedLevelIncrement : evaluation.NextGoldLevelIncrement;
+            if (marginalGps <= 0)
+            {
+                LastHorizonDecision = "Blocked: the next Time Machine "
+                                      + (Type == ResourceType.Energy ? "speed" : "gold-multiplier")
+                                      + " level has zero native marginal GPS at the current discrete level";
+                return false;
+            }
 
             /*
             COMPLETION GATE
@@ -82,7 +91,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 return false;
             }
             LastHorizonDecision += "; next Time Machine level completes in "
-                                   + FormatDuration(completionSeconds);
+                                   + FormatDuration(completionSeconds) + " and adds "
+                                   + marginalGps.ToString("0.###") + " native GPS";
             return true;
         }
 

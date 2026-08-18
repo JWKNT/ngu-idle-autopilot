@@ -45,6 +45,8 @@ namespace NGUInjector.AllocationProfiles
 
         internal static string LastMagicAllocationDecision { get; private set; }
             = "Magic allocation has not completed a verified sweep yet";
+        internal static string LastR3AllocationDecision { get; private set; }
+            = "Resource 3 allocation has not completed a verified sweep yet";
 
         internal bool IsAllocationRunning;
 
@@ -354,47 +356,45 @@ namespace NGUInjector.AllocationProfiles
 
             if (_hasWandoosSwapped) return;
 
-            _hasWandoosSwapped = true;
-            if (bp.OS == 0 && _character.wandoos98.os == OSType.wandoos98) return;
-            if (bp.OS == 1 && _character.wandoos98.os == OSType.wandoosMEH) return;
-            if (bp.OS == 2 && _character.wandoos98.os == OSType.wandoosXL) return;
-
             var id = bp.OS;
-            if (id == 0)
+            var target = id == 2 ? OSType.wandoosXL : id == 1 ? OSType.wandoosMEH : OSType.wandoos98;
+            if (_character.wandoos98.os == target)
             {
-                var controller = Main.Character.wandoos98Controller;
-                var type = controller.GetType().GetField("nextOS",
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                type?.SetValue(controller, id);
-
-                typeof(Wandoos98Controller)
-                    .GetMethod("setOSType", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?.Invoke(controller, null);
+                _hasWandoosSwapped = true;
+                return;
+            }
+            if (id == 1 && !_character.inventory.itemList.jakeComplete
+                || id == 2 && _character.wandoos98.XLLevels <= 0)
+            {
+                Main.LogAction("REJECTED", "Wandoos OS switch target is not unlocked");
+                return;
             }
 
-            if (id == 1 && _character.inventory.itemList.jakeComplete)
+            var controller = Main.Character.wandoos98Controller;
+            var nextOS = controller.GetType().GetField("nextOS",
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            var setter = typeof(Wandoos98Controller).GetMethod("setOSType",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (nextOS == null || setter == null)
             {
-                var controller = Main.Character.wandoos98Controller;
-                var type = controller.GetType().GetField("nextOS",
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                type?.SetValue(controller, id);
-                typeof(Wandoos98Controller)
-                    .GetMethod("setOSType", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?.Invoke(controller, null);
+                Main.LogAction("REJECTED", "Wandoos OS switch native transition is unavailable");
+                return;
             }
 
-            if (id == 2 && _character.wandoos98.XLLevels > 0)
-            {
-                var controller = Main.Character.wandoos98Controller;
-                var type = controller.GetType().GetField("nextOS",
-                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                type?.SetValue(controller, id);
-                typeof(Wandoos98Controller)
-                    .GetMethod("setOSType", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?.Invoke(controller, null);
-            }
-
-            _character.wandoos98Controller.refreshMenu();
+            var energyBefore = _character.wandoos98.energyLevel;
+            var magicBefore = _character.wandoos98.magicLevel;
+            nextOS.SetValue(controller, id);
+            setter.Invoke(controller, null);
+            var confirmed = _character.wandoos98.os == target
+                            && _character.wandoos98.energyLevel == 0
+                            && _character.wandoos98.magicLevel == 0;
+            _hasWandoosSwapped = confirmed;
+            Main.LogAction(confirmed ? "WANDOOS" : "REJECTED",
+                confirmed
+                    ? "Changed Wandoos OS to " + target + " [confirmed; reset levels "
+                      + energyBefore + "/" + magicBefore + "]"
+                    : "Wandoos OS switch produced no verified OS/reset delta");
+            controller.refreshMenu();
         }
 
         public void DoRebirth()
@@ -829,6 +829,7 @@ namespace NGUInjector.AllocationProfiles
             if (bp == null)
             {
                 _character.removeAllRes3();
+                LastR3AllocationDecision = "No Resource 3 breakpoint is active";
                 return;
             }
 
@@ -841,6 +842,7 @@ namespace NGUInjector.AllocationProfiles
             if (temp.Count == 0)
             {
                 _character.removeAllRes3();
+                LastR3AllocationDecision = "No unlocked persistent Resource 3 target is currently valid";
                 return;
             }
             
@@ -869,6 +871,10 @@ namespace NGUInjector.AllocationProfiles
 
             _character.hacksController.refreshMenu();
             _character.wishesController.updateMenu();
+            LastR3AllocationDecision = "allocated "
+                + Math.Max(0L, _character.res3.curRes3 - _character.res3.idleRes3) + "/"
+                + _character.res3.curRes3 + " across " + temp.Count
+                + " persistent Hack/Wish priorities; idle=" + _character.res3.idleRes3;
             Main.LogAction("ALLOC", "Rebalanced Resource 3 across " + temp.Count + " active priorities");
         }
 
@@ -912,7 +918,7 @@ namespace NGUInjector.AllocationProfiles
             if (!DiggerManager.CanSwap()) return;
             _hasDiggerSwapped = true;
             _currentDiggerBreakpoint = bp;
-            DiggerManager.EquipDiggers(bp.Diggers);
+            DiggerManager.EquipOptimizedDiggers(bp.Diggers);
             _character.allDiggers.refreshMenu();
         }
 

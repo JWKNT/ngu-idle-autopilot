@@ -2,7 +2,7 @@
 # FILE PURPOSE
 #
 # This script cleanly ejects the exact assembly pointer recorded by run.command and stops only the
-# companion monitor and the exact loopback dashboard PID. It intentionally does not kill
+# companion monitor and the exact loopback dashboard listener. It intentionally does not kill
 # NGU Idle; a full game restart is a separate deployment step used when Mono may retain old
 # assemblies. Never guess an assembly pointer or target unrelated Wine/CrossOver/Python processes.
 set -euo pipefail
@@ -21,12 +21,22 @@ rm -f "$bot_dir/runtime/action-monitor.pid"
 if [[ -f "$dashboard_pid_file" ]]; then
   dashboard_pid=$(<"$dashboard_pid_file")
   dashboard_command=$(ps -p "$dashboard_pid" -o command= 2>/dev/null || true)
-  if [[ "$dashboard_pid" == <-> && "$dashboard_command" == *"$dashboard_script"* ]]; then
+  if [[ "$dashboard_pid" == <-> && "$dashboard_command" == *"dashboard_server.py"* ]]; then
     kill "$dashboard_pid" 2>/dev/null || true
     print "Local dashboard stopped."
   fi
   rm -f "$dashboard_pid_file"
 fi
+# Older launchers recorded a stale daemonization parent and compared only the
+# absolute script path, allowing a relative-path bridge to survive. The listener
+# socket is authoritative: stop it only when its command is this dashboard script.
+for dashboard_listener_pid in $(lsof -tiTCP:47635 -sTCP:LISTEN 2>/dev/null || true); do
+  dashboard_listener_command=$(ps -p "$dashboard_listener_pid" -o command= 2>/dev/null || true)
+  if [[ "$dashboard_listener_command" == *"dashboard_server.py"* ]]; then
+    kill "$dashboard_listener_pid" 2>/dev/null || true
+    print "Recovered and stopped stale local dashboard listener $dashboard_listener_pid."
+  fi
+done
 
 if [[ ! -f "$pointer_file" ]]; then
   print -u2 "No assembly pointer was recorded. Restarting NGU Idle also unloads the bot."

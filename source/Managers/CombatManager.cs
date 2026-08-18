@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using NGUInjector.Autopilot;
 using static NGUInjector.Main;
 using static NGUInjector.Managers.CombatHelpers;
 
@@ -26,7 +28,24 @@ namespace NGUInjector.Managers
         private int _fightZone = -1;
         private bool _fightWasTitan;
         private float _expectedFightDamage;
+        private int _expectedFightDamageZone = -2;
         private float _recoveryTargetHP;
+        private string _fightSignature = string.Empty;
+        private string _nextPolicySignature = string.Empty;
+
+        private sealed class FightSample
+        {
+            internal float ExpectedDamage;
+            internal double ExpectedSeconds;
+            internal int Kills;
+            internal int Deaths;
+        }
+
+        // Recovery evidence is keyed by the facts which change incoming damage and tactical
+        // cadence. Zone-only aggregation mixed Beast/non-Beast and unrelated physical loadouts,
+        // causing a safe sample from one controller branch to authorize another.
+        private static readonly Dictionary<string, FightSample> FightSamples =
+            new Dictionary<string, FightSample>();
 
         internal string RecoveryReason { get; private set; } = string.Empty;
 
@@ -74,14 +93,35 @@ namespace NGUInjector.Managers
         private float RequiredHPForNextFight()
         {
             var maxHP = _character.totalAdvHP();
+            var signatureDamage = ExpectedDamageForNextPolicy();
+            var expectedDamage = signatureDamage > 0 ? signatureDamage : _expectedFightDamage;
             // A routine encounter does not require a full heal.  Use observed damage
             // from this exact zone/run, with enough margin for the game's 0.8-1.2
             // damage roll and one delayed player input.  Before the first sample,
             // 55% HP is a conservative early-game starting point.
-            if (_expectedFightDamage <= 0)
+            if (expectedDamage <= 0)
                 return maxHP * .55f;
             return Math.Min(maxHP, Math.Max(maxHP * .30f,
-                _expectedFightDamage * 1.30f + maxHP * .08f));
+                expectedDamage * 1.30f + maxHP * .08f));
+        }
+
+        private float ExpectedDamageForNextPolicy()
+        {
+            if (string.IsNullOrEmpty(_nextPolicySignature)) return 0f;
+            return FightSamples.Where(x => x.Key.StartsWith(_nextPolicySignature + "|",
+                    StringComparison.Ordinal))
+                .Select(x => x.Value.ExpectedDamage).DefaultIfEmpty(0f).Max();
+        }
+
+        internal static double ObservedKillSeconds(int zone, bool bossOnly)
+        {
+            var prefix = zone + "|" + (bossOnly ? "boss" : "all") + "|";
+            var samples = FightSamples.Where(x => x.Key.StartsWith(prefix,
+                    StringComparison.Ordinal) && x.Value.Kills > 0)
+                .Select(x => x.Value).ToList();
+            if (samples.Count == 0) return -1.0;
+            var weight = samples.Sum(x => x.Kills);
+            return weight <= 0 ? -1.0 : samples.Sum(x => x.ExpectedSeconds * x.Kills) / weight;
         }
 
         private bool NeedsRecoveryForNextFight()
@@ -287,6 +327,25 @@ namespace NGUInjector.Managers
         {
             var ac = _character.adventureController;
 
+            if (_character.adventure.move69Unlocked
+                && _character.adventure.move69Used < 69
+                && !EndgameDependencyModel.IsOwned(_character, 481))
+            {
+                var move = UnityEngine.Object.FindObjectOfType<Move69>();
+                if (move != null && move.button != null && move.button.IsInteractable())
+                {
+                    var before = _character.adventure.move69Used;
+                    move.doMove();
+                    var confirmed = _character.adventure.move69Used > before
+                                    || EndgameDependencyModel.IsOwned(_character, 481);
+                    Main.LogAction(confirmed ? "PROGRESSION" : "REJECTED", confirmed
+                        ? "Used MOVE 69 for END item 481 [confirmed " + before + " -> "
+                          + _character.adventure.move69Used + "]"
+                        : "MOVE 69 was interactable but produced no use-count or END-item transition");
+                    return;
+                }
+            }
+
             if (ac.ultimateAttackMove.button.IsInteractable())
             {
                 var description = ChargeActive() ? "Ultimate Attack — Charge active"
@@ -328,6 +387,11 @@ namespace NGUInjector.Managers
             var before = _character.adventure.zone;
             _character.adventureController.zoneSelector.changeZone(zone);
             var confirmed = _character.adventure.zone == zone;
+            if (confirmed && zone >= 0 && zone != _expectedFightDamageZone)
+            {
+                _expectedFightDamage = 0;
+                _expectedFightDamageZone = zone;
+            }
             Main.LogAction(confirmed ? "ZONE" : "REJECTED",
                 confirmed
                     ? "Changed Adventure zone " + GameNames.Zone(_character, before) + " -> "
@@ -338,6 +402,9 @@ namespace NGUInjector.Managers
 
         internal void IdleZone(int zone, bool bossOnly, bool recoverHealth, bool? beastMode = null)
         {
+            var intendedBeast = (beastMode ?? Settings.BeastMode)
+                                && _character.adventureController.hasBeastMode();
+            _nextPolicySignature = PolicySignature(zone, bossOnly, false, intendedBeast);
             if (zone == -1)
             {
                 if (_character.adventure.zone != -1)
@@ -412,6 +479,7 @@ namespace NGUInjector.Managers
 
         internal void ManualZone(int zone, bool bossOnly, bool recoverHealth, bool precastBuffs, bool fastCombat, bool beastMode)
         {
+            _nextPolicySignature = PolicySignature(zone, bossOnly, fastCombat, beastMode);
             if (zone == -1)
             {
                 if (_character.adventure.zone != -1)
@@ -434,11 +502,7 @@ namespace NGUInjector.Managers
                 && _character.adventureController.currentEnemy == null)
             {
                 _isFighting = false;
-                var observedDamage = Math.Max(0, _fightStartHP - _character.adventure.curHP);
-                if (observedDamage > 0)
-                    _expectedFightDamage = _expectedFightDamage <= 0
-                        ? observedDamage
-                        : _expectedFightDamage * .65f + observedDamage * .35f;
+                RecordObservedFight(true);
                 if (_fightTimer > 1)
                     LogCombat($"{_enemyName} defeated the player after {_fightTimer:00.0}s");
                 Main.LogAction("DEATH", "Adventure defeat by " + _enemyName
@@ -448,14 +512,14 @@ namespace NGUInjector.Managers
 
                 if (LoadoutManager.CurrentLock == LockType.Gold)
                 {
-                    LoadoutManager.RestoreGear();
-                    LoadoutManager.ReleaseLock();
+                    if (LoadoutManager.RestoreGear())
+                        LoadoutManager.ReleaseLock();
                 }
                 if (_fightWasTitan && LoadoutManager.CurrentLock == LockType.Titan)
                 {
-                    LoadoutManager.CompleteTitanFight(true);
-                    LoadoutManager.RestoreGear();
-                    LoadoutManager.ReleaseLock();
+                    LoadoutManager.CompleteTitanFight(true, _fightZone);
+                    if (LoadoutManager.RestoreGear())
+                        LoadoutManager.ReleaseLock();
                 }
             }
 
@@ -584,11 +648,7 @@ namespace NGUInjector.Managers
                 {
                     _isFighting = false;
                     var playerDied = _character.adventure.curHP <= 0.001f;
-                    var observedDamage = Math.Max(0, _fightStartHP - _character.adventure.curHP);
-                    if (observedDamage > 0)
-                        _expectedFightDamage = _expectedFightDamage <= 0
-                            ? observedDamage
-                            : _expectedFightDamage * .65f + observedDamage * .35f;
+                    RecordObservedFight(playerDied);
                     if (_fightTimer > 1)
                         LogCombat(playerDied
                             ? $"{_enemyName} defeated the player after {_fightTimer:00.0}s"
@@ -605,17 +665,17 @@ namespace NGUInjector.Managers
                             ? "Gold Loadout fight failed; restoring progression gear before retry"
                             : "Gold Loadout kill done. Turning off setting and swapping gear");
                         if (!playerDied) Settings.DoGoldSwap = false;
-                        LoadoutManager.RestoreGear();
-                        LoadoutManager.ReleaseLock();
+                        if (LoadoutManager.RestoreGear())
+                            LoadoutManager.ReleaseLock();
                         MoveToZone(-1);
                         return;
                     }
 
                     if (_fightWasTitan && LoadoutManager.CurrentLock == LockType.Titan)
                     {
-                        LoadoutManager.CompleteTitanFight(playerDied);
-                        LoadoutManager.RestoreGear();
-                        LoadoutManager.ReleaseLock();
+                        LoadoutManager.CompleteTitanFight(playerDied, _fightZone);
+                        if (LoadoutManager.RestoreGear())
+                            LoadoutManager.ReleaseLock();
                     }
 
                     // Natural enemy-free frame: apply a queued exact-reference gear
@@ -703,12 +763,63 @@ namespace NGUInjector.Managers
                 var enemyTypeName = _character.adventureController.currentEnemy.enemyType.ToString();
                 _fightWasTitan = ZoneHelpers.ZoneIsTitan(zone)
                                  && (enemyTypeName.Contains("bigBoss") || enemyTypeName.Contains("guardian"));
+                _fightSignature = PolicySignature(zone, bossOnly, fastCombat, beastMode) + "|enemy="
+                                  + _character.adventureController.currentEnemy.spriteID + ":"
+                                  + enemyTypeName + ":" + _character.adventureController.currentEnemy.name;
             }
             _isFighting = true;
             _enemyName = _character.adventureController.currentEnemy.name;
             //We have an enemy and we're ready to fight. Run through our combat routine
             if (_character.training.attackTraining[1] > 0)
                 DoCombat(fastCombat);
+        }
+
+        private void RecordObservedFight(bool died)
+        {
+            var observedDamage = Math.Max(0f, _fightStartHP - _character.adventure.curHP);
+            if (observedDamage > 0f)
+            {
+                _expectedFightDamageZone = _fightZone;
+                _expectedFightDamage = _expectedFightDamage <= 0f
+                    ? observedDamage : _expectedFightDamage * .65f + observedDamage * .35f;
+            }
+            if (string.IsNullOrEmpty(_fightSignature)) return;
+            FightSample sample;
+            if (!FightSamples.TryGetValue(_fightSignature, out sample))
+            {
+                sample = new FightSample();
+                FightSamples[_fightSignature] = sample;
+            }
+            if (observedDamage > 0f)
+                sample.ExpectedDamage = sample.ExpectedDamage <= 0f ? observedDamage
+                    : sample.ExpectedDamage * .65f + observedDamage * .35f;
+            if (died)
+                sample.Deaths++;
+            else
+            {
+                sample.Kills++;
+                if (_fightTimer > 0f)
+                    sample.ExpectedSeconds = sample.ExpectedSeconds <= 0.0 ? _fightTimer
+                        : sample.ExpectedSeconds * .65 + _fightTimer * .35;
+            }
+            // A single session cannot encounter enough distinct meaningful signatures to need an
+            // unbounded cache. Retain the newest evidence by clearing only after pathological churn;
+            // correctness falls back to the conservative unsampled recovery threshold.
+            if (FightSamples.Count > 256)
+                FightSamples.Clear();
+        }
+
+        private string PolicySignature(int zone, bool bossOnly, bool fastCombat, bool beastMode)
+        {
+            var items = new[]
+            {
+                _character.inventory.head, _character.inventory.chest, _character.inventory.legs,
+                _character.inventory.boots, _character.inventory.weapon, _character.inventory.weapon2
+            }.Concat(_character.inventory.accs).Where(x => x != null && x.id > 0)
+                .Select(x => x.id + ":" + x.level).ToArray();
+            return zone + "|" + (bossOnly ? "boss" : "all") + "|"
+                   + (fastCombat ? "fast" : "full") + "|"
+                   + (beastMode ? "beast" : "normal") + "|gear=" + string.Join(",", items);
         }
     }
 }

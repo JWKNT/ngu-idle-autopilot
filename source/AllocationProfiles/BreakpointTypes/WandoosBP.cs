@@ -7,8 +7,9 @@ using System.Text;
 FILE PURPOSE
 
 WandoosBP allocates Energy or Magic to the installed operating-system progress bar through native
-controllers. The planner decides whether its reset-local multiplier can pay before rebirth; this
-class owns cap calculation and mutation only.
+controllers. Wandoos levels vanish at rebirth, so the breakpoint refuses terminal allocations that
+cannot leave a useful multiplier window. The planner owns OS-switch payback; this class owns cap
+calculation and native mutation.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -16,7 +17,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
     {
         protected override bool Unlocked()
         {
-            return Character.buttons.wandoos.interactable && !Character.wandoos98.disabled;
+            return Character.buttons.wandoos.interactable && !Character.wandoos98.disabled
+                   && RemainingRebirthHorizon() > 60.0;
         }
 
         protected override bool TargetMet()

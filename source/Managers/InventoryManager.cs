@@ -2,17 +2,20 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using NGUInjector.Autopilot;
 using static NGUInjector.Main;
 
 /*
 FILE PURPOSE
 
 InventoryManager owns merge, boost, conversion, MacGuffin, loot-filter, and conservative trash
-operations. These are potentially irreversible: unMAXXED equipment is always unfiltered, items
-from an incomplete set remain protected, and trash requires confirmed Item List MAXX plus an
-all-use dominance proof. Its boost queue also develops a proven future slot upgrade before feeding
-the Infinity Cube. Physical gear selection belongs to ProgressionLoadoutOptimizer; this file
-maintains contents and capacity through native InventoryController calls with state verification.
+operations. These are potentially irreversible: unMAXXED equipment, incomplete sets, puzzle keys,
+quest drops, and END pieces are always protected. Trash requires confirmed Item List MAXX plus an
+all-use dominance proof; equality is sufficient only after proving that every simultaneous current
+and saved/configured loadout has enough same-ID physical copies. Its boost queue also develops a
+proven future slot upgrade before feeding the Infinity Cube. Physical gear selection belongs to
+ProgressionLoadoutOptimizer; this file maintains contents and capacity through native controller
+calls and verifies every irreversible slot transition.
 */
 namespace NGUInjector.Managers
 {
@@ -101,6 +104,7 @@ namespace NGUInjector.Managers
         private readonly FixedSizedQueue _invBoostAvg = new FixedSizedQueue(60);
         private readonly FixedSizedQueue _cubeBoostAvg = new FixedSizedQueue(60);
         private Equipment _developmentTarget;
+        private bool _endSequenceStarted;
         internal static string LastTrashDecision { get; private set; }
             = "Waiting for the first conservative trash audit";
         internal static string LastFilterDecision { get; private set; }
@@ -223,7 +227,8 @@ namespace NGUInjector.Managers
                           + (toughnessAvailable ? needed.Toughness : 0m)
                           + (specialAvailable ? needed.Special : 0m)
                         : needed.Total();
-                    var gain = ProgressionLoadoutOptimizer.FullyBoostedLoadoutGain(c, x.equipment);
+                    var gain = ProgressionLoadoutOptimizer.AvailableBoostedLoadoutGain(c, x.equipment,
+                        powerAvailable, toughnessAvailable, specialAvailable);
                     return new BoostRoute
                     {
                         Item = x,
@@ -394,7 +399,9 @@ namespace NGUInjector.Managers
                     break;
                 var compatible = boost.type == part.atkBoost && needPower
                                  || boost.type == part.defBoost && needToughness
-                                 || boost.type == part.specBoost && (needPower || needToughness);
+                                 // Native Special-to-Cube splits the value equally; use it here
+                                 // only while both halves remain below their full-value softcaps.
+                                 || boost.type == part.specBoost && needPower && needToughness;
                 if (!compatible)
                     continue;
                 _controller.infinityCubeBoost(slot);
@@ -476,41 +483,126 @@ namespace NGUInjector.Managers
             return name;
         }
 
+        /*
+        QUEST-ITEM OWNERSHIP TRANSACTION
+
+        Native consumeItem deletes every quest offering, including a wrong ID, an off-quest item, or an
+        excess item after the target is already met. Keep one exact-reference development copy of each
+        unMAXXED ID without changing the user's lock state, merge duplicates into it, and offer only another
+        removable copy whose ID is the live questID. Re-read both quest progress and inventory after every
+        native call because one high-level item can satisfy multiple drops. A missing reflection target or
+        absent state delta is a rejection, never presumed success.
+        */
         internal void ManageQuestItems(ih[] ci)
         {
             var curPage = (int)Math.Floor((double)_controller.inventory[0].id / 60);
-            //Merge quest items first
-            var toMerge = ci.Where(x =>
-                x.id >= 278 && x.id <= 287 && !_character.inventory.inventory[x.slot].removable &&
-                !_character.inventory.itemList.itemMaxxed[x.id]);
+            var list = _character.inventory.itemList;
+            var developmentCopies = new Dictionary<int, Equipment>();
 
-            foreach (var target in toMerge)
+            foreach (var id in ci.Where(x => x.id >= 278 && x.id <= 287)
+                         .Select(x => x.id).Distinct().OrderBy(x => x))
             {
-                if (ci.Count(x => x.id == target.id) <= 1) continue;
-                Log($"Merging {SanitizeName(target.name)} in slot {target.slot}");
-                _controller.mergeAll(target.slot);
+                if (list.itemMaxxed != null && id < list.itemMaxxed.Count && list.itemMaxxed[id])
+                    continue;
+                var live = _character.inventory.inventory
+                    .Select((item, slot) => new {item, slot})
+                    .Where(x => x.item != null && x.item.id == id)
+                    .OrderByDescending(x => !x.item.removable)
+                    .ThenByDescending(x => x.item.level).ToArray();
+                if (live.Length == 0) continue;
+                var development = live[0];
+                developmentCopies[id] = development.item;
             }
 
-            //Consume quest items that dont need to be merged
-            var questItems = ci.Where(x =>
-                x.id >= 278 && x.id <= 287 && _character.inventory.inventory[x.slot].removable).ToArray();
-
-            if (questItems.Length > 0)
-                Log($"Turning in {questItems.Length} quest items");
-            foreach (var target in questItems)
+            if (!_character.beastQuest.inQuest || _character.beastQuest.targetDrops <= 0
+                || _character.beastQuest.curDrops >= _character.beastQuest.targetDrops)
             {
-                var newSlot = ChangePage(target.slot);
-                var ic = _controller.inventory[newSlot];
-                typeof(ItemController).GetMethod("consumeItem", BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?.Invoke(ic, null);
+                MergeQuestDevelopmentCopies(developmentCopies);
+                _controller.changePage(curPage);
+                return;
             }
+
+            var questId = _character.beastQuest.questID;
+            if (questId < 278 || questId > 287)
+            {
+                Main.LogAction("REJECTED", "Active Beast Quest exposed unexpected item ID " + questId
+                                           + "; preserving every quest item");
+                MergeQuestDevelopmentCopies(developmentCopies);
+                _controller.changePage(curPage);
+                return;
+            }
+            var consume = typeof(ItemController).GetMethod("consumeItem",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            if (consume == null)
+            {
+                Main.LogAction("REJECTED", "Native quest-item consumer was unavailable; preserving every quest item");
+                MergeQuestDevelopmentCopies(developmentCopies);
+                _controller.changePage(curPage);
+                return;
+            }
+
+            while (_character.beastQuest.inQuest && _character.beastQuest.questID == questId
+                   && _character.beastQuest.curDrops < _character.beastQuest.targetDrops)
+            {
+                Equipment protectedCopy;
+                developmentCopies.TryGetValue(questId, out protectedCopy);
+                var slot = _character.inventory.inventory.FindIndex(x => x != null && x.id == questId
+                    && x.removable && !ReferenceEquals(x, protectedCopy));
+                if (slot < 0) break;
+                var dropsBefore = _character.beastQuest.curDrops;
+                var countBefore = _character.inventory.inventory.Count(x => x != null && x.id == questId);
+                var newSlot = ChangePage(slot);
+                consume.Invoke(_controller.inventory[newSlot], null);
+                var countAfter = _character.inventory.inventory.Count(x => x != null && x.id == questId);
+                var progressConfirmed = _character.beastQuest.curDrops > dropsBefore;
+                var itemLostWithoutProgress = countAfter < countBefore && !progressConfirmed;
+                Main.LogAction(progressConfirmed ? "QUEST" : "REJECTED", progressConfirmed
+                    ? "Offered one exact " + SafeItemName(questId) + " to the active quest; progress "
+                      + dropsBefore + " -> " + _character.beastQuest.curDrops + " [confirmed by quest/item delta]"
+                    : itemLostWithoutProgress
+                        ? "Native consumer deleted an exact quest item without advancing quest progress; stopping all offerings"
+                        : "Exact quest-item offering produced no verified quest-progress transition");
+                if (!progressConfirmed) break;
+            }
+            // Only after the exact active demand is satisfied/exhausted may
+            // leftovers be merged into the protected permanent-development copy.
+            MergeQuestDevelopmentCopies(developmentCopies);
             _controller.changePage(curPage);
+        }
+
+        private void MergeQuestDevelopmentCopies(IDictionary<int, Equipment> developmentCopies)
+        {
+            foreach (var pair in developmentCopies.OrderBy(x => x.Key))
+            {
+                var id = pair.Key;
+                var live = _character.inventory.inventory.Select((item, slot) => new {item, slot})
+                    .Where(x => x.item != null && x.item.id == id).ToArray();
+                if (live.Length <= 1) continue;
+                var development = live.FirstOrDefault(x => ReferenceEquals(x.item, pair.Value));
+                if (development == null)
+                {
+                    Main.LogAction("REJECTED", "The exact protected development copy disappeared for "
+                                               + SafeItemName(id) + "; preserving duplicate items unmerged");
+                    continue;
+                }
+                var levelBefore = development.item.level;
+                var countBefore = live.Length;
+                _controller.mergeAll(development.slot);
+                var countAfter = _character.inventory.inventory.Count(x => x != null && x.id == id);
+                var merged = development.item.level > levelBefore || countAfter < countBefore;
+                Main.LogAction(merged ? "QUEST" : "REJECTED", merged
+                    ? "Merged excess/off-quest " + SafeItemName(id)
+                      + " copies into the exact protected development item [confirmed by level/count delta]"
+                    : "Quest-item merge for " + SafeItemName(id) + " produced no verified state transition");
+            }
         }
 
         internal void MergeInventory(ih[] ci)
         {
             var grouped =
-                ci.Where(x => x.id >= 40 && x.level < 100 && !_mergeBlacklist.Contains(x.id) && !_guffs.Contains(x.id) && (x.id < 278 || x.id > 287)).GroupBy(x => x.id).Where(x => x.Count() > 1);
+                ci.Where(x => x.id >= 40 && x.level < 100 && !_mergeBlacklist.Contains(x.id)
+                              && !_guffs.Contains(x.id) && !EndgameDependencyModel.IsEndItem(x.id)
+                              && (x.id < 278 || x.id > 287)).GroupBy(x => x.id).Where(x => x.Count() > 1);
 
             foreach (var item in grouped)
             {
@@ -527,7 +619,12 @@ namespace NGUInjector.Managers
         internal void MergeGuffs(ih[] ci)
         {
             // A dropped MacGuffin in ordinary inventory contributes no bonus and Blood
-            // spells cannot level it.  Fill every empty unlocked slot before merging.
+            // spells cannot level it. Optimize the equipped subset before Blood-spell
+            // leveling; a first-come slot can otherwise compound the wrong permanent stat.
+            OptimizeEquippedGuffs();
+            // Swaps exchange exact physical objects with ordinary inventory. Rebuild
+            // slot helpers before merging; the caller snapshot now names pre-swap IDs.
+            ci = _character.inventory.GetConvertedInventory().ToArray();
             var equippedIds = new HashSet<int>(_character.inventory.macguffins
                 .Where(x => x != null && x.id > 0).Select(x => x.id));
             for (var guffSlot = 0; guffSlot < _character.inventory.macguffins.Count; guffSlot++)
@@ -567,6 +664,113 @@ namespace NGUInjector.Managers
             }
         }
 
+        private void OptimizeEquippedGuffs()
+        {
+            var slots = _character.inventory.macguffins.Count;
+            if (slots <= 0) return;
+            var candidates = _character.inventory.macguffins.Concat(_character.inventory.inventory)
+                .Where(x => x != null && _guffs.Contains(x.id))
+                .GroupBy(x => x.id)
+                .Select(g => g.OrderByDescending(x => GuffUtility(x)).ThenByDescending(x => x.level).First())
+                .OrderByDescending(GuffUtility).ThenByDescending(x => x.level).Take(slots).ToList();
+            if (candidates.Count == 0) return;
+            var desiredIds = new HashSet<int>(candidates.Select(x => x.id));
+
+            for (var slot = 0; slot < slots; slot++)
+            {
+                var current = _character.inventory.macguffins[slot];
+                if (current != null && desiredIds.Contains(current.id)) continue;
+                var equippedIds = new HashSet<int>(_character.inventory.macguffins
+                    .Where(x => x != null && x.id > 0).Select(x => x.id));
+                var desired = candidates.FirstOrDefault(x => !equippedIds.Contains(x.id));
+                if (desired == null) break;
+                var inventorySlot = _character.inventory.inventory.FindIndex(x => ReferenceEquals(x, desired));
+                if (inventorySlot < 0) continue;
+                var previousId = current == null ? 0 : current.id;
+                _character.inventory.item1 = _controller.globalMacguffinID(slot);
+                _character.inventory.item2 = inventorySlot;
+                _controller.swapMacguffin();
+                var confirmed = _character.inventory.macguffins[slot].id == desired.id;
+                Main.LogAction(confirmed ? "MACGUFFIN" : "REJECTED", confirmed
+                    ? "Equipped objective-optimal " + GameNames.Item(_character, desired.id)
+                      + " over " + (previousId > 0 ? GameNames.Item(_character, previousId) : "an empty slot")
+                      + " [confirmed by MacGuffin slot delta]"
+                    : "Objective MacGuffin swap produced no verified slot transition");
+                if (!confirmed) break;
+            }
+        }
+
+        private double GuffUtility(Equipment item)
+        {
+            if (item == null) return 0.0;
+            var weight = GuffObjectiveWeight(item.id);
+            if (weight <= 0.0) return 0.0;
+            var gain = GuffPerRebirthGain(item);
+            return weight * Math.Log(1.0 + Math.Max(0.0, gain));
+        }
+
+        private double GuffObjectiveWeight(int id)
+        {
+            var c = _character;
+            var challenge = c.challenges.inChallenge;
+            switch (id)
+            {
+                case 198: return 8.0; // Energy Power
+                case 199: return 6.0; // Energy Cap
+                case 200: return 5.0; // Magic Power
+                case 201: return 4.0; // Magic Cap
+                case 202: return c.settings.nguOn ? 7.0 : 1.0;
+                case 203: return c.settings.nguOn ? 5.0 : 1.0;
+                case 204: return 4.0; // Energy Bars
+                case 205: return 3.0; // Magic Bars
+                case 206: return c.settings.beardsOn ? 3.0 : 0.5;
+                case 207: return c.settings.beardsOn ? 2.5 : 0.5;
+                case 208: return c.adventure.zone == 1000 ? 0.5 : 5.0;
+                case 209: return 2.0;
+                case 210: return challenge && c.challenges.noAugsChallenge.inChallenge ? 0.0 : 4.0;
+                case 228: return challenge ? 10.0 : 6.0; // Fight Boss Power
+                case 211:
+                case 250: return challenge ? 8.0 : 2.0; // Wandoos E/M
+                case 289: return challenge ? 9.0 : 3.0; // Number
+                case 290: return c.buttons.bloodMagic.interactable ? 3.0 : 0.0;
+                case 291: return 12.0; // Adventure
+                case 298: return c.res3.res3On ? 7.0 : 0.0;
+                case 299: return c.res3.res3On ? 6.0 : 0.0;
+                case 300: return c.res3.res3On ? 5.0 : 0.0;
+                default: return 0.0;
+            }
+        }
+
+        private double GuffPerRebirthGain(Equipment item)
+        {
+            switch (item.id)
+            {
+                case 198: return _controller.energyPowerBonusPerRebirth(item);
+                case 199: return _controller.energyCapBonusPerRebirth(item);
+                case 200: return _controller.magicPowerBonusPerRebirth(item);
+                case 201: return _controller.magicCapBonusPerRebirth(item);
+                case 202: return _controller.energyNGUBonusPerRebirth(item);
+                case 203: return _controller.magicNGUBonusPerRebirth(item);
+                case 204: return _controller.energyBarBonusPerRebirth(item);
+                case 205: return _controller.magicBarBonusPerRebirth(item);
+                case 206: return _controller.energyBeardBonusPerRebirth(item);
+                case 207: return _controller.magicBeardBonusPerRebirth(item);
+                case 208: return _controller.dropChanceBonusPerRebirth(item);
+                case 209: return _controller.goldBonusPerRebirth(item);
+                case 210: return _controller.augSpeedBonusPerRebirth(item);
+                case 228: return _controller.powerBonusPerRebirth(item);
+                case 211: return _controller.energyWandoosBonusPerRebirth(item);
+                case 250: return _controller.magicWandoosBonusPerRebirth(item);
+                case 289: return _controller.numberBonusPerRebirth(item);
+                case 290: return _controller.bloodBonusPerRebirth(item);
+                case 291: return _controller.adventureBonusPerRebirth(item);
+                case 298: return _controller.res3PowerBonusPerRebirth(item);
+                case 299: return _controller.res3CapBonusPerRebirth(item);
+                case 300: return _controller.res3BarBonusPerRebirth(item);
+                default: return 0.0;
+            }
+        }
+
         internal void ManageConvertibles(ih[] ci)
         {
             if (TryAssembleExile())
@@ -578,12 +782,22 @@ namespace NGUInjector.Managers
                 && ((x.id == 102 && !_character.settings.nguOn)
                     || (x.id == 141 && !_character.settings.beardsOn)
                     || (x.id == 172 && !_character.settings.itopodOn)
-                    || (x.id == 92 && !_character.settings.yggdrasilOn)));
+                    || (x.id == 92 && !_character.settings.yggdrasilOn)
+                    || (x.id == 506 && !_character.adventure.move69Unlocked)));
             if (progression != null && _character.inventory.inventory[progression.slot].removable)
             {
-                ConsumeInventorySlot(progression.slot);
-                Main.LogAction("PROGRESSION", "Consumed " + GameNames.Item(_character, progression.id)
-                    + " through the game's ItemController");
+                var itemDebited = ConsumeInventorySlot(progression.slot);
+                var featureEnabled = progression.id == 102 ? _character.settings.nguOn
+                    : progression.id == 141 ? _character.settings.beardsOn
+                    : progression.id == 172 ? _character.settings.itopodOn
+                    : progression.id == 92 ? _character.settings.yggdrasilOn
+                    : progression.id == 506 && _character.adventure.move69Unlocked;
+                var confirmed = itemDebited && featureEnabled;
+                Main.LogAction(confirmed ? "PROGRESSION" : "REJECTED", confirmed
+                    ? "Consumed " + GameNames.Item(_character, progression.id)
+                      + " [confirmed by item debit and exact feature toggle]"
+                    : GameNames.Item(_character, progression.id)
+                      + " consume lacked a verified item debit plus feature transition");
                 _controller.changePage(curPage);
                 return;
             }
@@ -602,10 +816,12 @@ namespace NGUInjector.Managers
             {
                 var osBefore = _character.wandoos98.OSlevel;
                 var xlBefore = _character.wandoos98.XLLevels;
-                ConsumeInventorySlot(wandoos.slot);
-                var confirmed = !_character.settings.wandoos98On || wandoos.id == 66
-                    ? _character.settings.wandoos98On || _character.wandoos98.OSlevel > osBefore
-                    : _character.wandoos98.XLLevels > xlBefore;
+                var wasEnabled = _character.settings.wandoos98On;
+                var itemDebited = ConsumeInventorySlot(wandoos.slot);
+                var confirmed = itemDebited && (wandoos.id == 66
+                    ? wasEnabled ? _character.wandoos98.OSlevel > osBefore
+                        : _character.settings.wandoos98On
+                    : _character.wandoos98.XLLevels > xlBefore);
                 Main.LogAction(confirmed ? "PROGRESSION" : "REJECTED", confirmed
                     ? "Consumed " + GameNames.Item(_character, wandoos.id) + " [confirmed by OS state]"
                     : GameNames.Item(_character, wandoos.id) + " produced no OS transition");
@@ -621,17 +837,43 @@ namespace NGUInjector.Managers
                 if (!temp.removable) continue;
                 var newSlot = ChangePage(item.slot);
                 var ic = _controller.inventory[newSlot];
-                typeof(ItemController).GetMethod("consumeItem", BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?.Invoke(ic, null);
+                var countBefore = _character.inventory.inventory.Count(x => x != null && x.id == item.id);
+                var method = typeof(ItemController).GetMethod("consumeItem",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (method == null)
+                {
+                    Main.LogAction("REJECTED", "Native convertible consumer was unavailable for "
+                                               + GameNames.Item(_character, item.id));
+                    break;
+                }
+                method.Invoke(ic, null);
+                var consumed = _character.inventory.inventory.Count(x => x != null && x.id == item.id) < countBefore;
+                if (!consumed)
+                {
+                    Main.LogAction("REJECTED", "Convertible " + GameNames.Item(_character, item.id)
+                                               + " produced no verified inventory debit");
+                    break;
+                }
             }
             _controller.changePage(curPage);
         }
 
-        private void ConsumeInventorySlot(int slot)
+        private bool ConsumeInventorySlot(int slot)
         {
+            if (slot < 0 || slot >= _character.inventory.inventory.Count) return false;
+            var target = _character.inventory.inventory[slot];
+            if (target == null || target.id <= 0) return false;
+            var id = target.id;
+            var levelBefore = target.level;
+            var countBefore = _character.inventory.inventory.Count(x => x != null && x.id == id);
             var newSlot = ChangePage(slot);
-            typeof(ItemController).GetMethod("consumeItem", BindingFlags.NonPublic | BindingFlags.Instance)
-                ?.Invoke(_controller.inventory[newSlot], null);
+            var method = typeof(ItemController).GetMethod("consumeItem",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            if (method == null) return false;
+            method.Invoke(_controller.inventory[newSlot], null);
+            return _character.inventory.inventory.Count(x => x != null && x.id == id) < countBefore
+                   || !_character.inventory.inventory.Any(x => ReferenceEquals(x, target))
+                   || target.level < levelBefore;
         }
 
         internal static bool ExileAssemblyReady(Character c)
@@ -644,6 +886,106 @@ namespace NGUInjector.Managers
             if (!c.adventure.titan9Unlocked) return true;
             return !c.adventure.titan9SpecialReward
                    && c.inventory.inventory.Any(x => x != null && x.id == 341);
+        }
+
+        /*
+        TERMINAL PLACEMENT TRANSACTION
+
+        The native END trigger accepts only sixteen exact IDs in sixteen sparse ordinary-inventory
+        slots.  Arrange them with native inventory swaps, record every pair, and reverse all pairs
+        if any postcondition fails.  This routine is called only behind the dedicated irreversible
+        execution lease; missing branches are an expected HOLD, never a rejected mutation.
+        */
+        internal bool TryExecuteEndSequence()
+        {
+            if (_endSequenceStarted) return false;
+            var inv = _character == null ? null : _character.inventory;
+            if (inv == null || inv.inventory == null || inv.inventory.Count < 40
+                || _controller == null || _controller.midDrag
+                || LoadoutManager.CurrentLock != LockType.None)
+            {
+                ExecutionSafety.ReportHold("end-placement-state",
+                    "END sequence held until ordinary inventory is stable, unlocked, and has at least 40 slots");
+                return false;
+            }
+
+            var requirements = MechanicsEndgame.AllRequirements();
+            var missing = requirements.Where(requirement =>
+                !inv.inventory.Any(item => item != null && item.id == requirement.ItemId))
+                .Select(requirement => requirement.ItemId).ToArray();
+            if (missing.Length > 0)
+            {
+                ExecutionSafety.ReportHold("end-placement-missing:" + string.Join(",", missing),
+                    "END sequence held; missing ordinary-inventory pieces "
+                    + string.Join(", ", missing.Select(x => x.ToString()).ToArray()), 60);
+                return false;
+            }
+
+            var before = inv.inventory.ToArray();
+            var swaps = new List<int[]>();
+            foreach (var requirement in requirements.OrderBy(x => x.TargetSlot))
+            {
+                var current = inv.inventory.FindIndex(item =>
+                    item != null && item.id == requirement.ItemId);
+                if (current < 0)
+                    return RollBackEndPlacement(inv, before, swaps,
+                        "END item disappeared while the placement transaction was running");
+                if (current == requirement.TargetSlot) continue;
+                inv.item1 = requirement.TargetSlot;
+                inv.item2 = current;
+                _controller.swapItems();
+                swaps.Add(new[] {requirement.TargetSlot, current});
+                if (inv.inventory[requirement.TargetSlot] == null
+                    || inv.inventory[requirement.TargetSlot].id != requirement.ItemId)
+                    return RollBackEndPlacement(inv, before, swaps,
+                        "native inventory swap did not establish the required END placement");
+            }
+
+            var ids = inv.inventory.Select(item => item == null ? 0 : item.id).ToArray();
+            if (!MechanicsEndgame.ValidatePlacement(ids))
+                return RollBackEndPlacement(inv, before, swaps,
+                    "END placement failed canonical validation after native swaps");
+
+            var consume = typeof(ItemController).GetMethod("consumeItem",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            if (consume == null || _controller.inventory == null || _controller.inventory.Length <= 39)
+                return RollBackEndPlacement(inv, before, swaps,
+                    "native END trigger method or slot controller is unavailable");
+
+            var oldPage = (int)Math.Floor((double)_controller.inventory[0].id / 60);
+            try
+            {
+                _controller.changePage(0);
+                consume.Invoke(_controller.inventory[MechanicsEndgame.FinalTriggerSlot], null);
+                _endSequenceStarted = true;
+            }
+            finally
+            {
+                _controller.changePage(oldPage);
+            }
+            Main.LogAction("END", "Started the native END sequence after exact placement of items "
+                                  + MechanicsEndgame.FirstEndItemId + "-"
+                                  + MechanicsEndgame.LastEndItemId
+                                  + " [canonical placement and native trigger preflight confirmed]");
+            return true;
+        }
+
+        private bool RollBackEndPlacement(Inventory inv, Equipment[] before,
+            IList<int[]> swaps, string reason)
+        {
+            for (var i = swaps.Count - 1; i >= 0; i--)
+            {
+                inv.item1 = swaps[i][0];
+                inv.item2 = swaps[i][1];
+                _controller.swapItems();
+            }
+            var restored = before.Length == inv.inventory.Count;
+            for (var i = 0; restored && i < before.Length; i++)
+                restored = ReferenceEquals(before[i], inv.inventory[i]);
+            Main.LogAction("REJECTED", reason + (restored
+                ? "; original inventory topology restored exactly"
+                : "; exact rollback could not be verified"));
+            return false;
         }
 
         private bool TryAssembleExile()
@@ -766,7 +1108,7 @@ namespace NGUInjector.Managers
             }
         }
 
-        internal void ManageBoostConversion(ih[] boostSlots)
+        internal void ManageBoostConversion()
         {
             if (_character.challenges.levelChallenge10k.curCompletions <
                 _character.challenges.levelChallenge10k.maxCompletions)
@@ -810,28 +1152,44 @@ namespace NGUInjector.Managers
                 return;
             }
 
-            var needed = new BoostsNeeded();
-
-            foreach (var item in boostSlots)
+            // Transformation is a mutually exclusive production choice. Compare
+            // proven complete-loadout score per remaining point for each category;
+            // list order (Power before Toughness before Special) is not an economic
+            // model and can starve the actual progression bottleneck indefinitely.
+            var categoryScores = new double[3];
+            // Conversion chooses the category for future drops, so it must not
+            // depend on boost objects that the preceding routing/Cube passes have
+            // already consumed. Score every owned physical equipment object under
+            // each hypothetical one-category stream instead.
+            var equipment = _character.inventory.GetConvertedEquips()
+                .Concat(_character.inventory.GetConvertedInventory())
+                .Where(x => x != null && x.equipment != null && x.id > 0
+                            && x.equipment.isEquipment()
+                            && !Settings.BoostBlacklist.Contains(x.id))
+                .Select(x => x.equipment).Distinct().ToArray();
+            foreach (var item in equipment)
             {
-                needed.Add(item.equipment.GetNeededBoosts());
+                var needed = item.GetNeededBoosts();
+                if (needed.Power > 0)
+                    categoryScores[0] = Math.Max(categoryScores[0],
+                        ProgressionLoadoutOptimizer.AvailableBoostedLoadoutGain(
+                            _character, item, true, false, false) / (double)needed.Power);
+                if (needed.Toughness > 0)
+                    categoryScores[1] = Math.Max(categoryScores[1],
+                        ProgressionLoadoutOptimizer.AvailableBoostedLoadoutGain(
+                            _character, item, false, true, false) / (double)needed.Toughness);
+                if (needed.Special > 0)
+                    categoryScores[2] = Math.Max(categoryScores[2],
+                        ProgressionLoadoutOptimizer.AvailableBoostedLoadoutGain(
+                            _character, item, false, false, true) / (double)needed.Special);
             }
-
-            if (needed.Power > 0)
+            var bestCategory = Enumerable.Range(0, categoryScores.Length)
+                .OrderByDescending(x => categoryScores[x]).ThenBy(x => x).First();
+            if (categoryScores[bestCategory] > 1e-12)
             {
-                _controller.selectAutoPowerTransform();
-                return;
-            }
-
-            if (needed.Toughness > 0)
-            {
-                _controller.selectAutoToughTransform();
-                return;
-            }
-
-            if (needed.Special > 0)
-            {
-                _controller.selectAutoSpecialTransform();
+                if (bestCategory == 0) _controller.selectAutoPowerTransform();
+                else if (bestCategory == 1) _controller.selectAutoToughTransform();
+                else _controller.selectAutoSpecialTransform();
                 return;
             }
 
@@ -896,8 +1254,9 @@ namespace NGUInjector.Managers
             {
                 inv.head, inv.chest, inv.legs, inv.boots, inv.weapon, inv.weapon2
             };
-            owned.AddRange(inv.accs);
-            owned.AddRange(inv.inventory);
+            if (inv.accs != null) owned.AddRange(inv.accs);
+            if (inv.inventory != null) owned.AddRange(inv.inventory);
+            if (inv.daycare != null) owned.AddRange(inv.daycare);
 
             for (var slot = 0; slot < inv.inventory.Count; slot++)
             {
@@ -907,6 +1266,22 @@ namespace NGUInjector.Managers
                     && !ReferenceEquals(x, candidate) && x.id == candidate.id
                     && DominatesForAllUses(x, candidate));
                 var sameIdProof = keeper != null;
+                if (sameIdProof
+                    && OwnedCopyCount(candidate.id, owned) <= RequiredPhysicalCopyCount(candidate.id))
+                {
+                    keeper = null;
+                    sameIdProof = false;
+                }
+                var equalitySafeProof = false;
+                if (keeper == null && AllOwnedCopiesMaxxed(candidate.id, owned)
+                    && OwnedCopyCount(candidate.id, owned) > RequiredPhysicalCopyCount(candidate.id))
+                {
+                    keeper = owned.FirstOrDefault(x => x != null
+                        && !ReferenceEquals(x, candidate) && x.id == candidate.id
+                        && EquivalentForAllUses(x, candidate));
+                    sameIdProof = keeper != null;
+                    equalitySafeProof = keeper != null;
+                }
                 if (keeper == null && !IsConfiguredLoadoutItem(candidate.id))
                     keeper = owned.FirstOrDefault(x => x != null
                         && !ReferenceEquals(x, candidate)
@@ -924,14 +1299,16 @@ namespace NGUInjector.Managers
                                 && ReferenceEquals(inv.trash, candidate);
                 LastTrashDecision = confirmed
                     ? sameIdProof
-                        ? "Trashed one proven-redundant same-ID dominated MAXXED duplicate; rolling recovery slot overwritten by design"
+                        ? equalitySafeProof
+                            ? "Trashed one equal same-ID MAXXED surplus after simultaneous physical-copy demand was proven"
+                            : "Trashed one proven-redundant same-ID dominated MAXXED duplicate; rolling recovery slot overwritten by design"
                         : "Trashed one obsolete fixed-slot MAXXED item dominated now and at every future boost level; rolling recovery slot overwritten by design"
                     : "Native trash request did not produce a verified recoverable-slot transition";
                 Main.LogAction(confirmed ? "TRASH" : "REJECTED", confirmed
                     ? "Trashed " + (sameIdProof ? "redundant" : "provably obsolete fixed-slot")
                       + " item " + SafeItemName(id) + " (ID " + id + ", level " + level
                       + "): Item List is MAXXED and retained " + (sameIdProof ? "same-ID" : "same-slot")
-                      + " copy dominates ATK "
+                      + (equalitySafeProof ? " copy is equivalent and all simultaneous uses retain enough copies; ATK " : " copy dominates ATK ")
                       + attack.ToString("0.##") + "/DEF " + defense.ToString("0.##")
                       + " plus every relevant current/future cap and special field [confirmed; native recovery slot intentionally overwritten]"
                     : "Redundant-item trash request for ID " + id + " produced no verified slot transition");
@@ -959,15 +1336,17 @@ namespace NGUInjector.Managers
             if (_pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id)
                 || _filterExcludes.Contains(id) || _guffs.Contains(id)
                 || _mergeBlacklist.Contains(id) || _convertibles.Contains(id)
+                || EndgameDependencyModel.IsEndItem(id)
                 || id >= 278 && id <= 287 || id == 102 || id == 141 || id == 172)
                 return false;
-            if (IsNativeLoadoutReference(slot)) return false;
+            if (IsNativeLoadoutReference(_character, slot)) return false;
             return true;
         }
 
-        private bool IsNativeLoadoutReference(int slot)
+        internal static bool IsNativeLoadoutReference(Character character, int slot)
         {
-            var loadouts = _character.inventory.loadouts;
+            if (character == null || character.inventory == null) return false;
+            var loadouts = character.inventory.loadouts;
             if (loadouts == null) return false;
             foreach (var loadout in loadouts)
             {
@@ -1017,6 +1396,94 @@ namespace NGUInjector.Managers
                    || keeper.spec3Cap > candidate.spec3Cap + epsilon;
         }
 
+        private static bool EquivalentForAllUses(Equipment keeper, Equipment candidate)
+        {
+            if (keeper == null || candidate == null || keeper.id != candidate.id) return false;
+            const double epsilon = 1e-6;
+            return keeper.level == candidate.level
+                   && Math.Abs(keeper.curAttack - candidate.curAttack) <= epsilon
+                   && Math.Abs(keeper.curDefense - candidate.curDefense) <= epsilon
+                   && Math.Abs(keeper.capAttack - candidate.capAttack) <= epsilon
+                   && Math.Abs(keeper.capDefense - candidate.capDefense) <= epsilon
+                   && keeper.spec1Type == candidate.spec1Type
+                   && keeper.spec2Type == candidate.spec2Type
+                   && keeper.spec3Type == candidate.spec3Type
+                   && Math.Abs(keeper.spec1Cur - candidate.spec1Cur) <= epsilon
+                   && Math.Abs(keeper.spec2Cur - candidate.spec2Cur) <= epsilon
+                   && Math.Abs(keeper.spec3Cur - candidate.spec3Cur) <= epsilon
+                   && Math.Abs(keeper.spec1Cap - candidate.spec1Cap) <= epsilon
+                   && Math.Abs(keeper.spec2Cap - candidate.spec2Cap) <= epsilon
+                   && Math.Abs(keeper.spec3Cap - candidate.spec3Cap) <= epsilon;
+        }
+
+        private static int OwnedCopyCount(int id, IEnumerable<Equipment> owned)
+        {
+            return owned.Count(x => x != null && x.id == id);
+        }
+
+        private static bool AllOwnedCopiesMaxxed(int id, IEnumerable<Equipment> owned)
+        {
+            var copies = owned.Where(x => x != null && x.id == id).ToArray();
+            return copies.Length > 1 && copies.All(x => x.level >= 100);
+        }
+
+        /*
+        PHYSICAL COPY DEMAND
+
+        Identical MAXXED accessories/weapons can be genuinely redundant, but only after counting
+        multiplicity. Daycare is simultaneous with a combat/loadout use and is added. Active gear,
+        each configured purpose loadout, and each native saved loadout are mutually exclusive, so
+        the largest per-context multiplicity is retained rather than summing every hypothetical.
+        Candidate slots referenced by a native loadout are separately ineligible above.
+        */
+        private int RequiredPhysicalCopyCount(int id)
+        {
+            if (EndgameDependencyModel.IsEndItem(id)) return 1;
+            var inv = _character.inventory;
+            var daycare = inv.daycare == null ? 0 : inv.daycare.Count(x => x != null && x.id == id);
+            var active = new[] {inv.head, inv.chest, inv.legs, inv.boots, inv.weapon, inv.weapon2}
+                .Count(x => x != null && x.id == id);
+            if (inv.accs != null) active += inv.accs.Count(x => x != null && x.id == id);
+
+            var configured = new[]
+            {
+                CountInArray(Settings.TitanLoadout, id),
+                CountInArray(Settings.YggdrasilLoadout, id),
+                CountInArray(Settings.GoldDropLoadout, id),
+                CountInArray(Settings.MoneyPitLoadout, id),
+                CountInArray(Settings.QuickLoadout, id)
+            }.Max();
+            var native = 0;
+            if (inv.loadouts != null)
+            {
+                foreach (var loadout in inv.loadouts)
+                {
+                    if (loadout == null) continue;
+                    var count = CountInventorySlotId(inv, loadout.head, id)
+                                + CountInventorySlotId(inv, loadout.chest, id)
+                                + CountInventorySlotId(inv, loadout.legs, id)
+                                + CountInventorySlotId(inv, loadout.boots, id)
+                                + CountInventorySlotId(inv, loadout.weapon, id)
+                                + CountInventorySlotId(inv, loadout.weapon2, id);
+                    if (loadout.accessories != null)
+                        count += loadout.accessories.Sum(slot => CountInventorySlotId(inv, slot, id));
+                    native = Math.Max(native, count);
+                }
+            }
+            return daycare + Math.Max(1, Math.Max(active, Math.Max(configured, native)));
+        }
+
+        private static int CountInArray(int[] ids, int id)
+        {
+            return ids == null ? 0 : ids.Count(x => x == id);
+        }
+
+        private static int CountInventorySlotId(Inventory inv, int slot, int id)
+        {
+            return inv.inventory != null && slot >= 0 && slot < inv.inventory.Count
+                   && inv.inventory[slot] != null && inv.inventory[slot].id == id ? 1 : 0;
+        }
+
         private static bool DominatesFixedSlotForAllFuture(Equipment keeper, Equipment candidate)
         {
             if (keeper.id <= 0 || keeper.id == candidate.id || keeper.type != candidate.type)
@@ -1048,16 +1515,24 @@ namespace NGUInjector.Managers
         {
             var settings = _character.settings;
             var typeFilterChanged = settings.filterHead || settings.filterChest || settings.filterLegs
-                                    || settings.filterBoots || settings.filterWeapon || settings.filterAccessory;
-            // Coarse type filters discard a drop before the bot can inspect its ID or
-            // merge it. Exact item filtering is safe only after Item List MAXX is
-            // confirmed, so full automation owns these six toggles and keeps them off.
+                                    || settings.filterBoots || settings.filterWeapon || settings.filterAccessory
+                                    || settings.filterBoosts || settings.filterBoostAtk || settings.filterBoostDef
+                                    || settings.filterBoostSpec || settings.filterMisc || settings.filterTitan;
+            // Every coarse filter is destructive before the bot can inspect an ID. In particular, Misc
+            // includes progression, puzzle, and quest state-machine items, while Titan can discard unique
+            // set pieces. Full automation therefore owns all coarse toggles and keeps them disabled.
             settings.filterHead = false;
             settings.filterChest = false;
             settings.filterLegs = false;
             settings.filterBoots = false;
             settings.filterWeapon = false;
             settings.filterAccessory = false;
+            settings.filterBoosts = false;
+            settings.filterBoostAtk = false;
+            settings.filterBoostDef = false;
+            settings.filterBoostSpec = false;
+            settings.filterMisc = false;
+            settings.filterTitan = false;
 
             if (!Main.Character.arbitrary.lootFilter)
             {
@@ -1070,13 +1545,9 @@ namespace NGUInjector.Managers
             var list = _character.inventory.itemList;
             var count = Math.Min(list.itemFiltered.Count, list.itemMaxxed.Count);
             var unfiltered = 0;
-            for (var id = 0; id < count && id < _controller.itemInfo.type.Length; id++)
+            for (var id = 0; id < count; id++)
             {
-                var equipment = _controller.itemInfo.type[id] >= part.Head
-                                && _controller.itemInfo.type[id] <= part.Accessory;
-                if (!equipment || list.itemMaxxed[id]
-                    && !AdventureCollectionPlanner.IsProtectedCollectionItem(_character, id))
-                    continue;
+                if (CanFilterItem(id)) continue;
                 if (!list.itemFiltered[id]) continue;
                 list.itemFiltered[id] = false;
                 unfiltered++;
@@ -1103,26 +1574,32 @@ namespace NGUInjector.Managers
                 FilterEquip(acc);
             }
             LastFilterDecision = unfiltered > 0 || typeFilterChanged
-                ? "Reopened " + unfiltered + " exact equipment IDs and disabled coarse type filters; only confirmed MAXXED, collection-complete IDs remain filtered"
-                : "Only confirmed MAXXED, collection-complete equipment IDs are filtered; all unMAXXED drops remain enabled";
+                ? "Reopened " + unfiltered + " unsafe exact IDs and disabled every coarse filter; only confirmed MAXXED ordinary collection-complete equipment remains filtered"
+                : "Only confirmed MAXXED ordinary collection-complete equipment is filtered; boosts, misc, Titan, puzzle, quest, and progression drops remain enabled";
         }
 
         void FilterItem(int id)
         {
-            if (id <= 0 || _character.inventory.itemList.itemMaxxed == null
-                || id >= _character.inventory.itemList.itemMaxxed.Count
-                || !_character.inventory.itemList.itemMaxxed[id]
-                || AdventureCollectionPlanner.IsProtectedCollectionItem(_character, id))
-                return;
-            if (_pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id) ||
-                _filterExcludes.Contains(id) || _guffs.Contains(id) || id < 40 || _mergeBlacklist.Contains(id))
-                return;
+            if (CanFilterItem(id))
+                _character.inventory.itemList.itemFiltered[id] = true;
+        }
 
-            //Dont filter quest items
-            if (id >= 278 && id <= 287)
-                return;
-
-            _character.inventory.itemList.itemFiltered[id] = true;
+        private bool CanFilterItem(int id)
+        {
+            var list = _character.inventory.itemList;
+            if (id <= 0 || list.itemMaxxed == null || id >= list.itemMaxxed.Count
+                || !list.itemMaxxed[id] || id >= _controller.itemInfo.type.Length)
+                return false;
+            if (_controller.itemInfo.type[id] < part.Head || _controller.itemInfo.type[id] > part.Accessory)
+                return false;
+            if (!AdventureCollectionPlanner.IsKnownCompletedOrdinaryItem(_character, id))
+                return false;
+            if (_pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id)
+                || _filterExcludes.Contains(id) || _guffs.Contains(id) || _mergeBlacklist.Contains(id)
+                || _convertibles.Contains(id) || EndgameDependencyModel.IsEndItem(id)
+                || id >= 278 && id <= 287)
+                return false;
+            return !IsConfiguredLoadoutItem(id);
         }
 
         void FilterEquip(Equipment e)

@@ -184,6 +184,9 @@ namespace NGUInjector.Autopilot
                 return;
             }
             Plan = AutopilotPlanner.Build(Main.Character, Config);
+            if (Config.ManageDiggers)
+                Plan.Diggers = DiggerManager.OptimizeForPlan(Plan);
+            AutopilotPlanner.FinalizeResetLocalChoices(Main.Character, Plan);
             var signature = Plan.Signature();
             ObserveBossTransitions(Main.Character);
             ObserveKeyEvents(Main.Character);
@@ -199,11 +202,21 @@ namespace NGUInjector.Autopilot
             if (!CanExecuteSafe)
                 return;
 
-            if (Config.ManageDiggers)
+            if (Main.Character.challenges.trollChallenge.inChallenge)
+            {
+                if (!HasAutopilotLease(MutationClass.Challenge, "Troll confirmation service")
+                    || !ServiceTrollChallengeDialogs())
+                    return;
+            }
+
+            if (Config.ManageDiggers && HasAutopilotLease(MutationClass.Diggers, "planner Digger recap"))
                 DiggerManager.RecapDiggers();
-            if (Config.ManageBloodMagic)
-                ManageBloodSpell();
-            if (CanExecuteIrreversible && Config.AllowExpSpending)
+            var permanentLease = CanExecuteIrreversible
+                                 && (Config.AllowExpSpending || Config.AllowApSpending
+                                     || Config.AllowPerkSpending || Config.AllowQuirkSpending)
+                                 && HasAutopilotLease(MutationClass.PermanentSpend,
+                                     "planner permanent-currency purchases");
+            if (permanentLease && Config.AllowExpSpending)
             {
                 OpenExpBoxes();
                 if (!BuyGateExpUpgrade() && !BuyAtomicExpUpgrade()
@@ -211,16 +224,106 @@ namespace NGUInjector.Autopilot
                     && !BuyBestYggPermanent() && !BuyQolExpUpgrade())
                     BuyBestMarginalExpUpgrade();
             }
-            if (CanExecuteIrreversible && Config.AllowApSpending)
+            if (permanentLease && Config.AllowApSpending)
                 SpendBestApUpgrade();
-            if (Config.ManageCards)
+            if (Config.ManageCards && HasAutopilotLease(MutationClass.Cards, "planner Card policy"))
                 CardCookingManager.ManageCards(Main.Character, Config, CanExecuteIrreversible);
-            if (Config.ManageCooking)
+            if (Config.ManageCooking && HasAutopilotLease(MutationClass.Cooking, "planner Cooking policy"))
                 CardCookingManager.ManageCooking(Main.Character, CanExecuteIrreversible);
-            if (CanExecuteIrreversible && Config.AllowPerkSpending)
+            if (permanentLease && Config.AllowPerkSpending)
                 SpendBestPerk();
-            if (CanExecuteIrreversible && Config.AllowQuirkSpending)
+            if (permanentLease && Config.AllowQuirkSpending)
                 SpendBestQuirk();
+        }
+
+        private static bool HasAutopilotLease(MutationClass mutationClass, string context)
+        {
+            MutationLease lease;
+            string reason;
+            if (ExecutionSafety.TryAcquire(mutationClass, MutationOwner.Autopilot,
+                    out lease, out reason) && lease.IsCurrent)
+                return true;
+            ExecutionSafety.ReportHold("planner-lease:" + mutationClass,
+                context + " held: " + (string.IsNullOrEmpty(reason)
+                    ? "execution lease became stale" : reason));
+            return false;
+        }
+
+        /*
+        TROLL CONFIRMATION SERVICE
+
+        Native Troll challenges can install a chain of up to fifty-five modal ConfirmationBox
+        callbacks. Leaving the chain open blocks useful automation, while choosing Yes on the
+        native switcheroo step restarts it. Drive the installed Unity button listeners (not the
+        hidden effect methods), verify every counter transition, and stop the entire planner tick
+        if the popup fails to advance. Small/big troll messages have no chain counter and are closed
+        only at their exact native cadence boundary.
+        */
+        private static bool ServiceTrollChallengeDialogs()
+        {
+            var c = Main.Character;
+            var controller = c.allChallenges.trollChallenge;
+            var box = controller.box;
+            if (box == null || box.messageBox == null) return true;
+
+            var timerBefore = c.challenges.trollCounter;
+            var chainBefore = controller.boxCounter;
+            var clicks = 0;
+            while (controller.boxCounter > 0 && clicks < 55)
+            {
+                var before = controller.boxCounter;
+                var button = before == controller.switcherooBox ? box.noButton : box.yesButton;
+                if (button == null || button.onClick == null)
+                {
+                    Main.LogAction("REJECTED", "Troll dialog HOLD: native button unavailable at box "
+                                                     + before + "/" + controller.switcherooBox);
+                    return false;
+                }
+                button.onClick.Invoke();
+                clicks++;
+                if (controller.boxCounter != 0 && controller.boxCounter == before)
+                {
+                    Main.LogAction("REJECTED", "Troll dialog HOLD: native chain did not advance at box "
+                                                     + before + "/" + controller.switcherooBox);
+                    return false;
+                }
+            }
+            if (controller.boxCounter > 0)
+            {
+                Main.LogAction("REJECTED", "Troll dialog HOLD: native chain exceeded 55 verified clicks");
+                return false;
+            }
+
+            var visible = box.messageBox.transform.localPosition.x > -1900f
+                          || box.messageBox.transform.localPosition.y > -1900f;
+            var factor = Math.Max(1, controller.trollFactor());
+            var cadenceMessage = c.challenges.trollCounter > 0
+                                 && c.challenges.trollCounter % factor == 0;
+            if (visible && (clicks > 0 || cadenceMessage))
+            {
+                if (box.yesButton == null || box.yesButton.onClick == null)
+                {
+                    Main.LogAction("REJECTED", "Troll dialog HOLD: final native close button unavailable");
+                    return false;
+                }
+                box.yesButton.onClick.Invoke();
+                clicks++;
+                visible = box.messageBox.transform.localPosition.x > -1900f
+                          || box.messageBox.transform.localPosition.y > -1900f;
+                if (visible)
+                {
+                    Main.LogAction("REJECTED", "Troll dialog HOLD: native message remained visible after close");
+                    return false;
+                }
+            }
+
+            if (clicks > 0)
+                Main.LogAction("CHALLENGE", "Serviced Troll native dialogs [confirmed] timer "
+                                               + timerBefore + " -> " + c.challenges.trollCounter
+                                               + ", boxes " + chainBefore + " -> " + controller.boxCounter
+                                               + ", switcheroo " + controller.switcherooBox
+                                               + ", clicks " + clicks);
+            return true;
         }
 
         internal void PublishDecisionAfterAutomation(bool transactionComplete, string transactionError)
@@ -458,7 +561,7 @@ namespace NGUInjector.Autopilot
             return GameNames.Item(c, id);
         }
 
-        private void ManageBloodSpell()
+        internal void ManageBloodSpell()
         {
             var c = Main.Character;
             if (c.highestBoss < 37 || c.bloodMagic == null || c.bloodSpells == null
@@ -466,53 +569,173 @@ namespace NGUInjector.Autopilot
                 return;
             var bloodBefore = c.bloodMagic.bloodPoints;
             var label = string.Empty;
+            var effect = string.Empty;
+            var guffLevelsBefore = TotalMacGuffinLevels(c);
+            var adventureAttackBefore = c.adventure.attack;
+            var adventureDefenseBefore = c.adventure.defense;
+            var rebirthPowerBefore = c.bloodMagic.rebirthPower;
+            var nextAttackBefore = c.nextAttackMulti;
+            var nextDefenseBefore = c.nextDefenseMulti;
+            var goldSpellBefore = c.bloodMagic.goldSpellBlood;
+            var lootSpellBefore = c.bloodMagic.lootSpellBlood;
+            var endItemBefore = EndgameDependencyModel.IsOwned(c, 494);
+            var hasMacGuffin = guffLevelsBefore >= 0.0 && HasMacGuffin(c);
+            var remaining = Plan == null || Plan.RebirthExecutionHold ? int.MaxValue
+                : Plan.RebirthSeconds - (int)c.rebirthTime.totalseconds;
 
+            // Item 494 is a terminal dependency. Native castEndSpell spends the entire Blood
+            // pool, so reserve it ahead of every repeatable spell and require a physical loot
+            // slot before crossing the irreversible boundary.
+            if (c.settings.rebirthDifficulty == difficulty.sadistic && !endItemBefore)
+            {
+                if (c.inventory == null || c.inventory.inventory == null
+                    || !c.inventory.inventory.Any(x => x == null || x.id <= 0))
+                {
+                    ExecutionSafety.ReportHold("end-blood-inventory",
+                        "END Blood spell held until an ordinary inventory slot is empty");
+                    return;
+                }
+                var cost = c.bloodSpells.endSpellBlood();
+                if (bloodBefore < cost)
+                {
+                    ExecutionSafety.ReportHold("end-blood-reserve",
+                        "Reserving Blood for terminal item 494: " + bloodBefore.ToString("0.###e+0")
+                        + " / " + cost.ToString("0.###e+0"), 60);
+                    return;
+                }
+                c.bloodSpells.castEndSpell();
+                label = "END Blood spell — terminal item 494";
+                effect = "end";
+            }
             // Both MacGuffin spells create permanent equipped-item levels and dominate
             // run-local bonuses whenever their native cooldown and threshold are ready.
-            if (c.settings.rebirthDifficulty >= difficulty.evil
+            else if (c.settings.rebirthDifficulty >= difficulty.evil
                 && c.adventure.itopod.perkLevel.Count > 73 && c.adventure.itopod.perkLevel[73] >= 1
                 && c.bloodMagic.macguffin2Time.totalseconds >= c.bloodMagicController.spells.macguffin2Cooldown
-                && bloodBefore >= c.bloodSpells.minMacguffin2Blood())
+                && bloodBefore >= c.bloodSpells.minMacguffin2Blood()
+                && hasMacGuffin
+                && PermanentSpellWindowOpen(remaining, c.bloodMagicController.spells.macguffin2Cooldown))
             {
                 c.bloodSpells.castMacguffin2Spell();
                 label = "Blood MacGuffin β — all equipped MacGuffins";
+                effect = "guff";
             }
             else if (c.adventure.itopod.perkLevel.Count > 72 && c.adventure.itopod.perkLevel[72] >= 1
                      && c.bloodMagic.macguffin1Time.totalseconds >= c.bloodMagicController.spells.macguffin1Cooldown
-                     && bloodBefore >= c.bloodSpells.minMacguffin1Blood())
+                     && bloodBefore >= c.bloodSpells.minMacguffin1Blood()
+                     && CanCastAlpha(c)
+                     && PermanentSpellWindowOpen(remaining, c.bloodMagicController.spells.macguffin1Cooldown))
             {
                 c.bloodSpells.castMacguffin1Spell();
                 label = "Blood MacGuffin α";
+                effect = "guff";
             }
             else
             {
-                var remaining = Plan == null || Plan.RebirthExecutionHold ? int.MaxValue
-                    : Plan.RebirthSeconds - (int)c.rebirthTime.totalseconds;
-                if (remaining <= 5)
-                {
-                    c.bloodSpells.castRebirthSpell(bloodBefore);
-                    label = "Blood NUMBER Boost — reserved for the selected rebirth checkpoint";
-                }
-                else if (c.bloodMagic.adventureSpellTime.totalseconds >= c.bloodSpells.adventureSpellCooldown
+                if (c.bloodMagic.adventureSpellTime.totalseconds >= c.bloodSpells.adventureSpellCooldown
                          && bloodBefore >= c.bloodSpells.minAdventureBlood()
-                         && c.settings.rebirthDifficulty == difficulty.normal)
+                         && PermanentSpellWindowOpen(remaining, c.bloodSpells.adventureSpellCooldown))
                 {
                     c.bloodSpells.castAdventurePowerupSpell();
                     label = "Iron Pill — permanent Adventure stats";
+                    effect = "adventure";
                 }
-                else if (c.settings.pitUnlocked && bloodBefore >= c.bloodSpells.minGoldBlood())
+                else if (remaining <= 5)
+                {
+                    c.bloodSpells.castRebirthSpell(bloodBefore);
+                    label = "Blood NUMBER Boost — reserved for the selected rebirth checkpoint";
+                    effect = "number";
+                }
+                else if (!PermanentSpellWillBecomeReady(c, remaining)
+                         && _collectionTarget != null && _collectionTarget.Target != null
+                         && bloodBefore >= c.bloodSpells.minLootBlood())
+                {
+                    c.bloodSpells.castLootSpell(bloodBefore);
+                    label = "Blood Spaghetti — active Item List collection throughput";
+                    effect = "loot";
+                }
+                else if (!PermanentSpellWillBecomeReady(c, remaining)
+                         && c.settings.pitUnlocked && bloodBefore >= c.bloodSpells.minGoldBlood())
                 {
                     c.bloodSpells.castGoldSpell(bloodBefore);
                     label = "Counterfeit Gold";
+                    effect = "gold";
                 }
             }
 
             if (string.IsNullOrEmpty(label)) return;
-            var confirmed = c.bloodMagic.bloodPoints < bloodBefore;
+            var paymentConfirmed = c.bloodMagic.bloodPoints < bloodBefore;
+            var effectConfirmed = effect == "guff" ? TotalMacGuffinLevels(c) > guffLevelsBefore
+                : effect == "adventure" ? c.adventure.attack > adventureAttackBefore
+                                          && c.adventure.defense > adventureDefenseBefore
+                : effect == "number" ? c.bloodMagic.rebirthPower > rebirthPowerBefore
+                : effect == "gold" ? c.bloodMagic.goldSpellBlood > goldSpellBefore
+                : effect == "end" ? EndgameDependencyModel.IsOwned(c, 494)
+                : effect == "loot" && c.bloodMagic.lootSpellBlood > lootSpellBefore;
+            var confirmed = paymentConfirmed && effectConfirmed;
             Main.LogAction(confirmed ? "BLOOD" : "REJECTED", confirmed
                 ? "Cast " + label + " using " + (bloodBefore - c.bloodMagic.bloodPoints)
-                  + " Blood [confirmed by Blood delta]"
-                : label + " cast produced no Blood delta");
+                  + " Blood" + (effect == "number"
+                      ? "; rebirth power " + rebirthPowerBefore.ToString("0.###e+0") + " -> "
+                        + c.bloodMagic.rebirthPower.ToString("0.###e+0")
+                        + "; Number preview A " + nextAttackBefore.ToString("0.###e+0") + " -> "
+                        + c.nextAttackMulti.ToString("0.###e+0") + ", D "
+                        + nextDefenseBefore.ToString("0.###e+0") + " -> "
+                        + c.nextDefenseMulti.ToString("0.###e+0")
+                      : string.Empty)
+                  + " [confirmed by payment and spell-specific state delta]"
+                : label + " cast lacked a verified payment plus spell-specific effect delta");
+        }
+
+        private static bool HasMacGuffin(Character c)
+        {
+            return c.inventory.macguffins != null
+                   && c.inventory.macguffins.Any(x => x != null && x.id > 0);
+        }
+
+        private static bool CanCastAlpha(Character c)
+        {
+            if (!HasMacGuffin(c)) return false;
+            return c.wishes.wishes.Count <= 24 || c.wishes.wishes[24].level <= 0
+                   || c.inventory.macguffins.Count > 0
+                   && c.inventory.macguffins[0] != null && c.inventory.macguffins[0].id > 0;
+        }
+
+        private static double TotalMacGuffinLevels(Character c)
+        {
+            var total = 0.0;
+            if (c.inventory.macguffins == null) return total;
+            foreach (var item in c.inventory.macguffins)
+                if (item != null && item.id > 0) total += item.level;
+            return total;
+        }
+
+        private static bool PermanentSpellWillBecomeReady(Character c, int remainingSeconds)
+        {
+            if (remainingSeconds <= 5) return false;
+            var horizon = remainingSeconds == int.MaxValue ? double.PositiveInfinity : remainingSeconds;
+            if (c.settings.rebirthDifficulty >= difficulty.evil && HasMacGuffin(c)
+                && c.adventure.itopod.perkLevel.Count > 73 && c.adventure.itopod.perkLevel[73] >= 1
+                && c.bloodMagicController.spells.macguffin2Cooldown
+                   - c.bloodMagic.macguffin2Time.totalseconds <= horizon)
+                return true;
+            if (CanCastAlpha(c) && c.adventure.itopod.perkLevel.Count > 72
+                && c.adventure.itopod.perkLevel[72] >= 1
+                && c.bloodMagicController.spells.macguffin1Cooldown
+                   - c.bloodMagic.macguffin1Time.totalseconds <= horizon)
+                return true;
+            return c.bloodSpells.adventureSpellCooldown
+                   - c.bloodMagic.adventureSpellTime.totalseconds <= horizon;
+        }
+
+        private static bool PermanentSpellWindowOpen(int remainingSeconds, int cooldownSeconds)
+        {
+            // With only one cast left in the run, saving Blood until the mutation boundary weakly
+            // dominates spending at the first minimum because permanent spell gains are sublinear
+            // and integer-stepped. Cast immediately only when the cooldown can return before the
+            // selected checkpoint; at <=5 seconds, consume the maximized end-of-run pool.
+            return remainingSeconds == int.MaxValue || remainingSeconds <= 5
+                   || remainingSeconds > cooldownSeconds + 5;
         }
 
         internal bool ControlAdventure(CombatManager combat, QuestManager quests)
@@ -538,7 +761,8 @@ namespace NGUInjector.Autopilot
                 }
             }
             var questZone = quests.IsQuesting();
-            if (questZone > 0)
+
+            if (!PrepareEndgameTitan12Version(combat))
                 return false;
 
             if (InventoryManager.ExileAssemblyReady(Main.Character))
@@ -589,6 +813,11 @@ namespace NGUInjector.Autopilot
                 return true;
             }
 
+            // A ready Titan window has now been exhausted or rejected. Resume the active
+            // Beast Quest rather than letting ordinary collection/ITOPOD routing steal it.
+            if (questZone > 0)
+                return false;
+
             _majorUnlockTarget = MajorUnlockPlanner.Evaluate(Main.Character);
             if (_majorUnlockTarget != null)
             {
@@ -623,27 +852,62 @@ namespace NGUInjector.Autopilot
             }
 
             var best = _adventureTarget;
+            var terminalItopodDropMissing = Main.Character.settings.rebirthDifficulty == difficulty.sadistic
+                                            && !EndgameDependencyModel.IsOwned(Main.Character, 491);
             if (Main.Character.settings.itopodOn
-                && (best == null || _collectionTarget != null && _collectionTarget.IncompleteZones == 0))
+                && (terminalItopodDropMissing || best == null
+                    || _collectionTarget != null && _collectionTarget.IncompleteZones == 0))
             {
-                var optimal = Math.Max(0, Math.Min(Main.Character.calculateBestItopodLevel(),
-                    Main.Character.adventure.highestItopodLevel - 1));
-                var lazyOwnsRange = Main.Character.arbitrary.boughtLazyITOPOD
-                                    && Main.Character.arbitrary.lazyITOPODOn;
-                if (!lazyOwnsRange && (Main.Character.adventure.zone < 1000
-                    || Main.Character.adventureController.itopodLevel != optimal))
-                    Main.Character.adventureController.setOptimalFloor();
-                if (_loggedAdventureZone != 1000 || _loggedAdventureFightType != 0)
+                var route = ZoneHelpers.ConfigureITOPOD();
+                if (!route.Confirmed)
+                    return false;
+                if (route.RequiresZoneReset && Main.Character.adventure.zone >= 1000)
                 {
-                    Main.LogAction("ADVENTURE", "Farming optimal ITOPOD floor " + optimal
-                                                   + " after completing the current ordinary-zone set");
-                    _loggedAdventureZone = 1000;
-                    _loggedAdventureFightType = 0;
+                    Main.LogAction("ITOPOD", "Resetting the live sentinel floor through Safe Zone before the next spawn");
+                    combat.ManualZone(-1, false, false, false, false, false);
+                    CaptureRecovery(combat);
+                    return true;
                 }
-                _adventureTarget = new ZoneTarget {Zone = 1000, FightType = 0};
-                combat.IdleZone(1000, false, true, Main.Settings.ITOPODBeastMode);
-                CaptureRecovery(combat);
-                return true;
+                // Before T4, ambient PP progress is negligible. Enter only while a new record
+                // is one-hit viable; otherwise the best ordinary zone supplies useful boosts/EXP.
+                if (route.Climbing || Main.Character.adventure.titan4Kills > 0)
+                {
+                    // A reach proof may depend on an owned combat set that is not
+                    // currently equipped. Stage and verify it before crossing the
+                    // zone boundary; otherwise a weak production set can deadlock
+                    // before the optimizer ever sees an enemy-free ITOPOD frame.
+                    if (Main.Character.adventure.zone != 1000
+                        && !ProgressionLoadoutOptimizer.PrepareItopodRoute())
+                        return false;
+                    var move69Pending = Main.Character.adventure.move69Unlocked
+                                        && Main.Character.adventure.move69Used < 69
+                                        && !EndgameDependencyModel.IsOwned(Main.Character, 481);
+                    var fightType = move69Pending
+                                    || route.Climbing && Main.Settings.ITOPODCombatMode != 1 ? 2 : 0;
+                    if (_loggedAdventureZone != 1000 || _loggedAdventureFightType != fightType)
+                    {
+                        Main.LogAction("ADVENTURE", (route.Climbing
+                            ? "Climbing ITOPOD range " + route.Start + "-" + route.End
+                              + " for the next first-clear PP award"
+                            : "Farming ITOPOD floor " + route.FarmFloor
+                              + (terminalItopodDropMissing ? " for END item 491" : string.Empty))
+                            + " after completing the current ordinary-zone set");
+                        _loggedAdventureZone = 1000;
+                        _loggedAdventureFightType = fightType;
+                    }
+                    _adventureTarget = new ZoneTarget {Zone = 1000, FightType = fightType};
+                    if (fightType == 2)
+                        combat.ManualZone(1000, false, true, true, true, Main.Settings.ITOPODBeastMode);
+                    else
+                        combat.IdleZone(1000, false, true, Main.Settings.ITOPODBeastMode);
+                    CaptureRecovery(combat);
+                    return true;
+                }
+                if (_collectionTarget != null && _collectionTarget.Target != null)
+                {
+                    _adventureTarget = _collectionTarget.Target;
+                    best = _adventureTarget;
+                }
             }
 
             if (best == null)
@@ -669,6 +933,42 @@ namespace NGUInjector.Autopilot
             else
                 combat.IdleZone(best.Zone, bossOnlyForSet, true);
             CaptureRecovery(combat);
+            return true;
+        }
+
+        private static bool PrepareEndgameTitan12Version(CombatManager combat)
+        {
+            var c = Main.Character;
+            if (c == null || c.settings.rebirthDifficulty != difficulty.sadistic)
+                return true;
+            var desiredOneBased = EndgameDependencyModel.NextMissingTitan12Version(c);
+            if (desiredOneBased < 1 || !ZoneHelpers.TitanSpawningSoon(11))
+                return true;
+            var desired = desiredOneBased - 1;
+            if (c.adventure.titan12Version == desired)
+                return true;
+            if (!CombatManager.IsZoneUnlocked(ZoneHelpers.TitanZones[11]))
+            {
+                ExecutionSafety.ReportHold("end-t12-version-zone",
+                    "T12 END-piece version " + desiredOneBased
+                    + " is selected by the dependency graph but zone 42 is not reachable");
+                return false;
+            }
+
+            combat.MoveToZone(ZoneHelpers.TitanZones[11]);
+            if (c.adventure.zone != ZoneHelpers.TitanZones[11])
+                return false;
+            c.adventureController.changeTitanDifficulty(desired);
+            if (c.adventure.titan12Version != desired)
+            {
+                Main.LogAction("REJECTED", "Native T12 version selector did not retain END target v"
+                                           + desiredOneBased);
+                return false;
+            }
+            Main.LogAction("ADVENTURE", "Selected T12 v" + desiredOneBased
+                                               + " for missing END item "
+                                               + EndgameDependencyModel.TitanVersionItem(desiredOneBased)
+                                               + " [native version field confirmed]");
             return true;
         }
 
@@ -742,6 +1042,12 @@ namespace NGUInjector.Autopilot
                        + "  \"schemaVersion\": 2,\n"
                        + "  \"buildId\": \"" + typeof(AutopilotManager).Assembly.ManifestModule.ModuleVersionId + "\",\n"
                        + "  \"producerPid\": " + Process.GetCurrentProcess().Id + ",\n"
+                       + "  \"producerSessionId\": \"" + EscapeJson(Main.SessionId) + "\",\n"
+                       + "  \"activeLocationSha256AtObservation\": \"" + EscapeJson(Main.ActiveLocationSha256AtObservation) + "\",\n"
+                       + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
+                       + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
+                       + "  \"activeImageHashAvailable\": false,\n"
+                       + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\",\n"
                        + "  \"decisionSequence\": " + (++_decisionSequence) + ",\n"
                        + "  \"time\": \"" + DateTime.UtcNow.ToString("o") + "\",\n"
                        + "  \"enabled\": " + enabled.ToString().ToLowerInvariant() + ",\n"
@@ -863,6 +1169,12 @@ namespace NGUInjector.Autopilot
             var projectedDefenseMultiplier = c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : c.nextDefenseMulti;
             var bossCatchupComplete = c.bossID == activeHighestBoss;
             var rebirthPreviewMonotonic = projectedAttackMultiplier > 1.0 && projectedDefenseMultiplier > 1.0;
+            var rebirthNumberSafe = projectedAttackMultiplier >= 1.0 - 1e-12
+                                    && projectedDefenseMultiplier >= 1.0 - 1e-12
+                                    && !double.IsNaN(projectedAttackMultiplier)
+                                    && !double.IsNaN(projectedDefenseMultiplier)
+                                    && !double.IsInfinity(projectedAttackMultiplier)
+                                    && !double.IsInfinity(projectedDefenseMultiplier);
             var recoveryResetEta = -1;
             var recoveryContinueEta = -1;
             var recoveryRouteReason = string.Empty;
@@ -878,12 +1190,10 @@ namespace NGUInjector.Autopilot
             }
             var rebirthSafetyBlockReason = !Config.AllowRebirths
                 ? "rebirth execution is disabled in autopilot settings"
-                : !rebirthPreviewMonotonic
-                    ? "native next-Number preview would lower Attack or Defense multiplier"
-                    : !recoveryResetEfficient
-                        ? recoveryRouteReason
-                        : string.Empty;
-            var projectedRebirthAp = Math.Max(0, (Plan.RebirthSeconds - 3600) / 500);
+                : Plan.RebirthExecutionHold
+                    ? "the event-driven planner has not admitted a valid finite mutation boundary"
+                    : string.Empty;
+            var projectedRebirthAp = MechanicsProgression.TimeAp(Plan.RebirthSeconds);
             var questEta = -1;
             if (c.beastQuest.inQuest && c.beastQuest.targetDrops > c.beastQuest.curDrops)
             {
@@ -900,6 +1210,11 @@ namespace NGUInjector.Autopilot
             var adventureBossOnlyForSet = _collectionTarget != null && _collectionTarget.Target != null
                                           && _collectionTarget.Target.Zone == adventureTargetZone
                                           && _collectionTarget.BossOnly;
+            var itopodRoute = ZoneHelpers.LastItopodRoute;
+            var itopodProgressPerKill = c.settings.itopodOn
+                ? c.adventureController.itopod.progressGained(c.adventureController.itopodLevel) : 0;
+            var itopodPointThreshold = c.settings.itopodOn
+                ? c.adventureController.itopod.pointThreshold() : 0;
             var escapedAdventureTargetName = adventureTargetName.Replace("\\", "\\\\").Replace("\"", "\\\"");
             var adventureSafeZoneSeconds = adventureZone == -1 && _adventureSafeZoneSince != DateTime.MinValue
                 ? Math.Max(0, (int)Math.Floor((DateTime.UtcNow - _adventureSafeZoneSince).TotalSeconds)) : 0;
@@ -927,6 +1242,12 @@ namespace NGUInjector.Autopilot
                        + "  \"schemaVersion\": 2,\n"
                        + "  \"buildId\": \"" + typeof(AutopilotManager).Assembly.ManifestModule.ModuleVersionId + "\",\n"
                        + "  \"producerPid\": " + Process.GetCurrentProcess().Id + ",\n"
+                       + "  \"producerSessionId\": \"" + EscapeJson(Main.SessionId) + "\",\n"
+                       + "  \"activeLocationSha256AtObservation\": \"" + EscapeJson(Main.ActiveLocationSha256AtObservation) + "\",\n"
+                       + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
+                       + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
+                       + "  \"activeImageHashAvailable\": false,\n"
+                       + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\",\n"
                        + "  \"decisionSequence\": " + (++_decisionSequence) + ",\n"
                        + "  \"time\": \"" + DateTime.UtcNow.ToString("o") + "\",\n"
                        + "  \"enabled\": " + Config.Enabled.ToString().ToLowerInvariant() + ",\n"
@@ -942,11 +1263,14 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthSeconds\": " + Plan.RebirthSeconds + ",\n"
                        + "  \"rebirthReason\": \"" + EscapeJson(Plan.RebirthReason) + "\",\n"
                        + "  \"rebirthExecutionHold\": " + Plan.RebirthExecutionHold.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthNextPositiveEtaSeconds\": " + Plan.RebirthNextPositiveEtaSeconds + ",\n"
+                       + "  \"rebirthNextEvaluationEtaSeconds\": " + Plan.RebirthNextEvaluationEtaSeconds + ",\n"
+                       + "  \"rebirthEtaReason\": \"" + EscapeJson(Plan.RebirthEtaReason) + "\",\n"
                        + "  \"rebirthRunnerUpSeconds\": " + Plan.RebirthRunnerUpSeconds + ",\n"
                        + "  \"rebirthRunnerUpDeltaSeconds\": " + Plan.RebirthRunnerUpDeltaSeconds + ",\n"
                        + "  \"rebirthRunnerUpReason\": \"" + EscapeJson(Plan.RebirthRunnerUpReason) + "\",\n"
-                       + "  \"rebirthOptimizerModel\": \"exact-time-and-boss-array-recovery-route-v2\",\n"
-                       + "  \"rebirthObjective\": \"minimize modeled wall-clock time to the persistent boss record while preserving strict Number growth; maximize compounded log growth after catch-up\",\n"
+                       + "  \"rebirthOptimizerModel\": \"event-queue-number-cost-and-persistent-cycle-v5\",\n"
+                       + "  \"rebirthObjective\": \"minimize terminal-route time across legal event boundaries; native Number loss is a scored branch cost, never an admission rule\",\n"
                        + "  \"rebirthSelectedScorePerHour\": " + Plan.RebirthSelectedScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthRunnerUpScorePerHour\": " + Plan.RebirthRunnerUpScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthOptimizerProjectedMultiplier\": " + Plan.RebirthProjectedMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
@@ -954,7 +1278,26 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthOptimizerRecordRecoveryEtaSeconds\": " + Plan.RebirthRecoveryEtaSeconds + ",\n"
                        + "  \"rebirthOptimizerRecoveryRemainingBosses\": " + Plan.RebirthRecoveryRemainingBosses + ",\n"
                        + "  \"rebirthOptimizerRecoveryReason\": \"" + EscapeJson(Plan.RebirthRecoveryReason) + "\",\n"
+                       + "  \"rebirthExpectedCatchupExp\": " + Plan.RebirthExpectedCatchupExp.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthExpectedCatchupExpPerHour\": " + Plan.RebirthExpectedCatchupExpPerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"rebirthMinimumNumberRatio\": " + Plan.RebirthMinimumNumberRatio.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthCandidateSummary\": \"" + EscapeJson(Plan.RebirthCandidateSummary) + "\",\n"
+                       + "  \"challengeEvidenceSummary\": \"" + EscapeJson(Plan.ChallengeEvidenceSummary) + "\",\n"
+                       + "  \"challengeActive\": " + Plan.ChallengeActive.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"nextChallengeAdmitted\": " + Plan.ChallengeAdmitted.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"nextChallengeName\": \"" + EscapeJson(Plan.ChallengeName) + "\",\n"
+                       + "  \"nextChallengeEtaSeconds\": " + Plan.ChallengeClearEtaSeconds + ",\n"
+                       + "  \"challengeRecoveryEtaSeconds\": " + Plan.ChallengeRecoveryEtaSeconds + ",\n"
+                       + "  \"challengeTargetBoss\": " + Plan.ChallengeTargetBoss + ",\n"
+                       + "  \"challengeTargetLevel\": " + Plan.ChallengeTargetLevel + ",\n"
+                       + "  \"challengeCompletedBefore\": " + Plan.ChallengeCompletedBefore + ",\n"
+                       + "  \"challengeMaxCompletions\": " + Plan.ChallengeMaxCompletions + ",\n"
+                       + "  \"challengeEtaReason\": \"" + EscapeJson(Plan.ChallengeEtaReason) + "\",\n"
+                       + "  \"endgameObjective\": \"" + EscapeJson(Plan.EndgameObjective) + "\",\n"
+                       + "  \"endgameMissingSummary\": \"" + EscapeJson(Plan.EndgameMissingSummary) + "\",\n"
+                       + "  \"endgameTitan12VersionTarget\": " + Plan.Titan12VersionTarget + ",\n"
+                       + "  \"endgameReadyToTrigger\": " + Plan.EndgameReadyToTrigger.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"endgameExecutionAuthorized\": " + Config.AllowEndSequence.ToString().ToLowerInvariant() + ",\n"
                        + "  \"rebirthCandidateCount\": " + Plan.RebirthCandidateCount + ",\n"
                        + "  \"rebirthSearchResolutionSeconds\": 1,\n"
                        + "  \"rebirthHysteresisPercent\": 0.05,\n"
@@ -966,6 +1309,7 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthCurrentDefenseMultiplier\": " + c.defenseMulti.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthNextDefenseMultiplierPreview\": " + c.nextDefenseMulti.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthPreviewMonotonic\": " + rebirthPreviewMonotonic.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthNumberNonRegression\": " + rebirthNumberSafe.ToString().ToLowerInvariant() + ",\n"
                        + "  \"rebirthBossCatchupComplete\": " + bossCatchupComplete.ToString().ToLowerInvariant() + ",\n"
                        + "  \"rebirthRecoveryMode\": " + recoveryMode.ToString().ToLowerInvariant() + ",\n"
                        + "  \"rebirthRecoveryResetEfficient\": " + recoveryResetEfficient.ToString().ToLowerInvariant() + ",\n"
@@ -995,6 +1339,7 @@ namespace NGUInjector.Autopilot
                        + "  \"questEtaSeconds\": " + questEta + ",\n"
                        + "  \"questBanked\": " + c.beastQuest.curBankedQuests + ",\n"
                        + "  \"questBankCap\": " + c.beastQuestController.maxBankedQuests() + ",\n"
+                       + "  \"questPoints\": " + c.beastQuest.quirkPoints + ",\n"
                        + "  \"questButter\": " + c.arbitrary.beastButterCount + ",\n"
                        + "  \"questQpPreview\": " + (c.beastQuest.inQuest ? c.beastQuestController.currentQuestQPValue() : 0) + ",\n"
                        + "  \"nextBoss\": " + (activeHighestBoss + 1) + ",\n"
@@ -1025,6 +1370,19 @@ namespace NGUInjector.Autopilot
                        + "  \"adventureTargetName\": \"" + escapedAdventureTargetName + "\",\n"
                        + "  \"adventureFightType\": " + adventureFightType + ",\n"
                        + "  \"adventureBossOnlyForSet\": " + adventureBossOnlyForSet.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"itopodMode\": \"" + EscapeJson(itopodRoute.Mode) + "\",\n"
+                       + "  \"itopodRouteConfirmed\": " + itopodRoute.Confirmed.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"itopodRouteReason\": \"" + EscapeJson(itopodRoute.Reason) + "\",\n"
+                       + "  \"itopodCurrentFloor\": " + c.adventureController.itopodLevel + ",\n"
+                       + "  \"itopodHighestFloor\": " + c.adventure.highestItopodLevel + ",\n"
+                       + "  \"itopodReachableOneHitFloor\": " + itopodRoute.ReachableFloor + ",\n"
+                       + "  \"itopodRangeStart\": " + c.adventure.itopodStart + ",\n"
+                       + "  \"itopodRangeEnd\": " + c.adventure.itopodEnd + ",\n"
+                       + "  \"itopodKillsOnFloor\": " + c.adventureController.itopodKillCount + ",\n"
+                       + "  \"itopodPerkPoints\": " + c.adventure.itopod.perkPoints + ",\n"
+                       + "  \"itopodPointProgress\": " + c.adventure.itopod.pointProgress + ",\n"
+                       + "  \"itopodPointThreshold\": " + itopodPointThreshold + ",\n"
+                       + "  \"itopodProgressPerKill\": " + itopodProgressPerKill + ",\n"
                        + "  \"majorUnlockActive\": " + (_majorUnlockTarget != null).ToString().ToLowerInvariant() + ",\n"
                        + "  \"majorUnlockName\": \"" + EscapeJson(_majorUnlockTarget == null ? string.Empty : _majorUnlockTarget.Mechanic) + "\",\n"
                        + "  \"majorUnlockGoal\": \"" + EscapeJson(_majorUnlockTarget == null ? string.Empty : _majorUnlockTarget.Goal) + "\",\n"
@@ -1032,6 +1390,8 @@ namespace NGUInjector.Autopilot
                        + "  \"majorUnlockItemId\": " + (_majorUnlockTarget == null ? 0 : _majorUnlockTarget.ItemId) + ",\n"
                        + "  \"majorUnlockGuaranteedDrop\": " + (_majorUnlockTarget != null && _majorUnlockTarget.GuaranteedFirstDrop).ToString().ToLowerInvariant() + ",\n"
                        + "  \"majorUnlockDropChance\": " + (_majorUnlockTarget == null ? 0.0 : _majorUnlockTarget.DropChance).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"majorUnlockExpectedDropSeconds\": " + (_majorUnlockTarget == null ? -1.0 : _majorUnlockTarget.ExpectedDropSeconds).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"majorUnlockP90DropSeconds\": " + (_majorUnlockTarget == null ? -1.0 : _majorUnlockTarget.P90DropSeconds).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"majorUnlockConsecutiveFailures\": " + (_majorUnlockTarget == null ? 0 : _majorUnlockTarget.ConsecutiveFailures) + ",\n"
                        + "  \"majorUnlockRetryEtaSeconds\": " + (_majorUnlockTarget == null ? 0 : _majorUnlockTarget.RetryEtaSeconds) + ",\n"
                        + "  \"collectionTargetZone\": " + (_collectionTarget == null || _collectionTarget.Target == null ? -1 : _collectionTarget.Target.Zone) + ",\n"
@@ -1097,6 +1457,7 @@ namespace NGUInjector.Autopilot
                        + "  \"magicBloodAllocated\": " + (c.bloodMagic == null || c.bloodMagic.ritual == null ? 0L : c.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic))) + ",\n"
                        + "  \"magicWandoosAllocated\": " + c.wandoos98.wandoosMagic + ",\n"
                        + "  \"magicAllocationDecision\": \"" + EscapeJson(CustomAllocation.LastMagicAllocationDecision) + "\",\n"
+                       + "  \"res3AllocationDecision\": \"" + EscapeJson(CustomAllocation.LastR3AllocationDecision) + "\",\n"
                        + "  \"bloodMagicAllocationDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.BR.LastDecision) + "\",\n"
                        + "  \"loadoutDecision\": \"" + EscapeJson(ProgressionLoadoutOptimizer.LastDecision) + "\",\n"
                        + "  \"loadoutObjective\": \"" + EscapeJson(ProgressionLoadoutOptimizer.LastObjective) + "\",\n"
@@ -1145,8 +1506,25 @@ namespace NGUInjector.Autopilot
                        + ",  \"augmentDecision\": \"" + EscapeJson(augmentStatus.Decision) + "\",\n"
                        + "  \"augmentEnergy\": " + augmentStatus.Allocated + ",\n"
                        + "  \"augmentProgress\": " + augmentStatus.Progress.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
-                       + "  \"augmentEtaSeconds\": " + augmentStatus.EtaSeconds + "\n"
-                       + ",  \"goalNodes\": " + activeGoalsJson + "\n"
+                       + "  \"augmentEtaSeconds\": " + augmentStatus.EtaSeconds + ",\n"
+                       + "  \"characterStats\": " + SafeTelemetry(() => CharacterStatsJson(c), "{}") + ",\n"
+                       + "  \"equippedGear\": " + SafeTelemetry(() => EquippedGearJson(c), "[]") + ",\n"
+                       + "  \"inventoryItems\": " + SafeTelemetry(() => EquipmentListJson(c, c.inventory.inventory, "inventory"), "[]") + ",\n"
+                       + "  \"daycareItems\": " + SafeTelemetry(() => EquipmentListJson(c, c.inventory.daycare, "daycare"), "[]") + ",\n"
+                       + "  \"macguffins\": " + SafeTelemetry(() => EquipmentListJson(c, c.inventory.macguffins, "macguffin"), "[]") + ",\n"
+                       + "  \"itemListEntries\": " + SafeTelemetry(() => ItemListJson(c), "[]") + ",\n"
+                       + "  \"itemListCatalogueCount\": " + ItemCatalogueCount(c) + ",\n"
+                       + "  \"itopodPerks\": " + SafeTelemetry(() => ItopodPerksJson(c), "[]") + ",\n"
+                       + "  \"expPurchases\": " + SafeTelemetry(() => PublicPurchaseStateJson(c.purchases), "[]") + ",\n"
+                       + "  \"apPurchases\": " + SafeTelemetry(() => ApPurchaseStateJson(c), "[]") + ",\n"
+                       + "  \"mechanicUnlocks\": " + SafeTelemetry(() => MechanicUnlocksJson(c), "[]") + ",\n"
+                       + "  \"nguProgress\": " + SafeTelemetry(() => NguProgressJson(c), "[]") + ",\n"
+                       + "  \"hackProgress\": " + SafeTelemetry(() => HackProgressJson(c), "[]") + ",\n"
+                       + "  \"wishProgress\": " + SafeTelemetry(() => WishProgressJson(c), "[]") + ",\n"
+                       + "  \"fruitProgress\": " + SafeTelemetry(() => FruitProgressJson(c), "[]") + ",\n"
+                       + "  \"diggerProgress\": " + SafeTelemetry(() => DiggerProgressJson(c), "[]") + ",\n"
+                       + "  \"beardProgress\": " + SafeTelemetry(() => BeardProgressJson(c), "[]") + ",\n"
+                       + "  \"goalNodes\": " + activeGoalsJson + "\n"
                        + "}\n";
             WriteAtomic(_decisionPath, json);
         }
@@ -1157,6 +1535,12 @@ namespace NGUInjector.Autopilot
                        + "  \"schemaVersion\": 2,\n"
                        + "  \"buildId\": \"" + typeof(AutopilotManager).Assembly.ManifestModule.ModuleVersionId + "\",\n"
                        + "  \"producerPid\": " + Process.GetCurrentProcess().Id + ",\n"
+                       + "  \"producerSessionId\": \"" + EscapeJson(Main.SessionId) + "\",\n"
+                       + "  \"activeLocationSha256AtObservation\": \"" + EscapeJson(Main.ActiveLocationSha256AtObservation) + "\",\n"
+                       + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
+                       + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
+                       + "  \"activeImageHashAvailable\": false,\n"
+                       + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\",\n"
                        + "  \"decisionSequence\": " + (++_decisionSequence) + ",\n"
                        + "  \"time\": \"" + DateTime.UtcNow.ToString("o") + "\",\n"
                        + "  \"enabled\": false,\n"
@@ -1213,6 +1597,366 @@ namespace NGUInjector.Autopilot
         {
             return (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"")
                 .Replace("\r", " ").Replace("\n", " ");
+        }
+
+        private static string JsonNumber(double value)
+        {
+            return double.IsNaN(value) || double.IsInfinity(value)
+                ? "0"
+                : value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private static string SafeTelemetry(Func<string> builder, string fallback)
+        {
+            try { return builder(); }
+            catch { return fallback; }
+        }
+
+        private static string CharacterStatsJson(Character c)
+        {
+            return "{\"fightBossAttack\":" + JsonNumber(c.attack)
+                   + ",\"fightBossDefense\":" + JsonNumber(c.defense)
+                   + ",\"fightBossCurrentHP\":" + JsonNumber(c.curHP)
+                   + ",\"fightBossMaxHP\":" + JsonNumber(c.maxHP)
+                   + ",\"adventureAttack\":" + JsonNumber(c.totalAdvAttack())
+                   + ",\"adventureDefense\":" + JsonNumber(c.totalAdvDefense())
+                   + ",\"adventureCurrentHP\":" + JsonNumber(c.adventure.curHP)
+                   + ",\"adventureMaxHP\":" + JsonNumber(c.totalAdvHP())
+                   + ",\"energyPower\":" + JsonNumber(c.energyPower)
+                   + ",\"energyCap\":" + c.capEnergy
+                   + ",\"energyBars\":" + c.energyBars
+                   + ",\"magicPower\":" + JsonNumber(c.magic.magicPower)
+                   + ",\"magicCap\":" + c.magic.capMagic
+                   + ",\"magicBars\":" + c.magic.magicPerBar
+                   + ",\"res3Name\":\"" + EscapeJson(c.res3.res3Name) + "\""
+                   + ",\"res3Unlocked\":" + c.res3.res3On.ToString().ToLowerInvariant()
+                   + ",\"res3Power\":" + JsonNumber(c.res3.res3Power)
+                   + ",\"res3Cap\":" + c.res3.capRes3
+                   + ",\"res3Bars\":" + c.res3.res3PerBar
+                   + ",\"res3Current\":" + c.res3.curRes3
+                   + ",\"res3Idle\":" + c.res3.idleRes3
+                   + ",\"lifetimeExp\":" + c.stats.totalExp
+                   + ",\"lifetimeAp\":" + c.arbitrary.curLifetimePoints
+                   + ",\"seeds\":" + c.yggdrasil.seeds
+                   + ",\"blood\":" + JsonNumber(c.bloodMagic.bloodPoints)
+                   + "}";
+        }
+
+        private static string EquippedGearJson(Character c)
+        {
+            var rows = new List<string>
+            {
+                EquipmentJson(c, c.inventory.head, "Head", "equipped", 0),
+                EquipmentJson(c, c.inventory.chest, "Chest", "equipped", 1),
+                EquipmentJson(c, c.inventory.legs, "Legs", "equipped", 2),
+                EquipmentJson(c, c.inventory.boots, "Boots", "equipped", 3),
+                EquipmentJson(c, c.inventory.weapon, "Weapon", "equipped", 4),
+                EquipmentJson(c, c.inventory.weapon2, "Weapon 2", "equipped", 5)
+            };
+            for (var i = 0; i < c.inventory.accs.Count; i++)
+                rows.Add(EquipmentJson(c, c.inventory.accs[i], "Accessory " + (i + 1), "equipped", i));
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string EquipmentListJson(Character c, IList<Equipment> items, string location)
+        {
+            if (items == null) return "[]";
+            var rows = new List<string>();
+            for (var i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                if (item == null || item.id <= 0) continue;
+                rows.Add(EquipmentJson(c, item, location + " " + (i + 1), location, i));
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string EquipmentJson(Character c, Equipment item, string slot,
+            string location, int index)
+        {
+            if (item == null) item = new Equipment();
+            var maxxed = item.id > 0 && c.inventory.itemList.itemMaxxed != null
+                          && item.id < c.inventory.itemList.itemMaxxed.Count
+                          && c.inventory.itemList.itemMaxxed[item.id];
+            var specials = new List<string>();
+            AddEquipmentSpecial(specials, item.spec1Type, item.spec1Cur, item.spec1Cap);
+            AddEquipmentSpecial(specials, item.spec2Type, item.spec2Cur, item.spec2Cap);
+            AddEquipmentSpecial(specials, item.spec3Type, item.spec3Cur, item.spec3Cap);
+            return "{\"slot\":\"" + EscapeJson(slot) + "\",\"location\":\""
+                   + EscapeJson(location) + "\",\"index\":" + index
+                   + ",\"id\":" + item.id + ",\"name\":\""
+                   + EscapeJson(item.id <= 0 ? "Empty" : GameNames.Item(c, item.id)) + "\""
+                   + ",\"part\":\"" + EscapeJson(item.type.ToString()) + "\""
+                   + ",\"level\":" + item.level
+                   + ",\"maxxed\":" + maxxed.ToString().ToLowerInvariant()
+                   + ",\"locked\":" + (!item.removable).ToString().ToLowerInvariant()
+                   + ",\"bossRequired\":" + item.bossRequired
+                   + ",\"attack\":" + JsonNumber(item.curAttack)
+                   + ",\"attackCap\":" + JsonNumber(item.capAttack)
+                   + ",\"defense\":" + JsonNumber(item.curDefense)
+                   + ",\"defenseCap\":" + JsonNumber(item.capDefense)
+                   + ",\"specials\":[" + string.Join(",", specials.ToArray()) + "]}";
+        }
+
+        private static void AddEquipmentSpecial(ICollection<string> rows, specType type,
+            double current, double cap)
+        {
+            if (type == specType.None) return;
+            rows.Add("{\"type\":\"" + EscapeJson(type.ToString()) + "\",\"current\":"
+                     + JsonNumber(current) + ",\"cap\":" + JsonNumber(cap) + "}");
+        }
+
+        private static int ItemCatalogueCount(Character c)
+        {
+            return c.itemInfo == null || c.itemInfo.itemName == null ? 0 : c.itemInfo.itemName.Length;
+        }
+
+        private static string ItemListJson(Character c)
+        {
+            var dropped = c.inventory.itemList.itemDropped;
+            var maxxed = c.inventory.itemList.itemMaxxed;
+            var filtered = c.inventory.itemList.itemFiltered;
+            var count = Math.Max(ItemCatalogueCount(c), Math.Max(dropped == null ? 0 : dropped.Count,
+                maxxed == null ? 0 : maxxed.Count));
+            var rows = new List<string>();
+            for (var id = 1; id < count; id++)
+            {
+                var wasDropped = dropped != null && id < dropped.Count && dropped[id];
+                var wasMaxxed = maxxed != null && id < maxxed.Count && maxxed[id];
+                if (!wasDropped && !wasMaxxed) continue;
+                var isFiltered = filtered != null && id < filtered.Count && filtered[id];
+                rows.Add("{\"id\":" + id + ",\"name\":\"" + EscapeJson(GameNames.Item(c, id))
+                         + "\",\"dropped\":" + wasDropped.ToString().ToLowerInvariant()
+                         + ",\"maxxed\":" + wasMaxxed.ToString().ToLowerInvariant()
+                         + ",\"filtered\":" + isFiltered.ToString().ToLowerInvariant() + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string ItopodPerksJson(Character c)
+        {
+            if (c.adventureController == null || c.adventureController.itopod == null
+                || c.adventure.itopod == null) return "[]";
+            var controller = c.adventureController.itopod;
+            var levels = c.adventure.itopod.perkLevel;
+            var count = Math.Min(levels.Count, Math.Min(controller.perkName.Count,
+                Math.Min(controller.cost.Count, controller.maxLevel.Count)));
+            var rows = new List<string>();
+            for (var id = 0; id < count; id++)
+            {
+                var requirement = id < controller.perkDifficultyReq.Count
+                    ? controller.perkDifficultyReq[id] : difficulty.normal;
+                var type = id < controller.perkType.Count ? controller.perkType[id].ToString() : "Unknown";
+                rows.Add("{\"id\":" + id + ",\"name\":\"" + EscapeJson(controller.perkName[id])
+                         + "\",\"type\":\"" + EscapeJson(type) + "\",\"level\":" + levels[id]
+                         + ",\"maxLevel\":" + controller.maxLevel[id] + ",\"baseCost\":"
+                         + controller.cost[id] + ",\"difficulty\":" + (int)requirement
+                         + ",\"unlocked\":"
+                         + (c.settings.itopodOn && c.settings.rebirthDifficulty >= requirement)
+                             .ToString().ToLowerInvariant() + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string PublicPurchaseStateJson(object purchases)
+        {
+            if (purchases == null) return "[]";
+            var rows = new List<string>();
+            foreach (var field in purchases.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public)
+                         .OrderBy(x => x.Name))
+            {
+                var value = field.GetValue(purchases);
+                if (field.FieldType == typeof(bool))
+                    rows.Add(PurchaseFieldJson(field.Name, (bool)value ? "1" : "0", (bool)value));
+                else if (field.FieldType == typeof(int) || field.FieldType == typeof(long)
+                         || field.FieldType == typeof(float) || field.FieldType == typeof(double))
+                {
+                    var number = Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture);
+                    rows.Add(PurchaseFieldJson(field.Name, JsonNumber(number), number > 0.0));
+                }
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string PurchaseFieldJson(string field, string value, bool owned)
+        {
+            return "{\"key\":\"" + EscapeJson(field) + "\",\"name\":\""
+                   + EscapeJson(HumanizeIdentifier(field)) + "\",\"value\":" + value
+                   + ",\"owned\":" + owned.ToString().ToLowerInvariant() + "}";
+        }
+
+        private static string HumanizeIdentifier(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            var clean = value.Replace("buy", string.Empty).Replace("AP", string.Empty)
+                .Replace("has", string.Empty).Replace("bought", string.Empty);
+            var chars = new List<char>();
+            for (var i = 0; i < clean.Length; i++)
+            {
+                if (i > 0 && char.IsUpper(clean[i]) && !char.IsWhiteSpace(clean[i - 1])) chars.Add(' ');
+                chars.Add(clean[i]);
+            }
+            var result = new string(chars.ToArray()).Trim();
+            return result.Length == 0 ? value : char.ToUpperInvariant(result[0]) + result.Substring(1);
+        }
+
+        private static string ApPurchaseStateJson(Character c)
+        {
+            var rows = new List<string>();
+            foreach (var pair in ApPurchaseMethods.OrderBy(x => x.Key))
+            {
+                var unlocked = IsApFeatureUnlocked(c, pair.Key);
+                rows.Add("{\"id\":" + pair.Key + ",\"name\":\""
+                         + EscapeJson(HumanizeIdentifier(pair.Value)) + "\",\"owned\":"
+                         + IsApOwned(c, pair.Key).ToString().ToLowerInvariant()
+                         + ",\"unlocked\":" + unlocked.ToString().ToLowerInvariant() + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string MechanicUnlocksJson(Character c)
+        {
+            var rows = new List<string>();
+            AddMechanic(rows, "fight-boss", "Fight Boss", true, "Available from the start");
+            AddMechanic(rows, "inventory", "Inventory", c.settings.inventoryOn, "Progress the opening bosses");
+            AddMechanic(rows, "adventure", "Adventure", c.highestBoss >= 4, "Defeat Boss 4");
+            AddMechanic(rows, "augments", "Augments", c.buttons.augmentation.interactable, "Defeat Boss 13");
+            AddMechanic(rows, "time-machine", "Time Machine", c.highestBoss >= 30, "Defeat Boss 30");
+            AddMechanic(rows, "blood-magic", "Blood Magic", c.buttons.bloodMagic.interactable, "Advance the Fight Boss route");
+            AddMechanic(rows, "money-pit", "Money Pit", c.settings.pitUnlocked, "Unlock the Time Machine and Money Pit");
+            AddMechanic(rows, "wandoos", "Wandoos", c.settings.wandoos98On, "Consume the Wandoos 98 disk");
+            AddMechanic(rows, "yggdrasil", "Yggdrasil", c.settings.yggdrasilOn, "Consume the Seed progression item");
+            AddMechanic(rows, "itopod", "ITOPOD", c.settings.itopodOn, "Consume the Infinite Cube/ITOPOD progression item");
+            AddMechanic(rows, "ngu", "NGUs", c.settings.nguOn || c.inventory.itemList.numberComplete, "Complete the Number set");
+            AddMechanic(rows, "beards", "Beards", c.settings.beardsOn, "Reach the Beard unlock milestone");
+            AddMechanic(rows, "diggers", "Gold Diggers", c.settings.diggersOn, "Reach the Digger unlock milestone");
+            AddMechanic(rows, "quests", "Beast Quests", c.beastQuest.questsUnlocked, "Defeat the Beast and unlock quests");
+            AddMechanic(rows, "hacks", "Hacks", c.hacks.hacksOn, "Enter Evil and unlock Resource 3/Hacks");
+            AddMechanic(rows, "wishes", "Wishes", c.wishes.wishesOn, "Advance Evil progression");
+            AddMechanic(rows, "cards", "Cards", c.cards.cardsOn, "Advance Sadistic progression");
+            AddMechanic(rows, "resource-3", c.res3.res3Name, c.res3.res3On, "Enter Evil difficulty");
+            AddMechanic(rows, "daycare", "Item Daycare", c.purchases.hasDaycare, "Buy the permanent Daycare upgrade");
+            AddMechanic(rows, "macguffins", "MacGuffins", c.inventory.macguffins != null
+                && c.inventory.macguffins.Count > 0, "Obtain the first MacGuffin");
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static void AddMechanic(ICollection<string> rows, string id, string name,
+            bool unlocked, string hint)
+        {
+            rows.Add("{\"id\":\"" + EscapeJson(id) + "\",\"name\":\"" + EscapeJson(name)
+                     + "\",\"unlocked\":" + unlocked.ToString().ToLowerInvariant()
+                     + ",\"hint\":\"" + EscapeJson(hint) + "\"}");
+        }
+
+        private static string NguProgressJson(Character c)
+        {
+            var rows = new List<string>();
+            AddNguRows(rows, c, c.NGU.skills, c.NGUController.NGU, "Energy");
+            AddNguRows(rows, c, c.NGU.magicSkills, c.NGUController.NGUMagic, "Magic");
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static void AddNguRows<T>(ICollection<string> rows, Character c, IList<NGU> skills,
+            IList<T> controllers, string resource)
+        {
+            if (skills == null || controllers == null) return;
+            var count = Math.Min(skills.Count, controllers.Count);
+            for (var id = 0; id < count; id++)
+            {
+                var nameField = controllers[id].GetType().GetField("NGUName",
+                    BindingFlags.Instance | BindingFlags.Public);
+                var name = nameField == null ? resource + " NGU " + (id + 1)
+                    : Convert.ToString(nameField.GetValue(controllers[id]));
+                var skill = skills[id];
+                rows.Add("{\"resource\":\"" + resource + "\",\"id\":" + id
+                         + ",\"name\":\"" + EscapeJson(name) + "\",\"unlocked\":"
+                         + c.settings.nguOn.ToString().ToLowerInvariant() + ",\"normalLevel\":"
+                         + skill.level + ",\"evilLevel\":" + skill.evilLevel
+                         + ",\"sadisticLevel\":" + skill.sadisticLevel + ",\"allocated\":"
+                         + (resource == "Energy" ? skill.energy : skill.magic) + "}");
+            }
+        }
+
+        private static string HackProgressJson(Character c)
+        {
+            var rows = new List<string>();
+            var count = Math.Min(c.hacks.hacks.Count, c.hacksController.properties.Count);
+            for (var id = 0; id < count; id++)
+            {
+                var hack = c.hacks.hacks[id];
+                rows.Add("{\"id\":" + id + ",\"name\":\""
+                         + EscapeJson(c.hacksController.properties[id].hackName) + "\",\"unlocked\":"
+                         + c.hacks.hacksOn.ToString().ToLowerInvariant() + ",\"level\":" + hack.level
+                         + ",\"target\":" + hack.target + ",\"progress\":" + JsonNumber(hack.progress)
+                         + ",\"allocated\":" + hack.res3 + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string WishProgressJson(Character c)
+        {
+            var rows = new List<string>();
+            var count = Math.Min(c.wishes.wishes.Count, c.wishesController.properties.Count);
+            for (var id = 0; id < count; id++)
+            {
+                var wish = c.wishes.wishes[id];
+                var property = c.wishesController.properties[id];
+                var unlocked = c.wishes.wishesOn
+                               && c.settings.rebirthDifficulty >= property.difficultyRequirement;
+                rows.Add("{\"id\":" + id + ",\"name\":\"" + EscapeJson(property.wishName)
+                         + "\",\"unlocked\":" + unlocked.ToString().ToLowerInvariant()
+                         + ",\"level\":" + wish.level + ",\"maxLevel\":" + property.maxLevel
+                         + ",\"progress\":" + JsonNumber(wish.progress) + ",\"energy\":"
+                         + wish.energy + ",\"magic\":" + wish.magic + ",\"res3\":" + wish.res3 + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string FruitProgressJson(Character c)
+        {
+            var rows = new List<string>();
+            for (var id = 0; id < c.yggdrasil.fruits.Count; id++)
+            {
+                var fruit = c.yggdrasil.fruits[id];
+                rows.Add("{\"id\":" + id + ",\"name\":\"" + EscapeJson(GameNames.Fruit(c, id))
+                         + "\",\"unlocked\":" + (c.settings.yggdrasilOn && fruit.maxTier > 0)
+                             .ToString().ToLowerInvariant() + ",\"maxTier\":" + fruit.maxTier
+                         + ",\"totalLevels\":" + fruit.totalLevels + ",\"activated\":"
+                         + fruit.activated.ToString().ToLowerInvariant() + ",\"permanentActivation\":"
+                         + fruit.permCostPaid.ToString().ToLowerInvariant() + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string DiggerProgressJson(Character c)
+        {
+            var rows = new List<string>();
+            for (var id = 0; id < c.diggers.diggers.Count; id++)
+            {
+                var digger = c.diggers.diggers[id];
+                rows.Add("{\"id\":" + id + ",\"name\":\"" + EscapeJson(GameNames.Digger(c, id))
+                         + "\",\"unlocked\":" + (c.settings.diggersOn && digger.maxLevel > 0)
+                             .ToString().ToLowerInvariant() + ",\"level\":" + digger.curLevel
+                         + ",\"maxLevel\":" + digger.maxLevel + ",\"active\":"
+                         + digger.active.ToString().ToLowerInvariant() + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string BeardProgressJson(Character c)
+        {
+            var rows = new List<string>();
+            for (var id = 0; id < c.beards.beards.Count; id++)
+            {
+                var beard = c.beards.beards[id];
+                rows.Add("{\"id\":" + id + ",\"name\":\"" + EscapeJson(GameNames.Beard(c, id))
+                         + "\",\"unlocked\":" + c.settings.beardsOn.ToString().ToLowerInvariant()
+                         + ",\"level\":" + beard.beardLevel + ",\"permanentLevel\":"
+                         + beard.permLevel + ",\"bankedLevel\":" + beard.bankedLevel
+                         + ",\"active\":" + beard.active.ToString().ToLowerInvariant() + "}");
+            }
+            return "[" + string.Join(",", rows.ToArray()) + "]";
         }
 
         private void UpdateResourceRates(Character c)
@@ -1435,60 +2179,47 @@ namespace NGUInjector.Autopilot
 
         private ResourceStatus GetGoldStatus(Character c)
         {
-            var augmentReserve = RequiredAugmentWorkingCapital(c);
-            if (c.highestBoss < 30)
-                return new ResourceStatus
-                {
-                    State = augmentReserve > 0 ? "working-capital" : "no-profitable-sink",
-                    Decision = augmentReserve > 0 && c.realGold >= augmentReserve
-                        ? "Gold is funding the next charged Augment level; Money Pit/Time Machine are feature-locked until Boss 30"
-                        : augmentReserve <= 0
-                            ? "No Augment can complete before the selected rebirth; Money Pit/Time Machine are feature-locked, so this gold has no profitable pre-reset sink"
-                            : "Saving gold so the active Augment can start its next paid level without stalling",
-                    Target = augmentReserve,
-                    EtaSeconds = ResourceEta(c.realGold, augmentReserve, _goldPerSecond)
-                };
+            var remaining = Math.Max(0.0,
+                Plan.EffectiveAllocationTarget(c) - c.rebirthTime.totalseconds);
+            var horizon = ResourceHorizonModel.EvaluateGold(c, (int)Math.Ceiling(remaining));
             var pitReady = c.settings.pitUnlocked
                            && c.pit.pitTime.totalseconds >= c.pitController.currentPitTime()
                            && c.pitController.canToss();
-            var pitReserve = Math.Max(100000.0, Config.MoneyPitReserve);
-            double permanentPitTarget = 0;
-            string permanentPitLabel = string.Empty;
-            var hasPermanentPitTarget = pitReady
-                                        && MoneyPitManager.TryGetPermanentTierTarget(
-                                            out permanentPitTarget, out permanentPitLabel);
-            var remaining = Math.Max(0.0,
-                Plan.EffectiveAllocationTarget(c) - c.rebirthTime.totalseconds);
-            var permanentTierReachable = hasPermanentPitTarget && _goldPerSecond > 0
-                                         && Math.Max(0.0, permanentPitTarget - c.realGold) / _goldPerSecond <= remaining;
-            if (permanentTierReachable)
-                pitReserve = Math.Max(pitReserve, permanentPitTarget);
-            var reserve = pitReady ? Math.Max(pitReserve, augmentReserve) : augmentReserve;
-            var horizon = ResourceHorizonModel.EvaluateGold(c, (int)Math.Ceiling(remaining));
-            if (!pitReady)
+            var primary = horizon.Claims.Where(x => x.Amount > 0)
+                .OrderBy(x => x.Kind).FirstOrDefault();
+            var target = primary == null ? 0.0 : primary.Amount;
+            var decision = horizon.Decision + "; projected baseline "
+                           + horizon.BaselineAtRebirth.ToString("0") + " Gold versus "
+                           + horizon.CommittedSpend.ToString("0") + " committed";
+            if (pitReady)
             {
-                return new ResourceStatus
+                var protectedSpend = horizon.ProtectedSpendBefore(GoldClaimKind.MoneyPitPermanentTier);
+                var pitClaim = horizon.Claims.FirstOrDefault(x =>
+                    x.Kind == GoldClaimKind.MoneyPitPermanentTier);
+                decision = protectedSpend > 0
+                    ? "Money Pit is ready but the joint Gold ledger protects "
+                      + protectedSpend.ToString("0") + " for "
+                      + string.Join(" + ", horizon.Claims.Where(x => x.Hard)
+                          .Select(x => x.Label).ToArray())
+                    : pitClaim == null
+                        ? "Money Pit is ready, but no reachable permanent Pit tier owns this horizon"
+                        : c.realGold < pitClaim.Amount
+                            ? "Saving for " + pitClaim.Label + " at " + pitClaim.Amount.ToString("0")
+                            : "Money Pit is ready and the shared Gold ledger admits the permanent tier toss";
+                if (pitClaim != null && protectedSpend <= 0)
                 {
-                    State = horizon.TimeMachineUseful ? "working-capital"
-                        : horizon.CommittedSpend > 0 ? "funded-horizon" : "no-profitable-sink",
-                    Decision = horizon.Decision + "; projected baseline "
-                               + horizon.BaselineAtRebirth.ToString("0") + " Gold versus "
-                               + horizon.CommittedSpend.ToString("0") + " committed",
-                    TargetName = horizon.TargetName,
-                    Target = augmentReserve,
-                    EtaSeconds = ResourceEta(c.realGold, augmentReserve, _goldPerSecond)
-                };
+                    target = pitClaim.Amount;
+                    primary = pitClaim;
+                }
             }
             return new ResourceStatus
             {
-                Decision = c.realGold < reserve
-                    ? permanentTierReachable && c.realGold < permanentPitTarget
-                        ? "Saving gold for " + permanentPitLabel
-                          + "; a smaller toss would delay this permanent cumulative Pit breakpoint"
-                        : "Saving gold for the ready Money Pit toss while protecting the next Augment charge"
-                    : "Money Pit is ready and funded; toss will execute on the next 0.2-second control tick",
-                Target = reserve,
-                EtaSeconds = ResourceEta(c.realGold, reserve, _goldPerSecond)
+                State = horizon.TimeMachineUseful ? "working-capital"
+                    : horizon.CommittedSpend > 0 ? "funded-horizon" : "no-profitable-sink",
+                Decision = decision,
+                TargetName = primary == null ? horizon.TargetName : primary.Label,
+                Target = target,
+                EtaSeconds = ResourceEta(c.realGold, target, _goldPerSecond)
             };
         }
 
@@ -3017,12 +3748,37 @@ namespace NGUInjector.Autopilot
             "pp", "qp", "card", "energy power", "magic power", "energy cap", "magic cap"
         };
 
+        private static readonly string[] StrategicSavingsKeywords =
+        {
+            "fib", "spawn", "welcome", "bank", "slot"
+        };
+
         private void SpendBestPerk()
         {
             var c = Main.Character;
             var controller = c.adventureController.itopod;
             var points = c.adventure.itopod.perkPoints;
-            var best = FindBestUpgrade(controller.perkName, c.adventure.itopod.perkLevel,
+            var spendable = points - Config.PPReserve;
+            var best = -1;
+            if (c.settings.rebirthDifficulty == difficulty.sadistic
+                && !EndgameDependencyModel.IsOwned(c, 482)
+                && c.adventure.itopod.perkLevel.Count > 231
+                && c.adventure.itopod.perkLevel[231] < 1)
+            {
+                if (!HasEmptyOrdinaryInventorySlot(c))
+                {
+                    ExecutionSafety.ReportHold("end-perk-inventory",
+                        "END perk 231 held until an ordinary inventory slot is empty");
+                    return;
+                }
+                var terminalCost = controller.perkCost(231);
+                if (terminalCost <= 0 || terminalCost > spendable) return;
+                best = 231;
+            }
+            else
+                best = EarlyNormalPerkTarget(c, controller, c.adventure.itopod.perkLevel, spendable);
+            if (best == -1 && c.adventure.titan4Kills > 0)
+                best = FindBestUpgrade(controller.perkName, c.adventure.itopod.perkLevel,
                 controller.maxLevel, controller.effectPerLevel, id => controller.perkCost(id), points - Config.PPReserve,
                 controller.perkDifficultyReq, c.settings.rebirthDifficulty, id =>
                 {
@@ -3036,17 +3792,49 @@ namespace NGUInjector.Autopilot
                     if (type == itopodPerk.Cards) return c.cards.cardsOn;
                     if (type == itopodPerk.Res3) return c.res3.res3On;
                     return true;
-                });
+                }, id => PerkMarginalValue(c, controller, id));
             if (best < 0) return;
             var pointsBefore = c.adventure.itopod.perkPoints;
             var levelBefore = c.adventure.itopod.perkLevel[best];
             controller.tryLevelUp(best);
             var confirmed = c.adventure.itopod.perkPoints < pointsBefore
                             || c.adventure.itopod.perkLevel[best] > levelBefore;
+            if (best == 231)
+                confirmed = confirmed && EndgameDependencyModel.IsOwned(c, 482);
             Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
                 confirmed
                     ? "Bought perk " + controller.perkName[best] + " [confirmed by PP/level delta]"
                     : "Perk purchase for " + controller.perkName[best] + " produced no state transition");
+        }
+
+        private static int EarlyNormalPerkTarget(Character c, ItopodPerkController controller,
+            IList<long> perkLevels, long budget)
+        {
+            if (c.settings.rebirthDifficulty != difficulty.normal)
+                return -1;
+            // Shipped perk IDs and Chapter 1 breakpoints: one level in each Newbie perk,
+            // two Instant Advanced Training levels, then balance Generic Energy Power/Cap.
+            // If the next ordered purchase is unaffordable, save PP instead of leaking it into a
+            // cheaper low-value perk and delaying the progression breakpoint.
+            var ordered = new[]
+            {
+                new[] {0, 1}, new[] {1, 1}, new[] {2, 1}, new[] {3, 1}, new[] {4, 1},
+                new[] {18, 2}
+            };
+            foreach (var target in ordered)
+            {
+                var id = target[0];
+                if (id >= perkLevels.Count || perkLevels[id] >= target[1])
+                    continue;
+                return controller.perkCost(id) > 0 && controller.perkCost(id) <= budget ? id : -2;
+            }
+            // T4 unlocks the full marginal-value policy, but it must not abandon a
+            // half-finished early sequence and strand permanent breakpoint rewards.
+            if (c.adventure.titan4Kills > 0) return -1;
+            if (perkLevels.Count <= 8) return -1;
+            var balanced = perkLevels[6] <= perkLevels[8] ? 6 : 8;
+            return controller.perkCost(balanced) > 0 && controller.perkCost(balanced) <= budget
+                ? balanced : -2;
         }
 
         private void SpendBestQuirk()
@@ -3054,7 +3842,24 @@ namespace NGUInjector.Autopilot
             var c = Main.Character;
             var controller = c.beastQuestPerkController;
             var points = c.beastQuest.quirkPoints;
-            var best = FindBestUpgrade(controller.quirkName, c.beastQuest.quirkLevel,
+            var spendable = points - Config.QPReserve;
+            var best = -1;
+            if (c.settings.rebirthDifficulty == difficulty.sadistic
+                && !EndgameDependencyModel.IsOwned(c, 486)
+                && c.beastQuest.quirkLevel.Count > 176
+                && c.beastQuest.quirkLevel[176] < 1)
+            {
+                if (!HasEmptyOrdinaryInventorySlot(c))
+                {
+                    ExecutionSafety.ReportHold("end-quirk-inventory",
+                        "END quirk 176 held until an ordinary inventory slot is empty");
+                    return;
+                }
+                var terminalCost = controller.quirkCost(176);
+                if (terminalCost <= 0 || terminalCost > spendable) return;
+                best = 176;
+            }
+            else best = FindBestUpgrade(controller.quirkName, c.beastQuest.quirkLevel,
                 controller.maxLevel, controller.effectPerLevel, id => controller.quirkCost(id), points - Config.QPReserve,
                 controller.quirkDifficultyReq, c.settings.rebirthDifficulty, id =>
                 {
@@ -3064,22 +3869,45 @@ namespace NGUInjector.Autopilot
                     if (type == itopodPerk.Wishes) return c.wishes.wishesOn;
                     if (type == itopodPerk.Cards) return c.cards.cardsOn;
                     return true;
-                });
+                }, id => QuirkMarginalValue(c, controller, id));
             if (best < 0) return;
             var pointsBefore = c.beastQuest.quirkPoints;
             var levelBefore = c.beastQuest.quirkLevel[best];
             controller.tryLevelUp(best);
             var confirmed = c.beastQuest.quirkPoints < pointsBefore || c.beastQuest.quirkLevel[best] > levelBefore;
+            if (best == 176)
+                confirmed = confirmed && EndgameDependencyModel.IsOwned(c, 486);
             Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
                 confirmed
                     ? "Bought quirk " + controller.quirkName[best] + " [confirmed by QP/level delta]"
                     : "Quirk purchase for " + controller.quirkName[best] + " produced no state transition");
         }
 
+        private static bool HasEmptyOrdinaryInventorySlot(Character c)
+        {
+            return c != null && c.inventory != null && c.inventory.inventory != null
+                   && c.inventory.inventory.Any(x => x == null || x.id <= 0);
+        }
+
         private static int FindBestUpgrade(IList<string> names, IList<long> levels, IList<long> caps, IList<float> effects,
             Func<int, long> cost, long budget, IList<difficulty> requirements, difficulty currentDifficulty,
-            Func<int, bool> allowed)
+            Func<int, bool> allowed, Func<int, double> nativeMarginal = null)
         {
+            if (budget <= 0) return -1;
+            // Do not leak points into a cheap marginal perk while already within
+            // one additional current balance of a discrete unlock/slot breakpoint.
+            for (var i = 0; i < names.Count && i < levels.Count && i < caps.Count
+                            && i < requirements.Count; i++)
+            {
+                if (allowed != null && !allowed(i)) continue;
+                var cap = caps[i] == 0 ? long.MaxValue : caps[i];
+                if (levels[i] >= cap || requirements[i] > currentDifficulty) continue;
+                var name = (names[i] ?? string.Empty).ToLowerInvariant();
+                if (!StrategicSavingsKeywords.Any(name.Contains)) continue;
+                var price = cost(i);
+                if (price > budget && price - budget <= budget)
+                    return -1;
+            }
             var best = -1;
             var bestScore = double.MaxValue;
             for (var i = 0; i < names.Count && i < levels.Count && i < caps.Count && i < effects.Count
@@ -3092,22 +3920,108 @@ namespace NGUInjector.Autopilot
                 var price = cost(i);
                 if (price <= 0 || price > budget) continue;
                 var name = (names[i] ?? string.Empty).ToLowerInvariant();
-                var rank = UpgradeKeywords.Length + 2;
-                for (var keyword = 0; keyword < UpgradeKeywords.Length; keyword++)
-                {
-                    if (!name.Contains(UpgradeKeywords[keyword])) continue;
-                    rank = keyword;
-                    break;
-                }
-                // Within a progression family, buy the largest exact serialized
-                // effect per point rather than merely the cheapest button.
-                var marginal = Math.Max(1e-12, Math.Abs(effects[i]));
-                var score = rank * 1e18 + price / marginal;
+                var weight = UpgradeObjectiveWeight(name, currentDifficulty);
+                var serializedEffect = Math.Abs((double)effects[i]);
+                // Percentage-like native effects compound against the already-owned
+                // levels, so value the next logarithmic multiplier rather than raw
+                // effect/price. Zero-effect one-time unlocks receive explicit option
+                // value instead of becoming permanently invisible to the optimizer.
+                var marginal = nativeMarginal != null ? nativeMarginal(i)
+                    : serializedEffect > 0.0
+                    ? Math.Log(1.0 + serializedEffect * (levels[i] + 1.0))
+                      - Math.Log(1.0 + serializedEffect * levels[i])
+                    : StrategicSavingsKeywords.Any(name.Contains) ? 1.0 : 1e-6;
+                var score = price / Math.Max(1e-12, weight * marginal);
                 if (score >= bestScore) continue;
                 bestScore = score;
                 best = i;
             }
             return best;
+        }
+
+        private static double PerkMarginalValue(Character c, ItopodPerkController controller, int id)
+        {
+            if (id < 0 || id >= c.adventure.itopod.perkLevel.Count
+                || id >= controller.effectPerLevel.Count || id >= controller.perkName.Count)
+                return 0.0;
+            var level = c.adventure.itopod.perkLevel[id];
+            var effect = Math.Abs((double)controller.effectPerLevel[id]);
+            var name = (controller.perkName[id] ?? string.Empty).ToLowerInvariant();
+            if (StrategicSavingsKeywords.Any(name.Contains)) return 1.0;
+            if (id == 109 || id == 110)
+                return Math.Max(1e-6, WishManager.SecondsSavedByOneMinimumReducerLevel(
+                    CountMinimumBoundWishLevels(c) > 0, CountMinimumBoundWishLevels(c)) / 3600.0);
+            // Native respawn perk 93 subtracts level*effect from the cycle
+            // multiplier. Its speed value increases toward the 80% cap, the
+            // opposite of an ordinary diminishing positive multiplier.
+            if (id == 93 && effect > 0.0)
+            {
+                var before = Math.Max(0.2, 1.0 - level * effect);
+                var after = Math.Max(0.2, 1.0 - (level + 1.0) * effect);
+                return after < before ? Math.Log(before / after) : 0.0;
+            }
+            return effect > 0.0
+                ? Math.Log(1.0 + effect * (level + 1.0))
+                  - Math.Log(1.0 + effect * level)
+                : 1e-6;
+        }
+
+        private static double QuirkMarginalValue(Character c,
+            BeastQuestPerkController controller, int id)
+        {
+            if (id < 0 || id >= c.beastQuest.quirkLevel.Count
+                || id >= controller.effectPerLevel.Count || id >= controller.quirkName.Count)
+                return 0.0;
+            if (id == 54)
+            {
+                var affected = CountMinimumBoundWishLevels(c);
+                return Math.Max(1e-6,
+                    WishManager.SecondsSavedByOneMinimumReducerLevel(affected > 0, affected)
+                    / 3600.0);
+            }
+            var level = c.beastQuest.quirkLevel[id];
+            var effect = Math.Abs((double)controller.effectPerLevel[id]);
+            var name = (controller.quirkName[id] ?? string.Empty).ToLowerInvariant();
+            if (StrategicSavingsKeywords.Any(name.Contains)) return 1.0;
+            return effect > 0.0
+                ? Math.Log(1.0 + effect * (level + 1.0))
+                  - Math.Log(1.0 + effect * level)
+                : 1e-6;
+        }
+
+        private static int CountMinimumBoundWishLevels(Character c)
+        {
+            if (c == null || c.wishes == null || c.wishesController == null
+                || c.wishes.wishes == null || c.wishesController.properties == null)
+                return 0;
+            var minimumRate = c.wishesController.minimumWishTime();
+            var affected = 0;
+            var count = Math.Min(c.wishes.wishes.Count, c.wishesController.properties.Count);
+            for (var i = 0; i < count; i++)
+            {
+                if (c.wishesController.wishLocked(i)
+                    || c.wishes.wishes[i].level >= c.wishesController.properties[i].maxLevel)
+                    continue;
+                var rate = c.wishesController.progressPerTickMax(i);
+                if (rate > 0 && Math.Abs(rate - minimumRate) <= Math.Max(1e-12, minimumRate * 1e-5))
+                    affected += (int)Math.Min(1000000L,
+                        c.wishesController.properties[i].maxLevel - c.wishes.wishes[i].level);
+            }
+            return affected;
+        }
+
+        private static double UpgradeObjectiveWeight(string name, difficulty currentDifficulty)
+        {
+            if (StrategicSavingsKeywords.Any(name.Contains)) return 12.0;
+            if (name.Contains("adventure")) return 9.0;
+            if (name.Contains("hack") || name.Contains("wish"))
+                return currentDifficulty >= difficulty.evil ? 9.0 : 5.0;
+            if (name.Contains("ngu")) return 8.0;
+            if (name.Contains("ygg") || name.Contains("fruit")) return 7.0;
+            if (name.Contains("quest")) return 6.5;
+            if (name.Contains("pp") || name.Contains("qp") || name.Contains("card")) return 6.0;
+            if (UpgradeKeywords.Any(name.Contains)) return 5.0;
+            return 1.0;
         }
 
         private static string GetInputText(object controller, string fieldName)

@@ -5,14 +5,24 @@ using System.Linq;
 /*
 FILE PURPOSE
 
-This manager owns late-game Card and Cooking automation: tagging/consumption, mayo assignment,
-recipe selection, and dish execution. It reads live deck/kitchen economics and verifies native
-controller transitions. Ambiguous permanent cards are retained; general spending is out of scope.
+This manager owns late-game Card and Cooking automation: tag membership, six-currency Mayo
+scheduling, permanent Card consumption, conservative deck reclamation, recipe selection, and dish
+execution. Native Mayo throughput is aggregate-constant: with N active generators each receives
+1/N of the base rate. Generator policy therefore allocates a fixed production stream among six
+currencies by shadow shortage; it must not treat generator slots as independent throughput.
+
+Card casts, END-card conversion, Chonker protection, and yeeting are irreversible. Every mutation
+is verified from deck, Mayo, bonus, or inventory state. Sadistic Attack/Defense Cards remain in the
+value model because Fight Boss 300 and T13/T14 can make them terminal-critical. Yeeting fails
+closed unless a low-rarity, non-foil Card has no admitted current/terminal use; uncertain future
+tier, Mayo, recycling, and END option value is retained.
 */
 namespace NGUInjector.Autopilot
 {
     internal static class CardCookingManager
     {
+        private static readonly int EndCardItemId = MechanicsEndgame.AllRequirements()
+            .First(x => x.DependencyKind == EndDependencyKind.EndCard).ItemId;
         private static int _lastCookingDish = -1;
         private static int _lastCookingUnlockMask = -1;
         private static string _lastCookingPairSignature = string.Empty;
@@ -23,10 +33,16 @@ namespace NGUInjector.Autopilot
 
         private static readonly cardBonus[] SadisticPriorities =
         {
-            cardBonus.adventureStat, cardBonus.PP, cardBonus.QP, cardBonus.wishSpeed,
+            cardBonus.adventureStat, cardBonus.atkDefStats, cardBonus.PP, cardBonus.QP, cardBonus.wishSpeed,
             cardBonus.hackSpeed, cardBonus.energyNGUSpeed, cardBonus.magicNGUSpeed,
             cardBonus.dropChance
         };
+
+        private sealed class MayoShadow
+        {
+            internal int Id;
+            internal double Price;
+        }
 
         internal static void ManageCards(Character c, AutopilotConfig config, bool fullControl)
         {
@@ -50,9 +66,9 @@ namespace NGUInjector.Autopilot
 
         private static void SetTags(Character c, IEnumerable<cardBonus> priorities)
         {
-            // Native tag acceptance scales by the one-based tag position, so the
-            // most valuable bonus belongs in the last (highest-probability) slot.
-            var desired = priorities.Take(c.cardsController.maxTagSize()).Reverse().ToArray();
+            // Native generateBonusType gives equal-width acceptance bands to every tagged member.
+            // Order does not prioritize one member over another; keep a stable value-ordered list.
+            var desired = priorities.Take(c.cardsController.maxTagSize()).ToArray();
             if (c.cards.taggedBonuses.SequenceEqual(desired))
                 return;
             c.cards.taggedBonuses.Clear();
@@ -63,23 +79,16 @@ namespace NGUInjector.Autopilot
 
         private static void SetManaGenerators(Character c, IEnumerable<cardBonus> priorities)
         {
-            var desiredMana = new HashSet<int>();
             var order = priorities.ToArray();
-            var target = c.cards.cards
-                .Where(card => priorities.Contains(card.bonusType))
-                .OrderByDescending(card => CardUtility(card, order))
-                .FirstOrDefault();
-            if (target != null)
-            {
-                for (var i = 0; i < target.manaCosts.Count; i++)
-                    if (target.manaCosts[i] > c.cards.manas[i].amount) desiredMana.Add(i);
-            }
-            if (desiredMana.Count == 0)
-                foreach (var item in c.cards.manas.Select((mana, index) => new {mana, index}).OrderBy(x => x.mana.amount))
-                    desiredMana.Add(item.index);
-
-            var slots = c.cardsController.maxManaGenSize();
-            var chosen = desiredMana.Take(slots).ToArray();
+            var shadows = ComputeMayoShadowPrices(c, order);
+            var slots = Math.Max(1, c.cardsController.maxManaGenSize());
+            var top = shadows.Length == 0 ? 0.0 : shadows[0].Price;
+            // One active generator produces the same aggregate Mayo as all available generators.
+            // Concentrate when one currency clearly blocks the best Card; diversify only across
+            // comparable shortages so several near-critical Cards can approach affordability.
+            var chosenCount = shadows.Length > 1 && shadows[1].Price >= top * .80
+                ? Math.Min(slots, shadows.Length) : Math.Min(1, shadows.Length);
+            var chosen = shadows.Take(chosenCount).Select(x => x.Id).ToArray();
             var changed = false;
             for (var i = 0; i < c.cards.manas.Count; i++)
             {
@@ -91,21 +100,69 @@ namespace NGUInjector.Autopilot
             if (changed) c.cardsController.updateMenu();
         }
 
+        private static MayoShadow[] ComputeMayoShadowPrices(Character c, cardBonus[] priorities)
+        {
+            var prices = new double[c.cards.manas.Count];
+            var useful = c.cards.cards.Where(card => card.type != cardType.end
+                && EligibleAtCurrentTier(c, card)).ToArray();
+            foreach (var card in useful)
+            {
+                var value = CardPermanentValue(c, card, priorities);
+                var totalShortage = 0.0;
+                for (var i = 0; i < prices.Length && i < card.manaCosts.Count; i++)
+                    totalShortage += Math.Max(0, card.manaCosts[i] - c.cards.manas[i].amount);
+                if (totalShortage <= 0.0) continue;
+                for (var i = 0; i < prices.Length && i < card.manaCosts.Count; i++)
+                {
+                    var shortage = Math.Max(0, card.manaCosts[i] - c.cards.manas[i].amount);
+                    prices[i] += value * shortage / totalShortage;
+                }
+            }
+
+            // A small reserve shadow price values the option to cast the next useful spawned Card.
+            // It is based on the per-currency held-deck cost distribution, never on the sum of Mayo
+            // balances (the six currencies are not fungible).
+            for (var i = 0; i < prices.Length; i++)
+            {
+                var costs = useful.Where(x => x.manaCosts.Count > i && x.manaCosts[i] > 0)
+                    .Select(x => x.manaCosts[i]).OrderBy(x => x).ToArray();
+                if (costs.Length > 0)
+                {
+                    var reserve = costs[costs.Length / 2];
+                    if (reserve > c.cards.manas[i].amount)
+                        prices[i] += .05 * (reserve - c.cards.manas[i].amount) / Math.Max(1.0, reserve);
+                }
+                if (prices[i] <= 0.0)
+                    prices[i] = 1.0 / Math.Max(1.0, c.cards.manas[i].amount + 1.0);
+            }
+            return prices.Select((price, id) => new MayoShadow {Id = id, Price = price})
+                .OrderByDescending(x => x.Price).ThenBy(x => x.Id).ToArray();
+        }
+
         private static void ProtectPermanentCards(Character c, bool fullControl)
         {
             for (var i = 0; i < c.cards.cards.Count; i++)
             {
                 var card = c.cards.cards[i];
-                if (fullControl && card.type != cardType.end && card.cardRarity == rarity.BigChonker)
+                if (!fullControl) continue;
+                if (card.type == cardType.end)
                 {
-                    // Before the recycling perk, even an off-plan Chonker banks a
-                    // future 25% spawn-timer refund and must not be lost. Afterwards
-                    // only a progression-useful Chonker waits for Mayo.
-                    var useful = EligibleAtCurrentTier(c, card);
-                    var shouldProtect = useful ? !Affordable(c, card) : !HasChonkerRecycling(c);
+                    var shouldProtect = !c.inventoryController.freeSpace();
                     if (card.isProtected != shouldProtect)
                         c.cardsController.protectCard(i);
+                    continue;
                 }
+                var terminalStats = c.settings.rebirthDifficulty == difficulty.sadistic
+                                    && card.bonusType == cardBonus.atkDefStats
+                                    && EndgameDependencyModel.IsTerminalCombatCritical(c);
+                if (card.cardRarity != rarity.BigChonker && !terminalStats) continue;
+                // Before recycling, an off-plan Chonker still banks a future 25% spawn-timer
+                // refund. A useful/terminal Card is protected only while unaffordable so the cast
+                // selector can consume it immediately when its exact Mayo vector is ready.
+                var useful = EligibleAtCurrentTier(c, card) || terminalStats;
+                var protect = useful ? !Affordable(c, card) : !HasChonkerRecycling(c);
+                if (card.isProtected != protect)
+                    c.cardsController.protectCard(i);
             }
         }
 
@@ -121,12 +178,15 @@ namespace NGUInjector.Autopilot
                 if (card.isProtected)
                     c.cardsController.protectCard(i);
                 var before = c.cards.cards.Count;
+                var piecesBefore = CountInventoryItem(c, EndCardItemId);
                 c.cardsController.tryConsumeCard(i);
-                var confirmed = c.cards.cards.Count < before;
+                var confirmed = c.cards.cards.Count < before
+                                && CountInventoryItem(c, EndCardItemId) > piecesBefore;
                 Main.LogAction(confirmed ? "CARD" : "REJECTED",
                     confirmed
-                        ? "Consumed End card for its level-100 progression item [confirmed by deck count]"
-                        : "End-card consume request produced no deck transition");
+                        ? "Consumed End card for item " + EndCardItemId
+                          + " [confirmed by deck debit and exact inventory credit]"
+                        : "End-card consume request lacked a verified deck debit plus exact END-item credit");
             }
         }
 
@@ -141,13 +201,18 @@ namespace NGUInjector.Autopilot
                 .FirstOrDefault();
             if (candidate == null) return;
             var countBefore = c.cards.cards.Count;
-            var manaBefore = c.cards.manas.Sum(x => x.amount);
+            var manaBefore = c.cards.manas.Select(x => x.amount).ToArray();
+            var exactCosts = candidate.card.manaCosts.ToArray();
             c.cardsController.tryConsumeCard(candidate.index);
-            var confirmed = c.cards.cards.Count < countBefore || c.cards.manas.Sum(x => x.amount) < manaBefore;
+            var exactMayoDebit = Enumerable.Range(0, c.cards.manas.Count).All(i =>
+                c.cards.manas[i].amount == manaBefore[i]
+                - (i < exactCosts.Length ? exactCosts[i] : 0));
+            var confirmed = c.cards.cards.Count == countBefore - 1 && exactMayoDebit;
             Main.LogAction(confirmed ? "CARD" : "REJECTED",
                 confirmed
-                    ? "Cast " + candidate.card.cardName + " [confirmed by deck/mana state]"
-                    : "Card cast request for " + candidate.card.cardName + " produced no state transition");
+                    ? "Cast " + candidate.card.cardName + " [confirmed by exact deck and six-Mayo debit]"
+                    : "Card cast request for " + candidate.card.cardName
+                      + " lacked an exact deck plus six-Mayo debit transition");
         }
 
         private static bool Affordable(Character c, Card card)
@@ -159,13 +224,21 @@ namespace NGUInjector.Autopilot
 
         private static double CardUtility(Card card, cardBonus[] priorities)
         {
+            return CardPermanentValue(Main.Character, card, priorities)
+                   / Math.Max(1L, card.manaCosts.Sum(x => (long)x));
+        }
+
+        private static double CardPermanentValue(Character c, Card card, cardBonus[] priorities)
+        {
             var index = Array.IndexOf(priorities, card.bonusType);
             if (index < 0)
                 return 0;
             var strategicWeight = 1.0 + (priorities.Length - index) * 0.35;
-            var mana = Math.Max(1L, card.manaCosts.Sum(x => (long)x));
+            if (c != null && card.bonusType == cardBonus.atkDefStats
+                && EndgameDependencyModel.IsTerminalCombatCritical(c))
+                strategicWeight *= 12.0;
             // effectAmount already incorporates the quality/rarity roll.
-            return card.effectAmount * strategicWeight / mana;
+            return Math.Max(0.0, card.effectAmount) * strategicWeight;
         }
 
         private static bool EligibleAtCurrentTier(Character c, Card card)
@@ -182,6 +255,7 @@ namespace NGUInjector.Autopilot
             if (card.bonusType == cardBonus.energyNGUSpeed || card.bonusType == cardBonus.magicNGUSpeed)
                 return card.tier >= 8;
             return card.bonusType == cardBonus.adventureStat
+                   || card.bonusType == cardBonus.atkDefStats
                    || card.bonusType == cardBonus.hackSpeed
                    || card.bonusType == cardBonus.wishSpeed
                    || card.bonusType == cardBonus.dropChance;
@@ -191,11 +265,10 @@ namespace NGUInjector.Autopilot
         {
             if (c.cards.cards.Count < c.cardsController.maxDeckSize()) return;
             var candidate = c.cards.cards.Select((card, index) => new {card, index})
-                .Where(x => !x.card.isProtected && x.card.type != cardType.end
-                            && (x.card.cardRarity < rarity.Great
-                                || x.card.cardRarity == rarity.BigChonker
-                                && HasChonkerRecycling(c) && !EligibleAtCurrentTier(c, x.card)))
+                .Where(x => CanProveCardYeetSafe(c, x.card))
                 .OrderBy(x => CardUtility(x.card, priorities.ToArray()))
+                .ThenBy(x => x.card.cardRarity)
+                .ThenBy(x => x.card.effectAmount)
                 .FirstOrDefault();
             if (candidate == null) return;
             var countBefore = c.cards.cards.Count;
@@ -204,6 +277,27 @@ namespace NGUInjector.Autopilot
                 c.cards.cards.Count < countBefore
                     ? "Yeeted " + candidate.card.cardName + " [confirmed by deck count]"
                     : "Card yeet request for " + candidate.card.cardName + " produced no deck change");
+        }
+
+        private static bool CanProveCardYeetSafe(Character c, Card card)
+        {
+            if (card == null || card.isProtected || card.type != cardType.normal)
+                return false;
+            if (card.cardRarity > rarity.Bad || card.cardRarity == rarity.BigChonker)
+                return false;
+            // Preserve every bonus admitted anywhere on the route, not merely at today's tier.
+            // The only provable yeet class is a low-rarity normal card whose bonus is absent from
+            // the full Sadistic value set; this retains A/D and later PP/QP/NGU option value.
+            return !SadisticPriorities.Contains(card.bonusType);
+        }
+
+        private static int CountInventoryItem(Character c, int id)
+        {
+            if (c == null || c.inventory == null) return 0;
+            var count = c.inventory.inventory.Count(x => x != null && x.id == id);
+            if (c.inventory.daycare != null)
+                count += c.inventory.daycare.Count(x => x != null && x.id == id);
+            return count;
         }
 
         private static bool HasChonkerRecycling(Character c)

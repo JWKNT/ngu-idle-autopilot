@@ -5,9 +5,13 @@ using UnityEngine;
 /*
 FILE PURPOSE
 
-AutopilotConfig is the durable user boundary for modes, reserves, and feature permissions. It
-loads runtime/autopilot.json into conservative defaults; enabling a flag never bypasses gameplay
-synchronization. Add knobs only where live optimization cannot safely derive the choice.
+AutopilotConfig is the durable user boundary for execution mode, subsystem ownership, reserves,
+and finite/irreversible permissions. It loads runtime/autopilot.json into conservative defaults
+and supplies the permission fingerprint captured by ExecutionSafety for each scheduler pass.
+Inputs are the JSON file and defaults; outputs are policy flags only—this class never touches a
+native controller. Dry-run remains a hard mutation veto, assist never gains finite-resource
+authority from these flags, and an enabled autopilot class preempts its legacy writer. New knobs
+belong here only when live optimization cannot derive a safe choice; mechanics and strategy do not.
 */
 namespace NGUInjector.Autopilot
 {
@@ -18,6 +22,7 @@ namespace NGUInjector.Autopilot
         public string Mode = "dry-run";
         public string Goal = "progression";
         public bool AutoEnterGame = true;
+        public bool AllowLegacyFallback = true;
 
         public bool ManageAllocations = true;
         public bool ManageBosses = true;
@@ -41,6 +46,7 @@ namespace NGUInjector.Autopilot
         public bool AllowCardYeeting = false;
         public bool AllowPerkSpending = false;
         public bool AllowQuirkSpending = false;
+        public bool AllowEndSequence = false;
 
         public long ExpReserve = 0;
         public long ApReserve = 0;
@@ -48,6 +54,7 @@ namespace NGUInjector.Autopilot
         public long QPReserve = 0;
         public double MoneyPitReserve = 100000.0;
         public int DecisionIntervalSeconds = 1;
+        public int TitanPreflightBackoffSeconds = 15;
 
         public static AutopilotConfig LoadOrCreate(string path)
         {
@@ -85,6 +92,28 @@ namespace NGUInjector.Autopilot
         public bool IsFull
         {
             get { return string.Equals(Mode, "full", StringComparison.OrdinalIgnoreCase); }
+        }
+
+        /*
+        EXECUTION-PERMISSION FINGERPRINT
+
+        A scheduler lease must remain sticky even if a file watcher or planner observes a new
+        configuration halfway through a transaction. Include every field that can change mutation
+        ownership or authority; numerical strategy reserves deliberately do not invalidate a lease
+        because they are consumed by the next plan, never by this permission boundary.
+        */
+        internal string ExecutionFingerprint()
+        {
+            return Enabled + "|" + (Mode ?? string.Empty).ToLowerInvariant()
+                   + "|" + AutoEnterGame + "|" + AllowLegacyFallback
+                   + "|" + ManageAllocations + "|" + ManageBosses + "|" + ManageAdventure
+                   + "|" + ManageInventory + "|" + ManageDiggers + "|" + ManageYggdrasil
+                   + "|" + ManageQuests + "|" + ManageWishes + "|" + ManageCards
+                   + "|" + ManageCooking + "|" + ManageMoneyPit + "|" + ManageDailySpin
+                   + "|" + ManageBloodMagic + "|" + ManageBeards
+                   + "|" + AllowExpSpending + "|" + AllowApSpending + "|" + AllowRebirths
+                   + "|" + AllowChallenges + "|" + AllowCardYeeting + "|" + AllowPerkSpending
+                   + "|" + AllowQuirkSpending + "|" + AllowEndSequence;
         }
     }
 }
