@@ -122,6 +122,12 @@ deployment = {
     "activeBuildId": mvid,
     "diskArtifactSha256": dll_hash,
     "gameAssemblySha256": game_hash,
+    "nativeBindingKnownBuild": True,
+    "nativeBindingsComplete": True,
+    "nativeBindingDescriptorCount": 112,
+    "nativeBindingBoundCount": 112,
+    "nativeBindingFailureCount": 0,
+    "nativeBindingFailureSummary": "",
 }
 decision = {
     "schemaVersion": 2,
@@ -131,6 +137,12 @@ decision = {
     "buildId": mvid,
     "diskArtifactSha256": dll_hash,
     "gameAssemblySha256": bad_game_hash or game_hash,
+    "nativeBindingKnownBuild": True,
+    "nativeBindingsComplete": True,
+    "nativeBindingDescriptorCount": 112,
+    "nativeBindingBoundCount": 112,
+    "nativeBindingFailureCount": 0,
+    "nativeBindingFailureSummary": "",
     "decisionSequence": 7,
     "synced": True,
     "syncState": "active-gameplay",
@@ -357,6 +369,59 @@ test_transaction_root_status_parity() {
     "clean closed root restores active status"
 }
 
+test_binding_health_is_required_by_run_and_status() {
+  local run_root status_root session
+  new_fixture
+  run_root=$NEW_FIXTURE
+  session="broken-binding-run"
+  set_processes "$run_root" "7471,1271,2026-08-18T05:47:00Z"
+  (
+    sleep 0.35
+    write_telemetry "$run_root" "$session" "$fixture_mvid"
+    python3 - "$run_root" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1]) / "runtime"
+for name in ("deployment.json", "decision.json"):
+    path = root / name
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["nativeBindingsComplete"] = False
+    data["nativeBindingBoundCount"] = 111
+    data["nativeBindingFailureCount"] = 1
+    data["nativeBindingFailureSummary"] = "purchase.example: token mismatch"
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+  ) &
+  invoke_run "$run_root" 1
+  assert_true "$([[ $LAST_STATUS -ne 0 ]] && print true || print false)" \
+    "run refuses an otherwise clean deployment with an incomplete binding catalog"
+  assert_true "$([[ ! -f $run_root/runtime/deployment-claim.json ]] && print true || print false)" \
+    "broken binding health never publishes a deployment claim"
+
+  new_fixture
+  status_root=$NEW_FIXTURE
+  session="broken-binding-status"
+  set_processes "$status_root" "7472,1272,2026-08-18T05:47:02Z"
+  run_successful_claim "$status_root" "$session"
+  python3 - "$status_root/runtime/decision.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["nativeBindingsComplete"] = False
+data["nativeBindingBoundCount"] = data["nativeBindingDescriptorCount"] - 1
+data["nativeBindingFailureCount"] = 1
+data["nativeBindingFailureSummary"] = "inventory.item.consume: metadata token mismatch"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+PY
+  invoke_status "$status_root" --require-active
+  assert_true "$([[ $LAST_STATUS -ne 0 ]] && print true || print false)" \
+    "status refuses a claimed deployment after binding health becomes incomplete"
+  assert_contains "$LAST_OUTPUT" '"state": "mismatch"' \
+    "binding-health failure is reported as deployment mismatch"
+}
+
 test_legacy_pointer_and_restart_archival() {
   local root
   new_fixture
@@ -430,6 +495,7 @@ test_matching_claim_status_and_stop
 test_failed_handshake_is_never_claimed
 test_transaction_root_handshake_matrix
 test_transaction_root_status_parity
+test_binding_health_is_required_by_run_and_status
 test_legacy_pointer_and_restart_archival
 test_pid_reuse_refusal
 test_stop_telemetry_mismatch_refusal

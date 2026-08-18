@@ -6,7 +6,7 @@ schema-validated decision.json, requires its matching deployment.json identity, 
 stale/build/PID/session/out-of-order telemetry, and admits actions only after the exact durable
 session marker. It renders the decision/root epoch, staged authority, scheduler shadow statistics,
 current/next rebirth policy, finite and unavailable challenge/difficulty/END ETAs, capacity,
-transaction states, collection debt, and a sparse Key Events history. It has no game
+loaded-assembly binding coverage, transaction states, collection debt, and a sparse Key Events history. It has no game
 handle or mutation path; display features must follow explicit truthful producer fields and never
 turn a missing estimate into a zero-second countdown. The Live Actions presentation is the visual
 baseline and should not be restyled by goal/event changes.
@@ -554,6 +554,16 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ].compactMap { $0 }.joined(separator: " · ")
         let authorityStage = state["authorityStage"] as? String ?? "Unavailable"
         let authoritySummary = stagedAuthoritySummary(state)
+        let nativeBindingKnown = state["nativeBindingKnownBuild"] as? Bool
+        let nativeBindingsComplete = state["nativeBindingsComplete"] as? Bool
+        let nativeBindingDescriptors = optionalNonnegativeInt(state, "nativeBindingDescriptorCount")
+        let nativeBindingBound = optionalNonnegativeInt(state, "nativeBindingBoundCount")
+        let nativeBindingFailures = optionalNonnegativeInt(state, "nativeBindingFailureCount")
+        let nativeBindingFailureSummary = nonempty(state["nativeBindingFailureSummary"] as? String)
+        let nativeBindingSummary = nativeBindingsComplete == true
+            && nativeBindingFailures == 0 && nativeBindingDescriptors == nativeBindingBound
+            ? "COMPLETE — \(nativeBindingBound.map(String.init) ?? "Unavailable") / \(nativeBindingDescriptors.map(String.init) ?? "Unavailable") exact members bound, 0 failures, audited build \(nativeBindingKnown == true ? "yes" : "unverified")"
+            : "QUARANTINED — \(nativeBindingBound.map(String.init) ?? "Unavailable") / \(nativeBindingDescriptors.map(String.init) ?? "Unavailable") bound, \(nativeBindingFailures.map(String.init) ?? "Unavailable") failures\(nativeBindingFailureSummary.map { "; " + $0 } ?? "")"
         let scheduler = state["globalScheduler"] as? [String: Any] ?? [:]
         let schedulerStatus = scheduler["status"] as? String ?? "Unavailable"
         let schedulerAuthority = scheduler["authority"] as? String ?? "Unavailable"
@@ -881,6 +891,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ROOT: \(rootId.map { "#\($0)" } ?? "Unavailable") · \(rootNativeState) · epoch \(shortHash(rootEpoch)) (\(rootEpochMatch == true ? "matched" : rootEpochMatch == false ? "MISMATCH / QUARANTINED" : "unavailable"))
         ROOT COUNTS: \(rootCounts.isEmpty ? "Unavailable" : rootCounts)
         SESSION ACTION TAIL: bound only to \(shortSession); older and later session blocks are excluded
+        NATIVE BINDINGS: \(nativeBindingSummary)
         CAPACITY: \(capacitySummary(state))
         AUTHORITY STAGE: \(authorityStage)
         STAGED ROUTES: \(authoritySummary)
@@ -921,6 +932,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         PID \(producerPid) · SESSION \(shortSession) · ACTIVE MVID \(shortBuild)
         DISK DLL \(shortDisk) · GAME DLL \(shortGame)
         ACTIVE/DISK MATCH: \(activeMatchesDisk)
+        NATIVE BINDINGS: \(nativeBindingSummary)
         LATEST TRANSACTION: \(transactionGlance)
 
         CURRENT STRATEGY

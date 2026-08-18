@@ -13,11 +13,12 @@ FILE PURPOSE
 
 AutopilotManager is the task-29 integration surface: it reloads and installs pure plans, exposes the
 single GameEpoch-bound MutationCoordinator root used by Main, invokes only typed child-intent
-managers, emits exact shadow/transaction telemetry, and records sparse verified progression events.
-Planning is separate from mutation execution. Permanent purchases, Money Pit, challenge/difficulty,
-T13/T14, MOVE69, ordinary rebirth, END, and the global scheduler remain fail-closed for this deploy.
-Legacy direct mutation helpers are not called; staged authority can expand only through typed
-postconditions and copied-save/backtest evidence.
+managers, emits exact shadow/transaction/native-binding telemetry, and records sparse verified
+progression events. Planning is separate from mutation execution. The build-pinned early EXP atom
+subset is live; AP purchases, Money Pit, challenge/difficulty, T13/T14, MOVE69, ordinary rebirth,
+END, and the global scheduler remain fail-closed for this deploy. Legacy direct mutation helpers
+are not called; staged authority can expand only through typed postconditions and copied-save/
+backtest evidence.
 */
 namespace NGUInjector.Autopilot
 {
@@ -1152,6 +1153,7 @@ namespace NGUInjector.Autopilot
                        + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
                        + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
                        + "  \"gameAssemblyMvid\": \"" + typeof(Character).Assembly.ManifestModule.ModuleVersionId + "\",\n"
+                       + BindingHealthJson()
                        + "  \"gameEpochFingerprint\": \"" + EscapeJson(Main.CurrentGameEpochFingerprint) + "\",\n"
                        + "  \"gameEpochPhase\": \"" + GameEpochController.Shared.Phase + "\",\n"
                        + "  \"gameEpochMutationOpen\": " + GameEpochController.Shared.MutationOpen.ToString().ToLowerInvariant() + ",\n"
@@ -1365,6 +1367,7 @@ namespace NGUInjector.Autopilot
                        + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
                        + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
                        + "  \"gameAssemblyMvid\": \"" + typeof(Character).Assembly.ManifestModule.ModuleVersionId + "\",\n"
+                       + BindingHealthJson()
                        + "  \"gameEpochFingerprint\": \"" + EscapeJson(Main.CurrentGameEpochFingerprint) + "\",\n"
                        + "  \"gameEpochPhase\": \"" + GameEpochController.Shared.Phase + "\",\n"
                        + "  \"gameEpochMutationOpen\": " + GameEpochController.Shared.MutationOpen.ToString().ToLowerInvariant() + ",\n"
@@ -1674,6 +1677,7 @@ namespace NGUInjector.Autopilot
                        + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
                        + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
                        + "  \"gameAssemblyMvid\": \"" + typeof(Character).Assembly.ManifestModule.ModuleVersionId + "\",\n"
+                       + BindingHealthJson()
                        + "  \"gameEpochFingerprint\": \"" + EscapeJson(Main.CurrentGameEpochFingerprint) + "\",\n"
                        + "  \"gameEpochPhase\": \"" + GameEpochController.Shared.Phase + "\",\n"
                        + "  \"gameEpochMutationOpen\": " + GameEpochController.Shared.MutationOpen.ToString().ToLowerInvariant() + ",\n"
@@ -1712,6 +1716,16 @@ namespace NGUInjector.Autopilot
                 if (File.Exists(path)) File.Delete(path);
                 File.Move(tempPath, path);
             }
+        }
+
+        private static string BindingHealthJson()
+        {
+            return "  \"nativeBindingKnownBuild\": " + Main.NativeBindingKnownBuild.ToString().ToLowerInvariant() + ",\n"
+                   + "  \"nativeBindingsComplete\": " + Main.NativeBindingsComplete.ToString().ToLowerInvariant() + ",\n"
+                   + "  \"nativeBindingDescriptorCount\": " + Main.NativeBindingDescriptorCount + ",\n"
+                   + "  \"nativeBindingBoundCount\": " + Main.NativeBindingBoundCount + ",\n"
+                   + "  \"nativeBindingFailureCount\": " + Main.NativeBindingFailureCount + ",\n"
+                   + "  \"nativeBindingFailureSummary\": \"" + EscapeJson(Main.NativeBindingFailureSummary) + "\",\n";
         }
 
         private sealed class ResourceStatus

@@ -2,11 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using System.Threading;
 using NGUInjector.AllocationProfiles.BreakpointTypes;
 using NGUInjector.AllocationProfiles.RebirthStuff;
+using NGUInjector.Autopilot;
 using NGUInjector.Managers;
 using UnityEngine;
 
@@ -17,6 +17,9 @@ CustomAllocation parses generated/user breakpoint profiles and executes the fast
 It reconciles combined budgets across Basic Training, Augments, Wandoos, Time Machine, NGUs,
 rituals, hacks, and wishes, returning unused resources safely. Allocation calls run on Unity's
 main thread; actual deltas, sync-pair costs, caps, and rebirth horizon must remain authoritative.
+The Wandoos selector/method pair crosses the build-pinned NativeBindingRegistry and is accepted
+only after the native OS plus level-reset postcondition is observed; name-only reflection is never
+an executable fallback.
 */
 namespace NGUInjector.AllocationProfiles
 {
@@ -366,20 +369,17 @@ namespace NGUInjector.AllocationProfiles
             }
 
             var controller = Main.Character.wandoos98Controller;
-            var nextOS = controller.GetType().GetField("nextOS",
-                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            var setter = typeof(Wandoos98Controller).GetMethod("setOSType",
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (nextOS == null || setter == null)
-            {
-                Main.LogAction("REJECTED", "Wandoos OS switch native transition is unavailable");
-                return;
-            }
-
             var energyBefore = _character.wandoos98.energyLevel;
             var magicBefore = _character.wandoos98.magicLevel;
-            nextOS.SetValue(controller, id);
-            setter.Invoke(controller, null);
+            var native = NativeBindingRegistry.Create(typeof(Character).Assembly,
+                Main.GameAssemblySha256).CreateMutationAdapters();
+            var invocation = native.SwitchWandoosOperatingSystem(controller, id);
+            if (!invocation.ReturnedNormally)
+            {
+                Main.LogAction("REJECTED", "Wandoos OS switch native transition held: "
+                                           + invocation.Status + " — " + invocation.Reason);
+                return;
+            }
             var confirmed = _character.wandoos98.os == target
                             && _character.wandoos98.energyLevel == 0
                             && _character.wandoos98.magicLevel == 0;

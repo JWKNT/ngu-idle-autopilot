@@ -6,8 +6,9 @@
 # both process identities, discovers the just-built DLL MVID dynamically, injects once, and waits
 # for a new synchronized telemetry session before publishing pointer ownership. The resulting JSON
 # claim binds the pointer to the host PID/start/command, Windows PID/start, producer session, MVID,
-# DLL hash, and game-assembly hash. Only after that proof does it start the read-only monitor and
-# dashboard. It never starts or restarts the game and never treats injector text alone as success.
+# DLL hash, game-assembly hash, and a complete loaded-assembly native-binding catalog. Only after
+# that proof does it start the read-only monitor and dashboard. It never starts or restarts the
+# game and never treats injector text alone as success.
 #
 # Inputs are the built DLL, the installed game assembly, injector transport, one live game process,
 # runtime config, and deployment/decision telemetry. Outputs are runtime/deployment-claim.json, a
@@ -346,6 +347,20 @@ try:
         and all(type(mutation_root.get(key)) is int and mutation_root[key] == 0 for key in (
             "pendingSteps", "rejectedSteps", "quarantinedSteps"))
     )
+    binding_count = decision.get("nativeBindingDescriptorCount")
+    binding_health = (
+        decision.get("nativeBindingKnownBuild") is True
+        and decision.get("nativeBindingsComplete") is True
+        and type(binding_count) is int and binding_count > 0
+        and type(decision.get("nativeBindingBoundCount")) is int
+        and decision.get("nativeBindingBoundCount") == binding_count
+        and type(decision.get("nativeBindingFailureCount")) is int
+        and decision.get("nativeBindingFailureCount") == 0
+        and deployment.get("nativeBindingsComplete") is True
+        and deployment.get("nativeBindingBoundCount") == binding_count
+        and deployment.get("nativeBindingDescriptorCount") == binding_count
+        and deployment.get("nativeBindingFailureCount") == 0
+    )
     valid = (
         int(deployment.get("schemaVersion", 0)) >= 2
         and int(deployment.get("producerPid", -1)) == pid
@@ -365,6 +380,7 @@ try:
         and decision.get("decisionPhase") == "post-automation-transaction"
         and decision.get("automationTransactionComplete") is True
         and decision.get("automationTransactionError") == ""
+        and binding_health
         and clean_closed_root
         and int(decision.get("decisionSequence", 0)) > 0
     )

@@ -276,6 +276,33 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(held["difficulty"]["status"], "Held")
         self.assertEqual(held["end"]["status"], "Held")
 
+    def test_loaded_assembly_binding_health_is_explicit_and_fail_closed(self) -> None:
+        complete = build_observability({
+            "nativeBindingKnownBuild": True,
+            "nativeBindingsComplete": True,
+            "nativeBindingDescriptorCount": 112,
+            "nativeBindingBoundCount": 112,
+            "nativeBindingFailureCount": 0,
+            "nativeBindingFailureSummary": "",
+        })["bindings"]
+        self.assertEqual(complete["status"], "Complete")
+        self.assertTrue(complete["knownBuild"])
+        self.assertEqual(complete["boundCount"], complete["descriptorCount"])
+        self.assertEqual(complete["failureCount"], 0)
+        self.assertEqual(complete["provenance"], "LoadedAssemblyMetadata")
+
+        broken = build_observability({
+            "nativeBindingKnownBuild": True,
+            "nativeBindingsComplete": False,
+            "nativeBindingDescriptorCount": 112,
+            "nativeBindingBoundCount": 111,
+            "nativeBindingFailureCount": 1,
+            "nativeBindingFailureSummary": "purchase.example: token mismatch",
+        })["bindings"]
+        self.assertEqual(broken["status"], "Quarantined")
+        self.assertEqual(broken["failureCount"], 1)
+        self.assertIn("token mismatch", broken["failureSummary"])
+
     def test_deployment_mismatch_quarantines_the_join(self) -> None:
         state = {
             "buildId": "build-a", "producerPid": 123, "producerSessionId": "session-a",

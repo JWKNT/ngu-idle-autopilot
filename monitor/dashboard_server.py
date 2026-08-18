@@ -9,8 +9,8 @@ Mechanism: a loopback-only ThreadingHTTPServer serves the repository's docs/ tre
 and builds /api/state from the matching runtime/deployment.json + decision.json epoch
 and an explicitly session-bound tail of runtime/logs/actions.log.  A derived
 observability view normalizes optional rebirth, challenge, difficulty, terminal,
-capacity, scheduler, transaction, and producer-identity fields without changing their
-meaning; it never invents an ETA when the producer supplied no finite estimate.  The optional
+capacity, scheduler, transaction, producer-identity, and loaded-assembly binding-health fields
+without changing their meaning; it never invents an ETA when the producer supplied no finite estimate.  The optional
 daemon mode detaches from the launcher and records its own PID for exact lifecycle
 cleanup.  The public jehlp.net copy may request the same endpoint; explicit CORS and
 Private Network Access headers permit that hand-off when the browser allows it.
@@ -462,6 +462,18 @@ def build_observability(
         "Held" if end_authorized is False or end_ready is False else "Unavailable"
     )
 
+    binding_descriptors = optional_count(state.get("nativeBindingDescriptorCount"))
+    binding_bound = optional_count(state.get("nativeBindingBoundCount"))
+    binding_failures = optional_count(state.get("nativeBindingFailureCount"))
+    binding_known = first_bool(state, "nativeBindingKnownBuild")
+    binding_complete = first_bool(state, "nativeBindingsComplete")
+    if binding_complete is True and binding_failures == 0 and binding_descriptors == binding_bound:
+        binding_status = "Complete"
+    elif binding_complete is False or (binding_failures or 0) > 0:
+        binding_status = "Quarantined"
+    else:
+        binding_status = "Unavailable"
+
     return {
         "rebirth": {
             "action": action,
@@ -559,6 +571,16 @@ def build_observability(
             "decisionEpochFingerprint": decision_epoch or None,
             "deploymentEpochFingerprint": deployment_epoch or None,
             "rootEpochFingerprint": root_epoch or None,
+        },
+        "bindings": {
+            "status": binding_status,
+            "knownBuild": binding_known,
+            "complete": binding_complete,
+            "descriptorCount": binding_descriptors,
+            "boundCount": binding_bound,
+            "failureCount": binding_failures,
+            "failureSummary": first_text(state, "nativeBindingFailureSummary") or None,
+            "provenance": "LoadedAssemblyMetadata" if binding_descriptors is not None else None,
         },
         "transaction": {
             "status": transaction_status,

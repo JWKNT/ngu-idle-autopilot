@@ -31,10 +31,11 @@ active-game synchronization barrier, keys queued work and decision latches to Ga
 exactly one allocation owner, and writes confirmed action/deployment telemetry. Inputs are Unity
 state, legacy settings, autopilot config/plans, watched files, and manual snapshot keys; outputs are
 leased manager/controller calls, durable last-good snapshot generations, and append-only runtime
-evidence. No mutation may run before a synchronized epoch has a newly installed plan; reset/load/
-unload synchronously cancel old work; dry-run and assist cannot inherit stronger legacy authority.
-Focused managers own mechanics/native postconditions. Main owns lifecycle, cadence, and permission,
-not progression strategy.
+evidence, including the exact loaded-assembly native-binding health used by deployment admission.
+No mutation may run before a synchronized epoch has a newly installed plan; reset/load/unload
+synchronously cancel old work; dry-run and assist cannot inherit stronger legacy authority. Focused
+managers own mechanics/native postconditions. Main owns lifecycle, cadence, and permission, not
+progression strategy.
 */
 namespace NGUInjector
 {
@@ -140,6 +141,12 @@ namespace NGUInjector
         internal static string ActiveLocationSha256AtObservation { get; private set; } = string.Empty;
         internal static string DiskArtifactSha256 { get; private set; } = string.Empty;
         internal static string GameAssemblySha256 { get; private set; } = string.Empty;
+        internal static bool NativeBindingKnownBuild { get; private set; }
+        internal static bool NativeBindingsComplete { get; private set; }
+        internal static int NativeBindingDescriptorCount { get; private set; }
+        internal static int NativeBindingBoundCount { get; private set; }
+        internal static int NativeBindingFailureCount { get; private set; }
+        internal static string NativeBindingFailureSummary { get; private set; } = string.Empty;
 
         private static bool _tempSwapped = false;
 
@@ -1372,6 +1379,7 @@ namespace NGUInjector
                 ActiveLocationSha256AtObservation = activeLocationHash;
                 DiskArtifactSha256 = diskHash;
                 GameAssemblySha256 = gameHash;
+                CaptureNativeBindingHealth(gameAssembly, gameHash);
                 var activeBuild = assembly.ManifestModule.ModuleVersionId.ToString();
                 var handshake = process.Id + ":" + _sessionId + ":" + activeBuild;
                 var gameEpoch = GameEpochController.Shared.Current;
@@ -1401,6 +1409,12 @@ namespace NGUInjector
                            + (diskInfo == null ? string.Empty : diskInfo.LastWriteTimeUtc.ToString("o")) + "\",\n"
                            + "  \"gameAssemblyPath\": \"" + JsonEscape(gamePath) + "\",\n"
                            + "  \"gameAssemblySha256\": \"" + gameHash + "\",\n"
+                           + "  \"nativeBindingKnownBuild\": " + NativeBindingKnownBuild.ToString().ToLowerInvariant() + ",\n"
+                           + "  \"nativeBindingsComplete\": " + NativeBindingsComplete.ToString().ToLowerInvariant() + ",\n"
+                           + "  \"nativeBindingDescriptorCount\": " + NativeBindingDescriptorCount + ",\n"
+                           + "  \"nativeBindingBoundCount\": " + NativeBindingBoundCount + ",\n"
+                           + "  \"nativeBindingFailureCount\": " + NativeBindingFailureCount + ",\n"
+                           + "  \"nativeBindingFailureSummary\": \"" + JsonEscape(NativeBindingFailureSummary) + "\",\n"
                            + "  \"activeImageHashAvailable\": false,\n"
                            + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\"\n"
                            + "}\n";
@@ -1417,6 +1431,45 @@ namespace NGUInjector
             using (var stream = File.OpenRead(path))
             using (var sha = SHA256.Create())
                 return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
+        }
+
+        /*
+        RUNTIME NATIVE-BINDING HEALTH
+
+        The offline contract suite proves the catalog against the installed assembly, but the
+        operator also needs evidence from the exact assembly loaded by this game process. Build
+        the same registry during deployment publication, count every descriptor/bound member, and
+        retain a bounded deterministic failure summary. This is metadata-only inspection: it
+        invokes no native controller and grants no mutation authority.
+        */
+        private static void CaptureNativeBindingHealth(Assembly gameAssembly, string gameHash)
+        {
+            var registry = NativeBindingRegistry.Create(gameAssembly, gameHash);
+            var descriptors = registry.AllDescriptors();
+            var failures = new List<string>();
+            var bound = 0;
+            for (var i = 0; i < descriptors.Length; i++)
+            {
+                var descriptor = descriptors[i];
+                if (registry.HasBinding(descriptor.Key))
+                {
+                    bound++;
+                    continue;
+                }
+                var reason = registry.FailureFor(descriptor.Key);
+                failures.Add(descriptor.Key + ": "
+                             + (string.IsNullOrEmpty(reason) ? "unavailable" : reason));
+            }
+            failures.Sort(StringComparer.Ordinal);
+            NativeBindingKnownBuild = registry.IsKnownBuild;
+            NativeBindingDescriptorCount = descriptors.Length;
+            NativeBindingBoundCount = bound;
+            NativeBindingFailureCount = failures.Count;
+            NativeBindingsComplete = registry.IsKnownBuild
+                                     && registry.IrreversibleActionsEnabled
+                                     && failures.Count == 0
+                                     && bound == descriptors.Length;
+            NativeBindingFailureSummary = string.Join(" | ", failures.Take(8).ToArray());
         }
 
         private static string JsonEscape(string value)

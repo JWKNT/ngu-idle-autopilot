@@ -55,7 +55,8 @@ The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity a
 6. The monitor renders confirmed actions, holds, ETAs, candidate rebirths, progression goals, and
    a separate sparse Key Events history for victories, significant level boundaries, discoveries,
    MAXX completions, EXP/AP purchases, and major rewards.
-7. The loopback bridge serves the dashboard and a read-only snapshot API on `127.0.0.1`; no game
+7. The loopback bridge serves the dashboard and a read-only snapshot API on `127.0.0.1`; the
+   execution envelope exposes exact loaded-assembly binding coverage, and no game
    state is uploaded to GitHub Pages or another remote service.
 
 ## Dashboard

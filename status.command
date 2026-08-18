@@ -4,9 +4,11 @@
 # This read-only lifecycle inspector reports whether the game, bound injection claim, immutable
 # deployment identity, current decision frame, built artifacts, and companion PIDs describe one
 # coherent deployment. It understands both the macOS host PID and Wine/.NET producer PID and uses
-# process starts to detect PID reuse. JSON is the default output so operators and later integration
-# tasks can consume the same evidence without scraping prose; --require-active makes any state other
-# than a fully matching synchronized deployment return nonzero.
+# process starts to detect PID reuse. It also requires the loaded game's complete build-pinned
+# native-binding catalog: one missing token/signature makes the deployment a mismatch. JSON is the
+# default output so operators and later integration tasks can consume the same evidence without
+# scraping prose; --require-active makes any state other than a fully matching synchronized
+# deployment return nonzero.
 #
 # Inputs are process tables plus runtime claim/deployment/decision files and current DLL/game bytes.
 # It writes nothing, never injects/ejects, and never repairs claims. A fixture-only mode is restricted
@@ -161,7 +163,13 @@ else:
                     and deployment.get("telemetryHandshake") == claim["telemetryHandshake"]
                     and str(deployment.get("activeBuildId", "")).lower() == str(claim["activeBuildId"]).lower()
                     and deployment.get("diskArtifactSha256") == claim["diskArtifactSha256"]
-                    and deployment.get("gameAssemblySha256") == claim["gameAssemblySha256"])
+                    and deployment.get("gameAssemblySha256") == claim["gameAssemblySha256"]
+                    and deployment.get("nativeBindingKnownBuild") is True
+                    and deployment.get("nativeBindingsComplete") is True
+                    and type(deployment.get("nativeBindingDescriptorCount")) is int
+                    and deployment.get("nativeBindingDescriptorCount") > 0
+                    and deployment.get("nativeBindingBoundCount") == deployment.get("nativeBindingDescriptorCount")
+                    and deployment.get("nativeBindingFailureCount") == 0)
             if decision:
                 mutation_root = decision.get("mutationRoot")
                 decision_epoch = decision.get("gameEpochFingerprint")
@@ -185,6 +193,12 @@ else:
                     and decision.get("synced") is True
                     and decision.get("automationTransactionComplete") is True
                     and decision.get("automationTransactionError") == ""
+                    and decision.get("nativeBindingKnownBuild") is True
+                    and decision.get("nativeBindingsComplete") is True
+                    and type(decision.get("nativeBindingDescriptorCount")) is int
+                    and decision.get("nativeBindingDescriptorCount") > 0
+                    and decision.get("nativeBindingBoundCount") == decision.get("nativeBindingDescriptorCount")
+                    and decision.get("nativeBindingFailureCount") == 0
                     and clean_closed_root)
             if all(matches.values()): state, reason = "active", "all bound identities and synchronized telemetry match"
             elif not matches["process"]: state, reason = "stale", "claim belongs to a different process identity"
@@ -205,6 +219,11 @@ result = {
     "matches": matches,
     "decisionSynced": bool(decision and decision.get("synced") is True),
     "automationTransactionComplete": bool(decision and decision.get("automationTransactionComplete") is True),
+    "nativeBindingsComplete": decision.get("nativeBindingsComplete") if decision else None,
+    "nativeBindingDescriptorCount": decision.get("nativeBindingDescriptorCount") if decision else None,
+    "nativeBindingBoundCount": decision.get("nativeBindingBoundCount") if decision else None,
+    "nativeBindingFailureCount": decision.get("nativeBindingFailureCount") if decision else None,
+    "nativeBindingFailureSummary": decision.get("nativeBindingFailureSummary") if decision else None,
     "currentDiskArtifactSha256": disk_hash or None,
     "currentGameAssemblySha256": game_disk_hash or None,
     "artifactChangedSinceClaim": bool(claim and disk_hash and disk_hash != claim.get("diskArtifactSha256")),

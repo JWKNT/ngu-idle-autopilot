@@ -308,6 +308,19 @@ exposes no mutation endpoint.
         committedSteps: nonnegative(root.committedSteps), pendingSteps: nonnegative(root.pendingSteps),
         rejectedSteps: nonnegative(root.rejectedSteps), quarantinedSteps: nonnegative(root.quarantinedSteps),
       },
+      bindings: {
+        status: s.nativeBindingsComplete === true && number(s.nativeBindingFailureCount, -1) === 0
+          && number(s.nativeBindingDescriptorCount, -1) === number(s.nativeBindingBoundCount, -2)
+          ? "Complete" : s.nativeBindingsComplete === false || number(s.nativeBindingFailureCount) > 0
+            ? "Quarantined" : "Unavailable",
+        knownBuild: typeof s.nativeBindingKnownBuild === "boolean" ? s.nativeBindingKnownBuild : null,
+        complete: typeof s.nativeBindingsComplete === "boolean" ? s.nativeBindingsComplete : null,
+        descriptorCount: nonnegative(s.nativeBindingDescriptorCount),
+        boundCount: nonnegative(s.nativeBindingBoundCount),
+        failureCount: nonnegative(s.nativeBindingFailureCount),
+        failureSummary: s.nativeBindingFailureSummary || null,
+        provenance: s.nativeBindingDescriptorCount === undefined ? null : "LoadedAssemblyMetadata",
+      },
       authority: { stage: s.authorityStage || "Unavailable", routes },
       capacity: {
         status: inventoryTotal === null || inventoryFree === null ? "Unavailable" : capacityMargin !== null && capacityMargin < 0 ? "Held" : "Available",
@@ -374,6 +387,7 @@ exposes no mutation endpoint.
     const identity = observability.identity;
     const transaction = observability.transaction;
     const scheduler = observability.scheduler;
+    const bindings = observability.bindings || {};
     const capacity = observability.capacity;
     const authority = observability.authority;
     const actionTail = envelope.actionTail && typeof envelope.actionTail === "object" ? envelope.actionTail : {};
@@ -395,6 +409,11 @@ exposes no mutation endpoint.
     setText("action-tail-state", actionTail.status
       ? `${text(actionTail.status)}${actionTail.producerSessionId ? ` · ${shortIdentity(actionTail.producerSessionId)}` : ""}`
       : "Unavailable");
+    setText("binding-state", `${text(bindings.status, "Unavailable")}${bindings.knownBuild === true ? " · audited build" : bindings.knownBuild === false ? " · unknown build" : ""}`);
+    const bindingCounts = optionalNumber(bindings.descriptorCount) === null
+      ? "Unavailable"
+      : `${Number(bindings.boundCount || 0).toLocaleString()} / ${Number(bindings.descriptorCount).toLocaleString()} bound · ${Number(bindings.failureCount || 0).toLocaleString()} failures`;
+    setText("binding-coverage", bindings.failureSummary ? `${bindingCounts} · ${bindings.failureSummary}` : bindingCounts);
     const capacityParts = capacity.freeSlots === null || capacity.freeSlots === undefined
       ? [] : [`${Number(capacity.freeSlots).toLocaleString()} free`];
     if (capacity.requiredReserve !== null && capacity.requiredReserve !== undefined) capacityParts.push(`reserve ${Number(capacity.requiredReserve).toLocaleString()}`);
@@ -862,6 +881,7 @@ exposes no mutation endpoint.
       authority: { ...fallback.authority, ...(incoming.authority || {}), routes: { ...fallback.authority.routes, ...(incoming.authority?.routes || {}) } },
       capacity: { ...fallback.capacity, ...(incoming.capacity || {}) },
       scheduler: { ...fallback.scheduler, ...(incoming.scheduler || {}) },
+      bindings: { ...fallback.bindings, ...(incoming.bindings || {}) },
     };
     const age = Math.max(0, number(envelope.stateAgeSeconds, 9999));
     const live = s.synced && observability.transaction.complete && observability.identity.verifiedEnvelope && age <= 5;

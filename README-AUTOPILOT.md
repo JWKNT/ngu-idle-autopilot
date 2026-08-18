@@ -23,7 +23,7 @@ It is an adaptive strategy engine, not a proof of a mathematically global optimu
 4. Inspect the decision with `status.command` and the overlay in the upper-left of the game.
 5. Change `Mode` to `"assist"` when the plan looks sensible. The file is hot-reloaded.
 
-Use `stop.command` to unload. Restarting the game also unloads injected code. Do not launch the monitor or dashboard against retained runtime files by hand: their action views intentionally remain empty until `deployment.json`, `decision.json`, and the current `actions.log` session marker agree.
+Use `stop.command` to unload. Restarting the game also unloads injected code. Do not launch the monitor or dashboard against retained runtime files by hand: their action views intentionally remain empty until `deployment.json`, `decision.json`, the current `actions.log` session marker, and the complete loaded-assembly native-binding catalog agree.
 
 ## Safety gates
 
@@ -62,7 +62,7 @@ Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam C
 
 The current decision and objective are always written to `runtime/decision.json`. Each active frame includes the producer session/build/game hashes, decision epoch, root transaction ID/state/counts, staged authority, and the global scheduler's shadow hashes/statistics/blocker. Missing ETAs and unknown evidence are unavailable—not zero, immediate, or high confidence. `Held`, `Pending`, and `Quarantined` are different transaction outcomes.
 
-The read-only dashboard joins that frame to `runtime/deployment.json`. Its event and error tails include only lines after the exact matching `=== SESSION … id … ===` marker and stop at the next marker, so retained actions from an older injection cannot appear as current evidence. Rebirth, challenge, difficulty, and END horizons show unavailable whenever the producer did not emit a finite estimate. The generated allocation profile is `runtime/profiles/autopilot.generated.json`. Do not edit the generated profile; edit `runtime/autopilot.json`.
+The read-only dashboard joins that frame to `runtime/deployment.json`. Its execution envelope also shows exact loaded-assembly native-binding coverage; a missing descriptor, token, or signature quarantines deployment admission instead of becoming a later surprise. Event and error tails include only lines after the exact matching `=== SESSION … id … ===` marker and stop at the next marker, so retained actions from an older injection cannot appear as current evidence. Rebirth, challenge, difficulty, and END horizons show unavailable whenever the producer did not emit a finite estimate. The generated allocation profile is `runtime/profiles/autopilot.generated.json`. Do not edit the generated profile; edit `runtime/autopilot.json`.
 
 ## Rebuild after a game update
 
