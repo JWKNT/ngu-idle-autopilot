@@ -1739,21 +1739,15 @@ namespace NGUInjector
             RefreshAllocationOwnership();
             ExecutionSafety.ReportHold("typed-intent:fast-allocation",
                 "Fast loadout/allocation mutations are held until both expose typed child intents.");
-            PendingDecisionPublication heldPublication;
-            if (_pendingDecision.TryGet(GameEpochController.Shared.Current, out heldPublication))
-            {
-                heldPublication.TransactionComplete = false;
-                heldPublication.TransactionError = "Fast loadout/allocation typed intents unavailable";
-            }
 
             /*
             SETTLED-STATE PUBLICATION BARRIER
 
-            Inventory/loadout work can reclaim Energy, Magic, and Resource 3 near the end of the
-            one-second transaction. The fast allocator restores those pools on this 0.2-second
-            cadence. Publishing between the two made a correct bot look completely idle. Emit the
-            pending decision only after this sweep, when all cooperating mutation loops have
-            reached their stable state. Any allocation failure marks the cycle partial.
+            This callback remains the publication cadence for a completed one-second root.  The
+            fast allocation feature is deliberately outside the executable authority envelope, so
+            its visible HOLD is a no-op and must not rewrite a successfully closed typed root as a
+            failed transaction.  Once a typed fast-allocation child is integrated, its own exact
+            result belongs in the root journal before publication.
             */
             PendingDecisionPublication publication;
             if (Autopilot != null && _pendingDecision.TryTake(

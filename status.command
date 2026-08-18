@@ -163,6 +163,19 @@ else:
                     and deployment.get("diskArtifactSha256") == claim["diskArtifactSha256"]
                     and deployment.get("gameAssemblySha256") == claim["gameAssemblySha256"])
             if decision:
+                mutation_root = decision.get("mutationRoot")
+                decision_epoch = decision.get("gameEpochFingerprint")
+                clean_closed_root = (
+                    isinstance(mutation_root, dict)
+                    and type(mutation_root.get("id")) is int
+                    and mutation_root["id"] > 0
+                    and mutation_root.get("state") == "closed"
+                    and isinstance(decision_epoch, str)
+                    and bool(decision_epoch)
+                    and mutation_root.get("epochFingerprint") == decision_epoch
+                    and all(type(mutation_root.get(key)) is int and mutation_root[key] == 0 for key in (
+                        "pendingSteps", "rejectedSteps", "quarantinedSteps"))
+                )
                 matches["decision"] = (
                     int(decision.get("producerPid", -1)) == wine_pid
                     and decision.get("producerSessionId") == claim["producerSessionId"]
@@ -171,7 +184,8 @@ else:
                     and decision.get("gameAssemblySha256") == claim["gameAssemblySha256"]
                     and decision.get("synced") is True
                     and decision.get("automationTransactionComplete") is True
-                    and not decision.get("automationTransactionError"))
+                    and decision.get("automationTransactionError") == ""
+                    and clean_closed_root)
             if all(matches.values()): state, reason = "active", "all bound identities and synchronized telemetry match"
             elif not matches["process"]: state, reason = "stale", "claim belongs to a different process identity"
             else: state, reason = "mismatch", "claim, pointer, deployment, or decision evidence disagrees"

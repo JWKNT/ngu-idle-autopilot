@@ -268,6 +268,22 @@ internal static class LifecycleEpochTests
                && main.IndexOf("gameEpochSaveGeneration", StringComparison.Ordinal) >= 0,
             "deployment telemetry carries the lifecycle identity needed for process handshake");
 
+        var fastAllocation = main.IndexOf("void FastAllocationRoutine()",
+            StringComparison.Ordinal);
+        var quickStuff = main.IndexOf("void QuickStuff()", fastAllocation,
+            StringComparison.Ordinal);
+        var fastAllocationBody = fastAllocation >= 0 && quickStuff > fastAllocation
+            ? main.Substring(fastAllocation, quickStuff - fastAllocation)
+            : string.Empty;
+        Assert(fastAllocationBody.IndexOf("TransactionComplete = false",
+                   StringComparison.Ordinal) < 0
+               && fastAllocationBody.IndexOf("TransactionError =",
+                   StringComparison.Ordinal) < 0,
+            "a deliberately held fast path cannot invalidate a successfully closed typed root");
+        Assert(fastAllocationBody.IndexOf("PublishDecisionAfterAutomation",
+                   StringComparison.Ordinal) >= 0,
+            "the held fast path still publishes the exact completed root envelope");
+
         var unloadCall = loader.IndexOf("Main.reference.Unload();", StringComparison.Ordinal);
         var invalidate = loader.IndexOf("ExecutionSafety.Invalidate(\"injector lifecycle Unload\")",
             StringComparison.Ordinal);

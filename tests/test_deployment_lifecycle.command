@@ -91,18 +91,27 @@ PY
 
 write_telemetry() {
   local root=$1 session=$2 mvid=$3 decision_session=${4:-$2} decision_game_hash=${5:-}
-  python3 - "$root" "$session" "$mvid" "$decision_session" "$decision_game_hash" <<'PY'
+  local transaction_complete=${6:-true} transaction_error=${7:-} root_id=${8:-7}
+  local root_state=${9:-closed} root_pending=${10:-0} root_rejected=${11:-0}
+  local root_quarantined=${12:-0} root_epoch_mode=${13:-match}
+  python3 - "$root" "$session" "$mvid" "$decision_session" "$decision_game_hash" \
+    "$transaction_complete" "$transaction_error" "$root_id" "$root_state" \
+    "$root_pending" "$root_rejected" "$root_quarantined" "$root_epoch_mode" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib, json, sys
 root = Path(sys.argv[1])
-session, mvid, decision_session, bad_game_hash = sys.argv[2:]
+(session, mvid, decision_session, bad_game_hash, transaction_complete,
+ transaction_error, root_id, root_state, root_pending, root_rejected,
+ root_quarantined, root_epoch_mode) = sys.argv[2:]
 games = json.loads((root / "processes.json").read_text(encoding="utf-8"))["games"]
 game = games[0]
 dll_hash = hashlib.sha256((root / "NGUIdleAutopilot.dll").read_bytes()).hexdigest()
 game_hash = hashlib.sha256((root / "Assembly-CSharp.dll").read_bytes()).hexdigest()
 producer_start = game["osStartUtc"].replace("Z", ".5000000Z")
 now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+decision_epoch = f"fixture-epoch:{session}"
+root_epoch = decision_epoch if root_epoch_mode == "match" else f"{decision_epoch}:mismatch"
 deployment = {
     "schemaVersion": 2,
     "observedAt": now,
@@ -126,8 +135,18 @@ decision = {
     "synced": True,
     "syncState": "active-gameplay",
     "decisionPhase": "post-automation-transaction",
-    "automationTransactionComplete": True,
-    "automationTransactionError": "",
+    "automationTransactionComplete": transaction_complete.lower() == "true",
+    "automationTransactionError": transaction_error,
+    "gameEpochFingerprint": decision_epoch,
+    "mutationRoot": {
+        "id": int(root_id),
+        "state": root_state,
+        "epochFingerprint": root_epoch,
+        "committedSteps": 0,
+        "pendingSteps": int(root_pending),
+        "rejectedSteps": int(root_rejected),
+        "quarantinedSteps": int(root_quarantined),
+    },
 }
 (root / "runtime" / "deployment.json").write_text(json.dumps(deployment, indent=2) + "\n", encoding="utf-8")
 (root / "runtime" / "decision.json").write_text(json.dumps(decision, indent=2) + "\n", encoding="utf-8")
@@ -135,10 +154,11 @@ PY
 }
 
 schedule_telemetry() {
-  local root=$1 session=$2 decision_session=${3:-$2} decision_game_hash=${4:-}
+  local root=$1 session=$2
+  local telemetry_arguments=("${@:3}")
   (
     sleep 0.35
-    write_telemetry "$root" "$session" "$fixture_mvid" "$decision_session" "$decision_game_hash"
+    write_telemetry "$root" "$session" "$fixture_mvid" "${telemetry_arguments[@]}"
   ) &
 }
 
@@ -176,6 +196,50 @@ run_successful_claim() {
   invoke_run "$root"
   assert_true "$([[ $LAST_STATUS -eq 0 ]] && print true || print false)" "matching fixture injection succeeds"
   assert_contains "$LAST_OUTPUT" "claimed after synchronized fixture handshake" "success is declared only after handshake"
+}
+
+write_transaction_telemetry() {
+  local root=$1 session=$2 transaction_complete=$3 root_id=$4 root_state=$5
+  local root_pending=$6 root_rejected=$7 root_quarantined=$8 root_epoch_mode=$9
+  write_telemetry "$root" "$session" "$fixture_mvid" "$session" "" \
+    "$transaction_complete" "" "$root_id" "$root_state" "$root_pending" \
+    "$root_rejected" "$root_quarantined" "$root_epoch_mode"
+}
+
+write_transaction_error_telemetry() {
+  local root=$1 session=$2 transaction_error=$3
+  write_telemetry "$root" "$session" "$fixture_mvid" "$session" "" true \
+    "$transaction_error" 7 closed 0 0 0 match
+}
+
+assert_run_transaction_rejected() {
+  local label=$1 transaction_complete=$2 root_id=$3 root_state=$4
+  local root_pending=$5 root_rejected=$6 root_quarantined=$7 root_epoch_mode=$8
+  local root session
+  new_fixture
+  root=$NEW_FIXTURE
+  session="transaction-$label"
+  set_processes "$root" "7451,1251,2026-08-18T05:45:00Z"
+  schedule_telemetry "$root" "$session" "$session" "" "$transaction_complete" "" \
+    "$root_id" "$root_state" "$root_pending" "$root_rejected" \
+    "$root_quarantined" "$root_epoch_mode"
+  invoke_run "$root" 1
+  assert_true "$([[ $LAST_STATUS -ne 0 ]] && print true || print false)" \
+    "$label transaction evidence fails the run handshake"
+  assert_true "$([[ ! -f $root/runtime/deployment-claim.json ]] && print true || print false)" \
+    "$label transaction evidence never publishes a deployment claim"
+}
+
+assert_status_transaction_rejected() {
+  local root=$1 session=$2 label=$3 transaction_complete=$4 root_id=$5 root_state=$6
+  local root_pending=$7 root_rejected=$8 root_quarantined=$9 root_epoch_mode=${10}
+  write_transaction_telemetry "$root" "$session" "$transaction_complete" "$root_id" \
+    "$root_state" "$root_pending" "$root_rejected" "$root_quarantined" "$root_epoch_mode"
+  invoke_status "$root" --require-active
+  assert_true "$([[ $LAST_STATUS -ne 0 ]] && print true || print false)" \
+    "status rejects $label transaction evidence"
+  assert_contains "$LAST_OUTPUT" '"state": "mismatch"' \
+    "status reports $label transaction evidence as a mismatch"
 }
 
 test_zero_and_duplicate_refusal() {
@@ -235,6 +299,62 @@ test_failed_handshake_is_never_claimed() {
   assert_true "$([[ ! -f $root/runtime/deployment-claim.json && ! -f $root/runtime/assembly-pointer.txt ]] && print true || print false)" "failed handshake publishes no active ownership"
   pending_count=$(find "$root/runtime/deployment-claims/archive" -name '.pending-injection.*' -type f | wc -l | tr -d ' ')
   assert_true "$([[ $pending_count -ge 1 ]] && print true || print false)" "failed pending claim is archived with cleanup evidence"
+}
+
+test_transaction_root_handshake_matrix() {
+  assert_run_transaction_rejected "false-clean" false 7 closed 0 0 0 match
+  assert_run_transaction_rejected "zero-root-id" true 0 closed 0 0 0 match
+  assert_run_transaction_rejected "open-root" true 7 open 0 0 0 match
+  assert_run_transaction_rejected "pending-root" true 7 closed 1 0 0 match
+  assert_run_transaction_rejected "rejected-root" true 7 closed 0 1 0 match
+  assert_run_transaction_rejected "quarantined-root" true 7 closed 0 0 1 match
+  assert_run_transaction_rejected "epoch-mismatch" true 7 closed 0 0 0 mismatch
+
+  local root session
+  new_fixture
+  root=$NEW_FIXTURE
+  session="transaction-nonempty-error"
+  set_processes "$root" "7452,1252,2026-08-18T05:45:02Z"
+  (
+    sleep 0.35
+    write_transaction_error_telemetry "$root" "$session" "verified mutation failed"
+  ) &
+  invoke_run "$root" 1
+  assert_true "$([[ $LAST_STATUS -ne 0 ]] && print true || print false)" \
+    "nonempty transaction error fails the run handshake"
+  assert_true "$([[ ! -f $root/runtime/deployment-claim.json ]] && print true || print false)" \
+    "nonempty transaction error never publishes a deployment claim"
+}
+
+test_transaction_root_status_parity() {
+  local root session
+  new_fixture
+  root=$NEW_FIXTURE
+  session="status-transaction-matrix"
+  set_processes "$root" "7461,1261,2026-08-18T05:46:00Z"
+  run_successful_claim "$root" "$session"
+
+  assert_status_transaction_rejected "$root" "$session" "false-clean" false 7 closed 0 0 0 match
+  assert_status_transaction_rejected "$root" "$session" "zero-root-id" true 0 closed 0 0 0 match
+  assert_status_transaction_rejected "$root" "$session" "open-root" true 7 open 0 0 0 match
+  assert_status_transaction_rejected "$root" "$session" "pending-root" true 7 closed 1 0 0 match
+  assert_status_transaction_rejected "$root" "$session" "rejected-root" true 7 closed 0 1 0 match
+  assert_status_transaction_rejected "$root" "$session" "quarantined-root" true 7 closed 0 0 1 match
+  assert_status_transaction_rejected "$root" "$session" "epoch-mismatch" true 7 closed 0 0 0 mismatch
+
+  write_transaction_error_telemetry "$root" "$session" "verified mutation failed"
+  invoke_status "$root" --require-active
+  assert_true "$([[ $LAST_STATUS -ne 0 ]] && print true || print false)" \
+    "status rejects a nonempty transaction error"
+  assert_contains "$LAST_OUTPUT" '"state": "mismatch"' \
+    "status reports a nonempty transaction error as a mismatch"
+
+  write_transaction_telemetry "$root" "$session" true 7 closed 0 0 0 match
+  invoke_status "$root" --require-active
+  assert_true "$([[ $LAST_STATUS -eq 0 ]] && print true || print false)" \
+    "status accepts the same clean closed root as the run handshake"
+  assert_contains "$LAST_OUTPUT" '"state": "active"' \
+    "clean closed root restores active status"
 }
 
 test_legacy_pointer_and_restart_archival() {
@@ -308,6 +428,8 @@ test_stop_telemetry_mismatch_refusal() {
 test_zero_and_duplicate_refusal
 test_matching_claim_status_and_stop
 test_failed_handshake_is_never_claimed
+test_transaction_root_handshake_matrix
+test_transaction_root_status_parity
 test_legacy_pointer_and_restart_archival
 test_pid_reuse_refusal
 test_stop_telemetry_mismatch_refusal

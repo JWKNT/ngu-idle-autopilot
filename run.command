@@ -333,6 +333,19 @@ try:
     session = str(deployment.get("producerSessionId", ""))
     producer_start = str(deployment.get("producerProcessStartUtc", ""))
     def instant(text): return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    mutation_root = decision.get("mutationRoot")
+    decision_epoch = decision.get("gameEpochFingerprint")
+    clean_closed_root = (
+        isinstance(mutation_root, dict)
+        and type(mutation_root.get("id")) is int
+        and mutation_root["id"] > 0
+        and mutation_root.get("state") == "closed"
+        and isinstance(decision_epoch, str)
+        and bool(decision_epoch)
+        and mutation_root.get("epochFingerprint") == decision_epoch
+        and all(type(mutation_root.get(key)) is int and mutation_root[key] == 0 for key in (
+            "pendingSteps", "rejectedSteps", "quarantinedSteps"))
+    )
     valid = (
         int(deployment.get("schemaVersion", 0)) >= 2
         and int(deployment.get("producerPid", -1)) == pid
@@ -351,7 +364,8 @@ try:
         and decision.get("syncState") == "active-gameplay"
         and decision.get("decisionPhase") == "post-automation-transaction"
         and decision.get("automationTransactionComplete") is True
-        and not decision.get("automationTransactionError")
+        and decision.get("automationTransactionError") == ""
+        and clean_closed_root
         and int(decision.get("decisionSequence", 0)) > 0
     )
     if valid:
