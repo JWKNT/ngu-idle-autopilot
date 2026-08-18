@@ -307,7 +307,8 @@ namespace NGUInjector.Autopilot
                               && AllZero(after.TitanClocks)
                               && AllZero(after.TitanRunKillCounters);
             proof.Reason = proof.Satisfied ? "exact ordinary rebirth postcondition"
-                : "ordinary rebirth requires exact +1/zero timer, preserved challenge state, soft Number bank, Boss 0, persistent records, and zero Titan state";
+                : "ordinary rebirth requires exact +1/zero timer, preserved challenge state, "
+                  + "the synchronous soft Number bank, Boss 0, persistent records, and zero Titan state";
             return proof;
         }
 
@@ -407,7 +408,12 @@ namespace NGUInjector.Autopilot
                    && after.CurrentDefense == before.NextDefense
                    && after.NextAttack == before.NextAttack
                    && after.NextDefense == before.NextDefense
-                   && after.BossMultiplier == 1.0 && after.TimeMultiplier == 0.0
+                   // Native setNewMultis copies current Number and the two old factors, then
+                   // resetBoss writes bossMulti=1 while resetTime clears only the timer fields.
+                   // timeMulti therefore remains the just-finished value synchronously and is
+                   // recalculated from the new timer by Rebirth.Update on a later Unity frame.
+                   && after.BossMultiplier == 1.0
+                   && after.TimeMultiplier == before.TimeMultiplier
                    && after.OldBossMultiplier == before.BossMultiplier
                    && after.OldTimeMultiplier == before.TimeMultiplier;
         }

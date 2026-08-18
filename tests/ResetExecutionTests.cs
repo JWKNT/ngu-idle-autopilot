@@ -146,6 +146,13 @@ internal static class ResetExecutionTests
         Set(skipped, "RebirthNumber", 12L);
         False(Satisfied(Call("NGUInjector.Autopilot.ResetPostconditions", "VerifyOrdinary",
             before, skipped)), "greater-than-one rebirth delta is rejected");
+        var prematureTimeUpdate = Clone(after);
+        var changedNumber = Field(prematureTimeUpdate, "Number");
+        Set(changedNumber, "TimeMultiplier", 0.0);
+        Set(prematureTimeUpdate, "Number", changedNumber);
+        False(Satisfied(Call("NGUInjector.Autopilot.ResetPostconditions", "VerifyOrdinary",
+            before, prematureTimeUpdate)),
+            "synchronous reset proof preserves current timeMulti until the later Unity Update");
     }
 
     private static void ChallengeResetMatrix()
@@ -403,7 +410,8 @@ internal static class ResetExecutionTests
         Set(n, "CurrentDefense", Number(before, "NextDefense"));
         Set(n, "NextAttack", Number(before, "NextAttack"));
         Set(n, "NextDefense", Number(before, "NextDefense"));
-        Set(n, "BossMultiplier", 1.0); Set(n, "TimeMultiplier", 0.0);
+        Set(n, "BossMultiplier", 1.0);
+        Set(n, "TimeMultiplier", Number(before, "TimeMultiplier"));
         Set(n, "OldBossMultiplier", Number(before, "BossMultiplier"));
         Set(n, "OldTimeMultiplier", Number(before, "TimeMultiplier"));
         return n;
