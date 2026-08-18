@@ -654,10 +654,8 @@ namespace NGUInjector.AllocationProfiles
                 }
             }
 
-            // Cap percentages are policy ceilings, not a reason to leave a free
-            // resource idle. Sweep any rounding/cap remainder into the currently
-            // highest marginal Basic Training candidates until every reachable pair
-            // is speed-capped or idle Energy reaches zero.
+            // First fund the next exact BT event inside the configured portfolio
+            // ceiling. This keeps the normal 5 Hz marginal reranking behavior.
             var swept = 0L;
             if (_character.idleEnergy > 0)
             {
@@ -666,6 +664,22 @@ namespace NGUInjector.AllocationProfiles
                 {
                     if (_character.idleEnergy <= 0) break;
                     swept += training.AllocateResidual(_character.idleEnergy);
+                }
+            }
+
+            // Once every configured Energy sink has declined, idle Energy has no
+            // opportunity cost. Fill all remaining productive Basic Training
+            // headroom, ignoring the portfolio ceiling but never exceeding a native
+            // one-level-per-tick speed cap. Any surplus after this pass is genuinely
+            // unusable at the current unlock/horizon state and should remain idle.
+            var idleFallback = 0L;
+            if (_character.idleEnergy > 0)
+            {
+                foreach (var training in temp.OfType<BasicTrainingBP>()
+                             .OrderByDescending(x => x.PriorityScore))
+                {
+                    if (_character.idleEnergy <= 0) break;
+                    idleFallback += training.AllocateIdleFallback(_character.idleEnergy);
                 }
             }
 
@@ -692,7 +706,8 @@ namespace NGUInjector.AllocationProfiles
                                         + (optimizedTrainingSpent > 0 ? ", optimizedBT=" + optimizedTrainingSpent : string.Empty)
                                         + (longHorizonTrainingSpent > 0 ? ", persistent-cap-reserve=" + longHorizonTrainingSpent : string.Empty)
                                         + (advancedTrainingSpent > 0 ? ", next-zone-AT=" + advancedTrainingSpent : string.Empty)
-                                        + (swept > 0 ? ", residual->BT=" + swept : string.Empty));
+                                        + (swept > 0 ? ", event-residual->BT=" + swept : string.Empty)
+                                        + (idleFallback > 0 ? ", idle-fallback->BT=" + idleFallback : string.Empty));
                 _lastEnergyActionShape = actionShape;
                 _lastEnergyActionLog = DateTime.UtcNow;
             }

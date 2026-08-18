@@ -636,6 +636,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let energyIdle = numberDouble(state, "energyIdle")
         let energyUtilization = numberDouble(state, "energyUtilization")
         let energyIdleReason = state["energyIdleReason"] as? String ?? "waiting-for-telemetry"
+        let energyTrainingHeadroom = numberDouble(state, "energyBasicTrainingSpeedCapHeadroom")
         let energyIncome = numberDouble(state, "energyIncomePerSecond")
         let basicTrainingEnergy = numberDouble(state, "energyBasicTrainingAllocated")
         let nonBasicTrainingEnergy = numberDouble(state, "energyNonBasicTrainingAllocated")
@@ -779,6 +780,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         shortTerm.append("Re-score Basic Training caps, Augment marginal value, drops, merging, boosts, and purchases on the next control tick.")
         if energyCurrent > 0 && energyIdle / energyCurrent > 0.01
+            && energyTrainingHeadroom > 0
             && energyIdleReason != "between-allocation-sweeps" && energyIdleReason != "sync-pair-remainder" {
             shortTerm.append("Resolve \(shortNumber(energyIdle)) idle Energy: \(energyIdleReason.replacingOccurrences(of: "-", with: " ")).")
         }
@@ -964,6 +966,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Adventure stats: Power \(shortNumber(power)) / Toughness \(shortNumber(toughness))
         Energy: \(shortNumber(max(0, energyCurrent - energyIdle))) allocated / \(shortNumber(energyCurrent)) total (\(String(format: "%.1f", 100 * energyUtilization))% utilized); +\(shortNumber(energyIncome))/s; idle state: \(energyIdleReason.replacingOccurrences(of: "-", with: " "))
         Reconciliation: \(shortNumber(basicTrainingEnergy)) E in Basic Training; \(shortNumber(nonBasicTrainingEnergy)) E in Augments/other Energy systems; \(shortNumber(energyIdle)) E idle.
+        Remaining productive Basic Training speed-cap headroom: \(shortNumber(energyTrainingHeadroom)) E. Idle Energy beyond zero headroom is surplus capacity, not lost progress.
         Training allocation:
         \(allocationSummary)
         Long-horizon BT rule: \(state["basicTrainingLongHorizonPolicy"] as? String ?? "persistent cap investments are evaluated before immediate boss marginal value")

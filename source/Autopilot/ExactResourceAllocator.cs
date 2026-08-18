@@ -90,6 +90,15 @@ namespace NGUInjector.Autopilot
             return Math.Min(idle, desiredTotal - currentAllocation);
         }
 
+        internal static long ProductiveSpeedCapHeadroom(long nativeCap,
+            long currentAllocation, long idle)
+        {
+            // Native Basic Training awards at most one completion per 20 ms tick.
+            // Allocation above its cap only changes the displayed utilization; it
+            // cannot improve the rate and must remain idle for honest telemetry.
+            return Headroom(Math.Max(0L, nativeCap), Math.Max(0L, currentAllocation), idle);
+        }
+
         internal static long CapAtTickBoundary(double fullCap, long maximum, long idle)
         {
             if (maximum <= 0 || idle <= 0 || double.IsNaN(fullCap)

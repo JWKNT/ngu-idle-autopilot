@@ -12,10 +12,11 @@ FILE PURPOSE
 BasicTrainingBP models one attack/defense training pair, including asymmetric unlocks, Sync
 Training's two-Energy cost, native discrete rates, boss marginal value, and permanent cap-
 compression payoff. It allocates through explicit side overloads and verifies idle/side deltas.
-CAPALLBT is one aggregate group ceiling; capped members reject the executor's generic residual
-sweep once that ceiling is filled. Ordinary marginal funding ends at the next ten-native-tick
-completion event so the 5 Hz recovery heartbeat can rerank instead of filling a row's whole cap.
-Never replace this with equal shares, unconditional residual, or a strongest-skill-only shortcut.
+CAPALLBT is one aggregate group ceiling while productive systems compete. Ordinary marginal
+funding ends at the next ten-native-tick completion event so the 5 Hz recovery heartbeat can
+rerank. After every other admitted sink declines, a separate idle fallback may exceed that
+portfolio ceiling and speed-cap unlocked training; it can never overfill a native cap. Never
+replace this with equal shares, unconditional over-cap allocation, or a strongest-skill shortcut.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -318,8 +319,25 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         internal long AllocateResidual(long idleBudget)
         {
-            if (idleBudget <= 0 || !IsValid() || PriorityScore <= 0.0) return 0;
-            if (IsCap)
+            return AllocateTraining(idleBudget, true, true);
+        }
+
+        internal long AllocateIdleFallback(long idleBudget)
+        {
+            // This path runs only after every configured Energy sink has had a chance
+            // to allocate. Energy is reclaimed and reranked on the next 5 Hz sweep,
+            // so filling otherwise-idle native BT headroom has no opportunity cost.
+            // Ignore the portfolio cap and zero immediate boss derivative here, but
+            // never allocate beyond the one-completion-per-tick native speed cap.
+            return AllocateTraining(idleBudget, false, false);
+        }
+
+        private long AllocateTraining(long idleBudget, bool completionBounded,
+            bool enforcePortfolioPolicy)
+        {
+            if (idleBudget <= 0 || !IsValid()
+                || (enforcePortfolioPolicy && PriorityScore <= 0.0)) return 0;
+            if (enforcePortfolioPolicy && IsCap)
             {
                 var ceiling = ExactResourceAllocator.CeilingShare(Character.curEnergy,
                     Math.Max(0L, (long)Math.Round(CapPercent * 1000000.0,
@@ -331,21 +349,12 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             var idleBefore = Character.idleEnergy;
             if (Index <= 5)
             {
-                var headroom = Math.Min(Math.Max(0L,
-                        Character.training.attackCaps[BTIndex] - Character.training.attackEnergy[BTIndex]),
-                    ExactResourceAllocator.CompletionHeadroomForTicks(
-                        Character.training.attackCaps[BTIndex],
-                        Character.training.attackEnergy[BTIndex],
-                        Character.training.attackBarProgress[BTIndex], 10));
+                var headroom = SideHeadroom(true, completionBounded);
                 if (Character.settings.syncTraining)
                 {
                     var attackHeadroom = AttackUnlocked ? headroom : 0L;
-                    var defenseHeadroom = DefenseUnlocked ? Math.Min(Math.Max(0L,
-                            Character.training.defenseCaps[BTIndex] - Character.training.defenseEnergy[BTIndex]),
-                        ExactResourceAllocator.CompletionHeadroomForTicks(
-                            Character.training.defenseCaps[BTIndex],
-                            Character.training.defenseEnergy[BTIndex],
-                            Character.training.defenseBarProgress[BTIndex], 10)) : 0L;
+                    var defenseHeadroom = DefenseUnlocked
+                        ? SideHeadroom(false, completionBounded) : 0L;
                     var remainingBudget = Math.Min(idleBudget, Character.idleEnergy);
                     // Pair only the mutually productive part. Once the lower-cap
                     // side is full, explicit native side overloads let the remaining
@@ -399,17 +408,28 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             }
             else
             {
-                var headroom = Math.Min(Math.Max(0L,
-                        Character.training.defenseCaps[BTIndex] - Character.training.defenseEnergy[BTIndex]),
-                    ExactResourceAllocator.CompletionHeadroomForTicks(
-                        Character.training.defenseCaps[BTIndex],
-                        Character.training.defenseEnergy[BTIndex],
-                        Character.training.defenseBarProgress[BTIndex], 10));
+                var headroom = SideHeadroom(false, completionBounded);
                 var amount = Math.Min(headroom, idleBudget);
                 if (amount <= 0) return 0;
                 Character.allDefenseController.trains[BTIndex].addEnergy(amount);
             }
             return Math.Max(0L, idleBefore - Character.idleEnergy);
+        }
+
+        private long SideHeadroom(bool attackSide, bool completionBounded)
+        {
+            var cap = attackSide ? Character.training.attackCaps[BTIndex]
+                : Character.training.defenseCaps[BTIndex];
+            var allocated = attackSide ? Character.training.attackEnergy[BTIndex]
+                : Character.training.defenseEnergy[BTIndex];
+            var speedCapHeadroom = ExactResourceAllocator.ProductiveSpeedCapHeadroom(
+                cap, allocated, long.MaxValue);
+            if (!completionBounded)
+                return speedCapHeadroom;
+            var progress = attackSide ? Character.training.attackBarProgress[BTIndex]
+                : Character.training.defenseBarProgress[BTIndex];
+            return Math.Min(speedCapHeadroom,
+                ExactResourceAllocator.CompletionHeadroomForTicks(cap, allocated, progress, 10));
         }
 
         private long CurrentCoveredAllocation()

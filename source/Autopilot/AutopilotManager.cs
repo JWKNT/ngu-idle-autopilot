@@ -1272,9 +1272,11 @@ namespace NGUInjector.Autopilot
             var energyIncome = Math.Max(0.0, c.energyPerSecond());
             var magicIncome = Math.Max(0.0, c.magicPerSecond());
             var energySweepBound = Math.Max(1L, (long)Math.Ceiling(energyIncome * 0.2) + 1L);
+            var productiveTrainingHeadroom = ProductiveBasicTrainingHeadroom(c);
             var energyIdleReason = c.idleEnergy <= 0 ? "fully-allocated"
                 : c.idleEnergy <= energySweepBound ? "between-allocation-sweeps"
-                : "productive-targets-saturated-or-rebirth-horizon-blocked";
+                : productiveTrainingHeadroom > 0 ? "productive-basic-training-headroom-unallocated"
+                : "all-unlocked-basic-training-speed-capped-no-other-admitted-target";
             var energyBreakdown = EnergyAllocationBreakdown(c);
             var basicTrainingEnergy = BasicTrainingEnergy(c);
             var nonBasicTrainingEnergy = Math.Max(0L,
@@ -1564,8 +1566,9 @@ namespace NGUInjector.Autopilot
                        + "  \"energyBaseBars\": " + c.energyBars + ",\n"
                        + "  \"energyIncomePerSecond\": " + energyIncome.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"energySweepBound\": " + energySweepBound + ",\n"
+                       + "  \"energyBasicTrainingSpeedCapHeadroom\": " + productiveTrainingHeadroom + ",\n"
                        + "  \"energyIdleReason\": \"" + energyIdleReason + "\",\n"
-                       + "  \"basicTrainingLongHorizonPolicy\": \"reserve Energy first for reachable maximum cap-reduction frontiers with at most a two-future-run Energy-cap payback; then optimize immediate boss marginal value\",\n"
+                       + "  \"basicTrainingLongHorizonPolicy\": \"reserve Energy first for reachable maximum cap-reduction frontiers with at most a two-future-run Energy-cap payback; optimize immediate boss marginal value; then use otherwise-idle Energy to speed-cap every unlocked training\",\n"
                        + "  \"advancedTrainingHorizonDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.CurrentDecision(c)) + "\",\n"
                        + "  \"advancedTrainingTargetZone\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastTargetZone + ",\n"
                        + "  \"advancedTrainingAttackTarget\": " + AllocationProfiles.BreakpointTypes.AdvancedTrainingBP.LastAttackTarget + ",\n"
@@ -2826,6 +2829,25 @@ namespace NGUInjector.Autopilot
                 total += Math.Max(0L, c.training.attackEnergy[i])
                          + Math.Max(0L, c.training.defenseEnergy[i]);
             return total;
+        }
+
+        private static long ProductiveBasicTrainingHeadroom(Character c)
+        {
+            decimal total = 0m;
+            for (var i = 0; i < 6; i++)
+            {
+                var attackUnlocked = i == 0 || c.training.attackTraining[i - 1] > 5000L * i;
+                var defenseUnlocked = i == 0 || c.training.defenseTraining[i - 1] > 5000L * i;
+                if (attackUnlocked)
+                    total += ExactResourceAllocator.ProductiveSpeedCapHeadroom(
+                        c.training.attackCaps[i], c.training.attackEnergy[i], long.MaxValue);
+                if (defenseUnlocked)
+                    total += ExactResourceAllocator.ProductiveSpeedCapHeadroom(
+                        c.training.defenseCaps[i], c.training.defenseEnergy[i], long.MaxValue);
+                if (total >= long.MaxValue)
+                    return long.MaxValue;
+            }
+            return (long)total;
         }
 
         private static void GetNextTrainingGoal(Character c, out string goal, out int etaSeconds)

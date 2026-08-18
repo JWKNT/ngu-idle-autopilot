@@ -55,6 +55,12 @@ internal static class ExactAllocationTests
             "already-funded event must expose no extra headroom");
         Assert(ExactResourceAllocator.CompletionHeadroomForTicks(1000L, 0L, 1.0, 10) == 0L,
             "already-complete event must not receive a phantom unit");
+        Assert(ExactResourceAllocator.ProductiveSpeedCapHeadroom(1000L, 50L, 10000L) == 950L,
+            "idle fallback must fill all productive training headroom");
+        Assert(ExactResourceAllocator.ProductiveSpeedCapHeadroom(1000L, 1000L, 10000L) == 0L,
+            "idle fallback must not overfill a native speed cap");
+        Assert(ExactResourceAllocator.ProductiveSpeedCapHeadroom(1000L, 50L, 25L) == 25L,
+            "idle fallback must conserve the available idle budget");
 
         Assert(ExactResourceAllocator.NativeCompletionTicks(0.0, 1000.0) == 1L,
             "online completion is floored to one native tick");
