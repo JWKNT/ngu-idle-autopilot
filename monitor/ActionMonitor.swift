@@ -348,7 +348,16 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 actionSessionAdmitted = line.contains(" id \(sessionId) build ")
                 continue
             }
-            if actionSessionAdmitted { selected.append(line) }
+            /*
+            HOLD is decision/safety evidence, not an action the bot performed.  Its exact reason
+            remains available in decision telemetry and the durable actions.log for diagnosis,
+            but admitting it into the operator's Live Actions feed made unavailable bosses look
+            like attempted work.  Failed/rejected actions remain visible; only clean no-op holds
+            are omitted from the presentation stream.
+            */
+            if actionSessionAdmitted && !line.contains(" [HOLD] ") {
+                selected.append(line)
+            }
         }
         return selected.isEmpty ? "" : selected.joined(separator: "\n") + "\n"
     }
