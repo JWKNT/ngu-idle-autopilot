@@ -63,7 +63,8 @@ namespace NGUInjector.Autopilot
             if (config.ManageAllocations && allocation != null)
                 outcome.Allocation = root.ExecuteChild(
                     new ResourceAllocationIntent(character, allocation));
-            if (!root.IsClosed && config.ManageBosses)
+            if (!root.IsClosed && config.ManageBosses
+                && FightBossIntent.HasExecutableAction(character))
                 outcome.Boss = root.ExecuteChild(new FightBossIntent(character));
             if (!root.IsClosed && EarlyAdventureIntent.IsEligible(character, config, quests))
                 outcome.Adventure = root.ExecuteChild(
@@ -551,6 +552,17 @@ namespace NGUInjector.Autopilot
         private double _expectedKillSeconds;
 
         internal FightBossIntent(Character character) { _character = character; }
+
+        internal static bool HasExecutableAction(Character character)
+        {
+            if (character == null || character.bossController == null
+                || character.bossID < 0 || character.bossController.isFighting
+                || character.bossController.nukeBoss)
+                return false;
+            double seconds;
+            return CombatHelpers.CanNukeCurrentBoss(character)
+                   || CombatHelpers.CanWinCurrentBoss(character, out seconds);
+        }
 
         public string Id { get { return "progression.fight-boss"; } }
         public MutationClass Class { get { return MutationClass.Combat; } }
