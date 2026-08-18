@@ -14,6 +14,7 @@ from pathlib import Path
 
 from monitor.dashboard_server import (
     build_observability,
+    compact_event_message,
     event_importance,
     is_key_event,
     recent_action_errors,
@@ -31,6 +32,24 @@ class KeyEventPolicyTests(unittest.TestCase):
         self.assertTrue(is_key_event("COLLECTION", "Forest set complete"))
         self.assertTrue(is_key_event("PERK", "Adventure perk milestone reached"))
         self.assertTrue(is_key_event("PROGRESSION", "ITOPOD unlocked"))
+
+    def test_legacy_rebirth_snapshot_is_compacted_for_display(self) -> None:
+        message = (
+            "Completed normal rebirth [confirmed transaction] "
+            "pre{numA=2.351185531977945E+37,numD=2.351185531977945E+37,"
+            "previewA=1.2044625712533734E+37,previewD=1.2044625712533734E+37,"
+            "AP=225,bloodNumber=1,difficulty=normal,boss=57,record=59/1/1,"
+            "rebirths=51,time=5102.1868372349418,challenge=none:None;flags=;counts=} "
+            "post{numA=1.2044625712533734E+37,numD=1.2044625712533734E+37,"
+            "previewA=1.2044625712533734E+37,previewD=1.2044625712533734E+37,"
+            "AP=228,bloodNumber=1,difficulty=normal,boss=0,record=59/1/1,"
+            "rebirths=52,time=0,challenge=none:None;flags=;counts=}"
+        )
+        self.assertEqual(
+            compact_event_message("REBIRTH", message),
+            "Normal rebirth confirmed after 1h 25m — Number 2.351e+37 → 1.204e+37 "
+            "(-48.8%); AP +3; Boss 57 → 0; rebirth #52; no challenge",
+        )
 
     def test_only_irreversible_rejections_reach_the_ledger(self) -> None:
         self.assertFalse(is_key_event("REJECTED", "Allocation target was unavailable"))

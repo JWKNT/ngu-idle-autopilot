@@ -147,9 +147,10 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
         Reflection only proves that a method was requested, not that NGU Idle accepted the reset. Snapshot
         Number, AP, Blood rebirth power, Boss records, rebirth counter/timer, and every native challenge
         flag/count before and after the exact zero-argument method, then require an immediate native state
-        delta. Challenge entry additionally requires the intended exact flag. The single transaction log
-        contains both snapshots so a surprising Number loss or wrong challenge can be audited after restart.
-        Callers propagate false so allocation cannot report a reset which never happened.
+        delta. Challenge entry additionally requires the intended exact flag. The activity feed gets a
+        concise result; the diagnostic log retains both complete snapshots so a surprising Number loss or
+        wrong challenge can be audited after restart. Callers propagate false so allocation cannot report a
+        reset which never happened.
         */
         protected bool EngageChalRebirth(string rbType, ChallengeType expectedChallenge)
         {
@@ -172,12 +173,13 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
             var exactChallenge = SpecificChallengeActive(expectedChallenge);
             var confirmed = resetConfirmed && !challengeBefore && CharObj.challenges.inChallenge
                             && exactChallenge;
+            Main.LogDiagnostic("Challenge rebirth transaction audit (" + expectedChallenge + "/" + rbType
+                               + "): pre{" + before + "} post{" + after + "}");
             Main.LogAction(confirmed ? "REBIRTH" : "REJECTED", confirmed
-                ? "Entered " + expectedChallenge + " through " + rbType
-                  + " [confirmed transaction] pre{" + before + "} post{" + after + "}"
-                : "Challenge request " + rbType
-                  + " produced no verified reset plus exact " + expectedChallenge
-                  + " transition; pre{" + before + "} post{" + after + "}");
+                ? RebirthAuditSnapshot.ConfirmedSummary(before, after,
+                    "Entered " + expectedChallenge + " challenge through " + rbType)
+                : "Challenge entry rejected: " + rbType + " produced no verified reset into the exact "
+                  + expectedChallenge + " challenge (full snapshot in inject.log)");
             return confirmed;
         }
 
@@ -243,26 +245,82 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
             var after = RebirthAuditSnapshot.Capture(CharObj);
             var confirmed = CharObj.stats.rebirthNumber > rebirthsBefore
                             || CharObj.rebirthTime.totalseconds + 1.0 < timeBefore;
+            Main.LogDiagnostic("Normal rebirth transaction audit: pre{" + before + "} post{" + after + "}");
             Main.LogAction(confirmed ? "REBIRTH" : "REJECTED", confirmed
-                ? "Completed normal rebirth [confirmed transaction] pre{" + before
-                  + "} post{" + after + "}"
-                : "Normal rebirth request produced no verified native reset transition; pre{"
-                  + before + "} post{" + after + "}");
+                ? RebirthAuditSnapshot.ConfirmedSummary(before, after, "Normal rebirth confirmed")
+                : "Normal rebirth rejected: no verified native reset transition (full snapshot in inject.log)");
             return confirmed;
         }
 
         private sealed class RebirthAuditSnapshot
         {
             private string Value;
+            private double NumberAttack;
+            private double ArbitraryPoints;
+            private int Boss;
+            private long Rebirths;
+            private double RunSeconds;
+            private string Challenge;
 
             internal static RebirthAuditSnapshot Capture(Character character)
             {
-                return new RebirthAuditSnapshot {Value = Build(character)};
+                if (character == null)
+                    return new RebirthAuditSnapshot {Value = "Character=null"};
+                return new RebirthAuditSnapshot
+                {
+                    Value = Build(character),
+                    NumberAttack = character.attackMulti,
+                    ArbitraryPoints = character.arbitrary.curArbitraryPoints,
+                    Boss = character.bossID,
+                    Rebirths = character.stats.rebirthNumber,
+                    RunSeconds = character.rebirthTime == null ? 0.0 : character.rebirthTime.totalseconds,
+                    Challenge = character.challenges == null || !character.challenges.inChallenge
+                        ? "no challenge"
+                        : "challenge " + character.challenges.curChallengeType
+                };
             }
 
             public override string ToString()
             {
                 return Value;
+            }
+
+            internal static string ConfirmedSummary(RebirthAuditSnapshot before,
+                RebirthAuditSnapshot after, string action)
+            {
+                var inv = CultureInfo.InvariantCulture;
+                var apDelta = after.ArbitraryPoints - before.ArbitraryPoints;
+                var numberDelta = before.NumberAttack > 0.0
+                    ? (after.NumberAttack / before.NumberAttack - 1.0) * 100.0
+                    : 0.0;
+                return action + " after " + FormatDuration(before.RunSeconds)
+                       + " — Number " + FormatNumber(before.NumberAttack) + " → "
+                       + FormatNumber(after.NumberAttack) + " ("
+                       + numberDelta.ToString("+0.0;-0.0;0.0", inv) + "%)"
+                       + "; AP " + apDelta.ToString("+0;-0;0", inv)
+                       + "; Boss " + before.Boss + " → " + after.Boss
+                       + "; rebirth #" + after.Rebirths
+                       + "; " + after.Challenge;
+            }
+
+            private static string FormatNumber(double value)
+            {
+                if (double.IsNaN(value) || double.IsInfinity(value)) return "unknown";
+                return value.ToString("0.###E+0", CultureInfo.InvariantCulture)
+                    .Replace("E+", "e+").Replace("E-", "e-");
+            }
+
+            private static string FormatDuration(double seconds)
+            {
+                var total = Math.Max(0L, (long)Math.Floor(seconds));
+                var days = total / 86400;
+                var hours = total % 86400 / 3600;
+                var minutes = total % 3600 / 60;
+                var remainder = total % 60;
+                if (days > 0) return days + "d " + hours + "h " + minutes + "m";
+                if (hours > 0) return hours + "h " + minutes + "m";
+                if (minutes > 0) return minutes + "m " + remainder + "s";
+                return remainder + "s";
             }
 
             private static string Build(Character c)

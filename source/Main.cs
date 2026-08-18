@@ -144,13 +144,18 @@ namespace NGUInjector
 
         internal static SavedSettings Settings;
 
-        internal static void Log(string msg)
+        internal static void LogDiagnostic(string msg)
         {
             var rebirth = Character == null || Character.rebirthTime == null
                 ? 0 : Math.Floor(Character.rebirthTime.totalseconds);
             var line = $"{ DateTime.Now.ToShortDateString()}-{ DateTime.Now.ToShortTimeString()} ({rebirth}s): {msg}";
             if (OutputWriter != null) OutputWriter.WriteLine(line);
             else System.Diagnostics.Debug.WriteLine(line);
+        }
+
+        internal static void Log(string msg)
+        {
+            LogDiagnostic(msg);
             if (!string.IsNullOrEmpty(msg) && msg.Length <= 300 && !msg.Contains("\n"))
                 LogAction("SYSTEM", msg);
         }

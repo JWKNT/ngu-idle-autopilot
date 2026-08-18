@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -385,6 +386,57 @@ def event_importance(category: str, message: str) -> str:
     return "milestone"
 
 
+def compact_event_message(category: str, message: str) -> str:
+    """Turn legacy raw rebirth snapshots into a readable event without losing the source log."""
+    if category.upper() != "REBIRTH" or "pre{" not in message or "} post{" not in message:
+        return message
+    match = re.search(r"pre\{(?P<before>.*?)\}\s*post\{(?P<after>.*?)\}", message)
+    if not match:
+        return message
+
+    def field(snapshot: str, name: str) -> str | None:
+        found = re.search(rf"(?:^|,){re.escape(name)}=([^,}}]+)", snapshot)
+        return found.group(1).strip() if found else None
+
+    before = match.group("before")
+    after = match.group("after")
+    try:
+        old_number = float(field(before, "numA") or "nan")
+        new_number = float(field(after, "numA") or "nan")
+        old_ap = float(field(before, "AP") or "nan")
+        new_ap = float(field(after, "AP") or "nan")
+        run_seconds = max(0, int(float(field(before, "time") or "0")))
+        old_boss = int(field(before, "boss") or "0")
+        new_boss = int(field(after, "boss") or "0")
+        rebirths = int(field(after, "rebirths") or "0")
+        challenge = (field(after, "challenge") or "none").split(";", 1)[0]
+    except (TypeError, ValueError, OverflowError):
+        return message
+    if not all(math.isfinite(value) for value in (old_number, new_number, old_ap, new_ap)):
+        return message
+
+    days, remainder = divmod(run_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days:
+        duration = f"{days}d {hours}h {minutes}m"
+    elif hours:
+        duration = f"{hours}h {minutes}m"
+    elif minutes:
+        duration = f"{minutes}m {seconds}s"
+    else:
+        duration = f"{seconds}s"
+    percent = (new_number / old_number - 1.0) * 100.0 if old_number > 0 else 0.0
+    ap_delta = new_ap - old_ap
+    prefix = "Normal rebirth confirmed" if message.startswith("Completed normal rebirth") else "Rebirth confirmed"
+    challenge_label = "no challenge" if challenge.lower().startswith("none") else f"challenge {challenge}"
+    return (
+        f"{prefix} after {duration} — Number {old_number:.3e} → {new_number:.3e} "
+        f"({percent:+.1f}%); AP {ap_delta:+.0f}; Boss {old_boss} → {new_boss}; "
+        f"rebirth #{rebirths}; {challenge_label}"
+    )
+
+
 def tail_text(path: Path, limit: int = 1_000_000) -> str:
     """Read only the bounded tail needed for recent events, aligned to a full line."""
     if not path.is_file():
@@ -408,6 +460,7 @@ def recent_key_events(path: Path, maximum: int = 30) -> list[dict[str, str]]:
             continue
         category = match.group("category").upper()
         message = EVIDENCE_SUFFIX.sub("", match.group("message")).strip()
+        message = compact_event_message(category, message)
         if not is_key_event(category, message):
             continue
         events.append(
