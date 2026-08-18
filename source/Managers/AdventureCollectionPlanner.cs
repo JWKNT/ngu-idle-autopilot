@@ -208,16 +208,57 @@ namespace NGUInjector.Managers
         internal static bool IsProtectedCollectionItem(Character c, int id)
         {
             if (c == null || id <= 0) return true;
-            if (!IsMaxxed(c, id)) return true;
-            // One set member cannot advance another member's Item List flag. Once this exact ID
-            // is MAXXED, it is protected only when the source catalog cannot prove safe filtering.
-            return !LootSourceCatalog.IsKnownSafeExactFilterItem(id);
+            var sources = LootSourceCatalog.SourcesForItem(id);
+            // MAXX proves this exact ID's permanent entry, but it does not prove that the source
+            // set is complete. Until the authoritative set flag flips, every piece from that zone
+            // remains merge/service material. Unknown source identity also fails closed because the
+            // bot cannot distinguish an ordinary repeat drop from a progression/state-machine item.
+            return CollectionCopyRequiresRetention(IsMaxxed(c, id), sources.Length,
+                sources.Length > 0 && sources.All(x => SourceSetComplete(c, x)));
+        }
+
+        internal static bool CollectionCopyRequiresRetention(bool exactIdMaxxed,
+            int knownSourceCount, bool allSourceSetsComplete)
+        {
+            return !exactIdMaxxed || knownSourceCount <= 0 || !allSourceSetsComplete;
         }
 
         internal static bool IsKnownCompletedOrdinaryItem(Character c, int id)
         {
             if (c == null || id <= 0 || !IsMaxxed(c, id)) return false;
-            return LootSourceCatalog.IsKnownSafeExactFilterItem(id);
+            var sources = LootSourceCatalog.SourcesForItem(id);
+            return sources.Length > 0 && sources.All(x => x.SafeExactFilterOnceMaxxed)
+                   && sources.All(x => SourceSetComplete(c, x));
+        }
+
+        private static bool SourceSetComplete(Character c, LootItemSourceMetadata source)
+        {
+            if (c == null || c.inventory == null || c.inventory.itemList == null || source == null)
+                return false;
+            var descriptor = source.SourceKind == LootSourceKind.OrdinaryZone
+                ? LootSourceCatalog.OrdinaryZone(source.Zone)
+                : LootSourceCatalog.TitanZone(source.Zone);
+            if (descriptor == null) return false;
+            if (!descriptor.HasCoreSet) return true;
+            if (source.SourceKind == LootSourceKind.OrdinaryZone)
+                return CoreSetComplete(c, source.Zone);
+
+            var list = c.inventory.itemList;
+            switch (source.Zone)
+            {
+                case 6: return list.GRBComplete;
+                case 11: return list.jakeComplete;
+                case 14: return list.uugComplete;
+                case 16: return list.waldoComplete;
+                case 19: return list.beast1complete;
+                case 23: return list.nerdComplete;
+                case 26: return list.godmotherComplete;
+                case 30: return list.exileComplete;
+                case 34: return list.spaceComplete;
+                case 38: return list.rockLobsterComplete;
+                case 42: return list.amalgamateComplete;
+                default: return false;
+            }
         }
 
         internal static bool CoreSetComplete(Character c, int zone)

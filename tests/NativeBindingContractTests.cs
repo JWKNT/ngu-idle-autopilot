@@ -179,6 +179,11 @@ internal static class NativeBindingContractTests
                && descriptor.MetadataToken == 0x06000aa1
                && descriptor.ExactSignature == "System.Void Rebirth.calculateTimeMulti()",
             "rebirth preflight pins the discontinuous time-multiplier refresh");
+        Assert(registry.TryGetDescriptor(NativeBindingKeys.RebirthCalculateNextMultis,
+                out descriptor)
+               && descriptor.MetadataToken == 0x06000aa2
+               && descriptor.ExactSignature == "System.Void Rebirth.calculateNextMultis()",
+            "rebirth preflight pins the Blood-adjusted Number preview refresh");
         Assert(registry.TryGetDescriptor(NativeBindingKeys.DifficultySelectEvil, out descriptor)
                && descriptor.MetadataToken == 0x06000a6e
                && registry.TryGetDescriptor(NativeBindingKeys.DifficultySelectSadistic,

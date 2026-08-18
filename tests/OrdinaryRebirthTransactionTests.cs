@@ -99,6 +99,8 @@ internal static class OrdinaryRebirthTransactionTests
             "AutopilotManager.cs"));
         var transaction = File.ReadAllText(Path.Combine("source", "Autopilot",
             "OrdinaryRebirthTransaction.cs"));
+        var legacyBoundary = File.ReadAllText(Path.Combine("source", "AllocationProfiles",
+            "RebirthStuff", "TimeRebirth.cs"));
 
         Assert(config.IndexOf("config.AllowRebirths = false;", StringComparison.Ordinal) < 0,
             "deployment ceiling does not erase explicit ordinary-rebirth authority");
@@ -110,6 +112,11 @@ internal static class OrdinaryRebirthTransactionTests
         Assert(manager.IndexOf("OrdinaryRebirthTransaction.Execute(root",
                    StringComparison.Ordinal) >= 0,
             "AutopilotManager bridges the live plan to the typed transaction");
+        Assert(manager.IndexOf("var recoveryPolicy = RebirthOptimizer.EvaluateMutationPolicy(",
+                   StringComparison.Ordinal) >= 0
+               && manager.IndexOf("recoveryMode && !recoveryPolicy.Authorized",
+                   StringComparison.Ordinal) >= 0,
+            "runtime telemetry mirrors the final recovery admission instead of aggregate score");
         Assert(transaction.IndexOf("RefreshRebirthTimeMultiplier", StringComparison.Ordinal)
                < transaction.IndexOf("RefreshRebirthPreview", StringComparison.Ordinal),
             "preview child preserves native calculateTimeMulti then calculateNextMultis order");
@@ -121,6 +128,15 @@ internal static class OrdinaryRebirthTransactionTests
             "ordinary reset child declares its synchronous epoch transition");
         Assert(transaction.IndexOf("EnterChallenge", StringComparison.Ordinal) < 0,
             "ordinary rebirth transaction cannot enter a challenge");
+        Assert(transaction.IndexOf("ratio, recoveryMode, resetRouteEtaSeconds",
+                   StringComparison.Ordinal) >= 0
+               && transaction.IndexOf("plan.RebirthRecoveryMode", StringComparison.Ordinal) >= 0,
+            "typed ordinary final admission preserves recovery mode and finite-route evidence");
+        Assert(legacyBoundary.IndexOf("minimumNumberRatio, recoveryMode, resetRouteEtaSeconds",
+                   StringComparison.Ordinal) >= 0
+               && legacyBoundary.IndexOf("minimumNumberRatio, false, -1, -1",
+                   StringComparison.Ordinal) < 0,
+            "legacy TimeRebirth cannot erase recovery state at the native engage boundary");
     }
 
     public static int Main()

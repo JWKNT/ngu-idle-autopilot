@@ -1291,29 +1291,29 @@ namespace NGUInjector.Autopilot
                                     && !double.IsNaN(projectedDefenseMultiplier)
                                     && !double.IsInfinity(projectedAttackMultiplier)
                                     && !double.IsInfinity(projectedDefenseMultiplier);
-            var recoveryResetEta = -1;
+            var recoveryResetEta = Plan.RebirthRecoveryEtaSeconds;
             var recoveryContinueEta = -1;
-            var recoveryRouteReason = string.Empty;
             var recoveryMode = c.settings.rebirthDifficulty == difficulty.normal && c.bossID < c.highestBoss;
-            // Native rebirth replaces Number rather than compounding the same projected/current
-            // ratio across replay cycles. Publish the aggregate-score gate here; a geometric
-            // recovery route would be false precision and formerly disagreed with the final gate.
-            var recoveryResetEfficient = !Plan.RebirthExecutionHold
-                                         && Plan.RebirthSelectedScorePerHour > 0.0;
-            if (recoveryMode)
-            {
-                recoveryRouteReason = "native rebirth replaces Number; no geometric repeated-cycle ETA is published, so the aggregate one-run score controls";
-            }
-            else
+            // Mirror the irreversible admission kernel in telemetry. Aggregate one-run score is
+            // necessary but not sufficient below the Boss record; unknown exact replay ETA must be
+            // published as a hold instead of claiming that reset is recovery-efficient.
+            var recoveryPolicy = RebirthOptimizer.EvaluateMutationPolicy(
+                Plan.RebirthSelectedScorePerHour, true,
+                Math.Min(projectedAttackMultiplier, projectedDefenseMultiplier), recoveryMode,
+                recoveryResetEta, recoveryContinueEta);
+            var recoveryResetEfficient = recoveryPolicy.Authorized;
+            var recoveryRouteReason = recoveryPolicy.Reason;
+            if (!recoveryMode)
             {
                 recoveryResetEta = -1;
                 recoveryContinueEta = -1;
-                recoveryRouteReason = "boss record already caught up; normal checkpoint objective applies";
             }
             var rebirthSafetyBlockReason = !Config.AllowRebirths
                 ? "rebirth execution is disabled in autopilot settings"
                 : Plan.RebirthExecutionHold
                     ? "the event-driven planner has not admitted a valid finite mutation boundary"
+                    : recoveryMode && !recoveryPolicy.Authorized
+                        ? recoveryPolicy.Reason
                     : string.Empty;
             var projectedRebirthAp = MechanicsProgression.TimeAp(Plan.RebirthSeconds);
             var questEta = -1;
@@ -1604,6 +1604,7 @@ namespace NGUInjector.Autopilot
                        + "  \"loadoutSearchExact\": " + ProgressionLoadoutOptimizer.LastSearchExact.ToString().ToLowerInvariant() + ",\n"
                        + "  \"loadoutScoreGain\": " + ProgressionLoadoutOptimizer.LastScoreGain.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"boostDecision\": \"" + EscapeJson(InventoryManager.LastBoostDecision) + "\",\n"
+                       + "  \"transformDecision\": \"" + EscapeJson(InventoryManager.LastTransformDecision) + "\",\n"
                        + "  \"trashDecision\": \"" + EscapeJson(InventoryManager.LastTrashDecision) + "\",\n"
                        + "  \"filterDecision\": \"" + EscapeJson(InventoryManager.LastFilterDecision) + "\",\n"
                        + "  \"yggSeedDecision\": \"" + EscapeJson(YggdrasilManager.LastSeedDecision) + "\",\n"

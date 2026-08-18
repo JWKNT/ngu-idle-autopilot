@@ -231,6 +231,9 @@ namespace NGUInjector.Autopilot
                                 && NearlyEqual(c.timeMulti, expectedTime);
             var score = plan.RebirthTargetLocked
                 ? double.MaxValue : plan.RebirthSelectedScorePerHour;
+            var recoveryMode = plan.RebirthRecoveryMode;
+            var resetRouteEtaSeconds = plan.RebirthRecoveryEtaSeconds;
+            var continueRouteEtaSeconds = -1;
             var liveDue = true;
             if (!plan.RebirthTargetLocked)
             {
@@ -241,6 +244,8 @@ namespace NGUInjector.Autopilot
                     var live = RebirthOptimizer.EarlyNormal(c);
                     liveDue = !live.ExecutionHold && live.TargetSeconds <= elapsed;
                     score = live.SelectedScorePerHour;
+                    recoveryMode = live.RecoveryMode;
+                    resetRouteEtaSeconds = live.RecoveryEtaSeconds;
                 }
                 else
                 {
@@ -255,7 +260,8 @@ namespace NGUInjector.Autopilot
                 c.defenseMulti > 0.0
                     ? c.nextDefenseMulti / c.defenseMulti : 0.0);
             var decision = RebirthOptimizer.EvaluateMutationPolicy(score,
-                finitePreview && liveDue, ratio, false, -1, -1);
+                finitePreview && liveDue, ratio, recoveryMode, resetRouteEtaSeconds,
+                continueRouteEtaSeconds);
             input.PreviewValid = finitePreview && liveDue;
             input.PolicyAuthorized = decision.Authorized;
             input.PolicyReason = decision.Reason;

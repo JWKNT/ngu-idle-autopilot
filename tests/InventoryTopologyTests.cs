@@ -9,10 +9,10 @@ FILE PURPOSE
 Purpose: This isolated executable regression-tests the pure inventory topology policy and statically
 guards the live Inventory/Daycare integrations that protect irreversible physical item state.
 
-Mechanism: Primitive arrays exercise all-39 boost gating, native merge arithmetic, per-loadout
-retarget legality, and exact progression-unlock postconditions. Read-only source checks ensure the
-live managers use pairwise merges, build-pinned consumption, usable-slot Daycare retrieval, selector
-restoration, and every audited state-machine ID.
+    Mechanism: Primitive arrays exercise all-39 boost gating, native merge arithmetic, transform-chain
+    successors, collection retention, per-loadout retarget legality, and exact progression-unlock
+    postconditions. Read-only source checks ensure the live managers use pairwise merges, build-pinned
+    consumption, usable-slot Daycare retrieval, selector restoration, and every audited state-machine ID.
 
 Inputs and outputs: Inputs are in-memory Boolean/integer fixtures and the two maintained source files.
 Output is an assertion count/process status. The suite does not load Unity, a save, runtime telemetry,
@@ -113,6 +113,29 @@ internal static class InventoryTopologyTests
             "an already-enabled feature is not reported as a new unlock");
     }
 
+    private static void TestTransformAndCollectionRetention()
+    {
+        int next;
+        Assert(InventoryTopologyPolicy.TryNextTransformItemId(53, out next) && next == 76,
+            "MAXXED Forest Pendant advances to Ascended Forest Pendant");
+        Assert(InventoryTopologyPolicy.TryNextTransformItemId(504, out next) && next == 480,
+            "final Pendant-chain input advances to its END successor");
+        Assert(InventoryTopologyPolicy.TryNextTransformItemId(67, out next) && next == 128,
+            "MAXXED base Looty advances to the next exact Looty ID");
+        Assert(InventoryTopologyPolicy.TryNextTransformItemId(505, out next) && next == 485,
+            "final Looty-chain input advances to its END successor");
+        Assert(!InventoryTopologyPolicy.TryNextTransformItemId(480, out next) && next == 0,
+            "terminal END Pendant is never offered as transform input");
+        Assert(!AdventureCollectionPlanner.CollectionCopyRequiresRetention(true, 1, true),
+            "a MAXXED copy with a known completed source set is not collection-protected forever");
+        Assert(AdventureCollectionPlanner.CollectionCopyRequiresRetention(false, 1, true),
+            "an unMAXXED exact ID remains protected after its source set completes");
+        Assert(AdventureCollectionPlanner.CollectionCopyRequiresRetention(true, 0, true),
+            "unknown source identity fails closed");
+        Assert(AdventureCollectionPlanner.CollectionCopyRequiresRetention(true, 1, false),
+            "one incomplete source set protects every item emitted by that source");
+    }
+
     private static void TestLiveIntegrationStructure()
     {
         var inventory = File.ReadAllText("source/Managers/InventoryManager.cs");
@@ -124,6 +147,9 @@ internal static class InventoryTopologyTests
             "live merge path is explicitly pairwise and reference-aware");
         Assert(inventory.Contains("CreateNativeMutations().ConsumeItem"),
             "irreversible item consumers use the build-pinned adapter");
+        Assert(inventory.Contains("AdvanceOneMaxxedTransform(converted)")
+               && inventory.Contains("successorCountAfter == successorCountBefore + 1"),
+            "live maintenance advances one exact MAXXED transform with a successor postcondition");
         Assert(inventory.Contains("TryConsumeProgressionUnlock(ci, 294")
                && inventory.Contains("TryConsumeProgressionUnlock(ci, 343")
                && inventory.Contains("TryConsumeProgressionUnlock(ci, 391"),
@@ -151,6 +177,7 @@ internal static class InventoryTopologyTests
             TestMergeArithmetic();
             TestReferenceRetargetPolicy();
             TestUnlockPostconditions();
+            TestTransformAndCollectionRetention();
             TestLiveIntegrationStructure();
             Console.WriteLine("Inventory topology tests passed: " + _assertions + " assertions");
             return 0;

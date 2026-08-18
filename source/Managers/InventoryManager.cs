@@ -47,6 +47,11 @@ namespace NGUInjector.Managers
 
     internal static class InventoryTopologyPolicy
     {
+        private static readonly int[] PendantTransformChain =
+            {53, 76, 94, 142, 170, 229, 295, 388, 430, 504, 480};
+        private static readonly int[] LootyTransformChain =
+            {67, 128, 169, 230, 296, 389, 431, 505, 485};
+
         internal static bool AllBoostEntriesMaxxed(IList<bool> itemMaxxed)
         {
             if (itemMaxxed == null || itemMaxxed.Count <= 39) return false;
@@ -87,6 +92,20 @@ namespace NGUInjector.Managers
             if (kind == ProgressionUnlockKind.Hacks) return resource3After;
             if (kind == ProgressionUnlockKind.Cards) return cardsAfter == cardsBefore + 1;
             return true;
+        }
+
+        internal static bool TryNextTransformItemId(int itemId, out int nextItemId)
+        {
+            nextItemId = NextInChain(PendantTransformChain, itemId);
+            if (nextItemId > 0) return true;
+            nextItemId = NextInChain(LootyTransformChain, itemId);
+            return nextItemId > 0;
+        }
+
+        private static int NextInChain(int[] chain, int itemId)
+        {
+            var index = Array.IndexOf(chain, itemId);
+            return index >= 0 && index + 1 < chain.Length ? chain[index + 1] : 0;
         }
     }
 
@@ -182,6 +201,8 @@ namespace NGUInjector.Managers
             = "Waiting for the first collection-safe loot-filter reconciliation";
         internal static string LastBoostDecision { get; private set; }
             = "Waiting for the first equipment-development audit";
+        internal static string LastTransformDecision { get; private set; }
+            = "Waiting for the first MAXXED transform-chain audit";
 
 
         //Wandoos 98, Giant Seed, Wandoos XL, Lonely Flubber, Wanderer's Cane, Guffs, Lemmi
@@ -212,17 +233,21 @@ namespace NGUInjector.Managers
         CONSERVATIVE ONE-SECOND MAINTENANCE SWEEP
 
         This is the typed transaction entrypoint used by ProgressionTransactions. It deliberately
-        excludes convertibles, quest turn-in, END placement, Daycare, loadout swaps, and any broad
-        native merge/trash operation. Exact-ID filters are reconciled first; reference-aware merges
-        collapse development copies; only already-MAXXED boost IDs may then be consumed; finally one
-        independently proven redundant MAXXED item may enter the native recovery slot. Every helper
-        retains its own exact native delta checks and the outer intent verifies Item List/contribution
-        monotonicity and physical inventory bounds.
+        excludes progression-key consumption, quest turn-in, END placement, Daycare, loadout swaps,
+        and any broad native merge/trash operation. Exact-ID filters are reconciled first; one
+        source-audited, already-MAXXED Pendant/Looty may advance to its exact successor; reference-aware
+        merges then collapse development copies. Only already-MAXXED boost IDs may be consumed, and
+        finally one independently proven redundant MAXXED item may enter the native recovery slot.
+        Every helper retains its own exact native delta checks and the outer intent verifies Item
+        List/contribution monotonicity and physical inventory bounds.
         */
         internal void RunConservativeMaintenance()
         {
             var converted = _character.inventory.GetConvertedInventory().ToArray();
             EnsureFiltered(converted);
+            AdvanceOneMaxxedTransform(converted);
+
+            converted = _character.inventory.GetConvertedInventory().ToArray();
             MergeEquipped(converted);
 
             converted = _character.inventory.GetConvertedInventory().ToArray();
@@ -233,6 +258,67 @@ namespace NGUInjector.Managers
             ConsumeOnlyMaxxedBoosts();
             ManageBoostConversion();
             TrashProvenRedundantItem();
+        }
+
+        /*
+        MAXXED TRANSFORM-CHAIN TRANSACTION
+
+        Pendant and Looty level-100 consumption is not disposal: on audited game build 1.260 it
+        replaces the exact source with the next ID in the native chain. The former handler lived only
+        in a disconnected legacy block, so completed chain pieces accumulated forever (and a fresh
+        duplicate could not merge into the level-100 object). Advance at most one ordinary-inventory
+        object per sweep. The exact source must be MAXXED, removable, and free of optimizer/configured/
+        native-loadout references. Success requires the source identity and count to disappear, the
+        source Item List flag to remain permanent, and exactly one expected successor to appear.
+        Unknown/final IDs and every partial native transition fail closed and are never reported as a
+        successful conversion.
+        */
+        internal void AdvanceOneMaxxedTransform(ih[] converted)
+        {
+            var inv = _character == null ? null : _character.inventory;
+            var list = inv == null ? null : inv.itemList;
+            if (converted == null || inv == null || inv.inventory == null || list == null
+                || list.itemMaxxed == null || _controller.midDrag)
+            {
+                LastTransformDecision = "Transform held: inventory, Item List, or drag state is not ready";
+                return;
+            }
+
+            foreach (var candidate in converted.Where(x => x != null && x.level == 100
+                         && x.slot >= 0 && x.slot < inv.inventory.Count))
+            {
+                int successorId;
+                if (!InventoryTopologyPolicy.TryNextTransformItemId(candidate.id, out successorId))
+                    continue;
+                if (candidate.id >= list.itemMaxxed.Count || !list.itemMaxxed[candidate.id])
+                    continue;
+                var source = inv.inventory[candidate.slot];
+                if (source == null || source.id != candidate.id || source.level != 100
+                    || !source.removable || ProgressionLoadoutOptimizer.IsAuthoritativeItem(source)
+                    || IsNativeLoadoutReference(_character, candidate.slot)
+                    || IsConfiguredLoadoutItem(candidate.id))
+                    continue;
+
+                var sourceCountBefore = inv.inventory.Count(x => x != null && x.id == candidate.id);
+                var successorCountBefore = inv.inventory.Count(x => x != null && x.id == successorId);
+                var invoked = ConsumeInventorySlot(candidate.slot);
+                var sourceGone = !inv.inventory.Any(x => ReferenceEquals(x, source));
+                var sourceCountAfter = inv.inventory.Count(x => x != null && x.id == candidate.id);
+                var successorCountAfter = inv.inventory.Count(x => x != null && x.id == successorId);
+                var confirmed = invoked && sourceGone
+                                && sourceCountAfter == sourceCountBefore - 1
+                                && successorCountAfter == successorCountBefore + 1
+                                && candidate.id < list.itemMaxxed.Count
+                                && list.itemMaxxed[candidate.id];
+                LastTransformDecision = confirmed
+                    ? "Advanced one MAXXED " + SafeItemName(candidate.id) + " into exact successor "
+                      + SafeItemName(successorId) + " [confirmed by identity/count/Item List delta]"
+                    : "Transform rejected: " + SafeItemName(candidate.id)
+                      + " did not produce its exact audited successor " + SafeItemName(successorId);
+                Main.LogAction(confirmed ? "INVENTORY" : "REJECTED", LastTransformDecision);
+                return;
+            }
+            LastTransformDecision = "No unreferenced MAXXED Pendant/Looty transform is ready";
         }
 
         private void ConsumeOnlyMaxxedBoosts()
