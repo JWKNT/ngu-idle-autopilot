@@ -6,6 +6,7 @@ using System.IO.Pipes;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Remoting.Messaging;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Runtime.CompilerServices;
 using System.Security.Policy;
 using System.Security.Cryptography;
@@ -309,8 +310,162 @@ namespace NGUInjector
                 return;
 
             _lastAutoEnterAttempt = DateTime.Now;
-            ExecutionSafety.ReportHold("typed-intent:auto-load",
-                "Automatic autosave loading is held until its Boolean load/rebind transaction owns the lifecycle root.");
+            TryAutoEnterVerifiedLocalSave();
+        }
+
+        private void TryAutoEnterVerifiedLocalSave()
+        {
+            SaveData localSave;
+            PlayerData expectedData;
+            try
+            {
+                localSave = Character.mainMenu.getlocalSave();
+                if (localSave == null || string.IsNullOrEmpty(localSave.playerData)
+                    || string.IsNullOrEmpty(localSave.checksum))
+                {
+                    LogAction("HOLD", "Autosave entry held: the native local-save envelope is incomplete");
+                    return;
+                }
+
+                var checksum = Character.importExport.getMD5Hash(localSave.playerData);
+                if (!string.Equals(checksum, localSave.checksum, StringComparison.Ordinal))
+                {
+                    LogAction("REJECTED", "Autosave entry rejected before mutation: checksum mismatch");
+                    return;
+                }
+
+                expectedData = BinaryFormatterExtensions.DeserializePlayerDataFromString(
+                    new BinaryFormatter(), localSave.playerData);
+                if (expectedData == null || expectedData.version < 361
+                    || expectedData.version > Character.getVersion())
+                {
+                    LogAction("REJECTED", "Autosave entry rejected before mutation: invalid save graph or version");
+                    return;
+                }
+            }
+            catch (Exception validationError)
+            {
+                LogAction("REJECTED", "Autosave entry rejected during prevalidation: "
+                                      + validationError.GetType().Name + ": "
+                                      + validationError.Message);
+                return;
+            }
+
+            var expected = CaptureImportedSaveFingerprint(expectedData);
+            var before = TryCaptureLiveSaveFingerprint();
+            var gameHash = GameAssemblySha256;
+            if (string.IsNullOrEmpty(gameHash)
+                && File.Exists(typeof(Character).Assembly.Location))
+                gameHash = Sha256(typeof(Character).Assembly.Location);
+            var registry = NativeBindingRegistry.Create(typeof(Character).Assembly, gameHash);
+            if (!registry.IrreversibleActionsEnabled
+                || !registry.HasBinding(NativeBindingKeys.LoadIntoGame))
+            {
+                LogAction("HOLD", "Autosave entry held before epoch transition: "
+                                  + (registry.IsKnownBuild
+                                      ? registry.FailureFor(NativeBindingKeys.LoadIntoGame)
+                                      : registry.BuildFailureReason));
+                return;
+            }
+
+            var native = registry.CreateMutationAdapters();
+            var loadingEpoch = GameEpochController.Shared.BeginLoad(
+                "verified native autosave load is in progress");
+            _syncStateInitialized = true;
+            _lastGameplayReady = false;
+            _pendingDecision.Clear();
+            Autopilot.ReportSynchronization(false,
+                "verified native autosave load is in progress; waiting for exact postconditions");
+            ExecutionSafety.Invalidate("verified autosave load epoch began");
+            Autopilot.TryTitan7PuzzleStep();
+            LoadoutManager.ReleaseLock();
+            DiggerManager.ReleaseLock();
+
+            try
+            {
+                var invocation = native.LoadSave(Character.saveLoad, localSave);
+                var nativeTrue = invocation.ReturnedNormally
+                                 && invocation.ReturnValue is bool
+                                 && (bool)invocation.ReturnValue;
+                if (!nativeTrue)
+                {
+                    var failureAfter = TryCaptureLiveSaveFingerprint();
+                    var unchanged = before != null && failureAfter != null
+                                    && string.Equals(before.ContentHash,
+                                        failureAfter.ContentHash,
+                                        StringComparison.Ordinal);
+                    var failure = invocation.Status + ": " + invocation.Reason
+                                  + (invocation.Exception == null ? string.Empty
+                                      : "; " + invocation.Exception.GetType().Name + ": "
+                                        + invocation.Exception.Message)
+                                  + (unchanged ? "; exact before bytes retained"
+                                      : "; live state changed or could not be recaptured");
+                    GameEpochController.Shared.FailLoad(loadingEpoch, failure, failureAfter);
+                    LogAction("REJECTED", "Autosave load quarantined: " + failure);
+                    return;
+                }
+
+                string rebindError;
+                if (!TryRebindGameControllers(out rebindError))
+                {
+                    GameEpochController.Shared.FailLoad(loadingEpoch,
+                        "native load returned true but controller rebind failed: "
+                        + rebindError, TryCaptureLiveSaveFingerprint());
+                    LogAction("REJECTED", "Autosave load quarantined after native true: "
+                                          + rebindError);
+                    return;
+                }
+
+                var afterSerialized = Character.importExport.getBase64Data();
+                var after = CaptureLiveSaveFingerprint(afterSerialized, Character);
+                string commitError;
+                if (!GameEpochController.Shared.CommitLoad(loadingEpoch, true,
+                        expected, after, CaptureControllerIdentity(), out commitError))
+                {
+                    LogAction("REJECTED", "Autosave load returned true but its exact "
+                                          + "postcondition failed; automation quarantined: "
+                                          + commitError);
+                    return;
+                }
+
+                _lastRunSignature = after.RunSignature;
+                try
+                {
+                    RecreateEpochBoundManagers();
+                    Character.mainMenu.finishMainMenu();
+                }
+                catch (Exception activationError)
+                {
+                    GameEpochController.Shared.Quarantine(
+                        "autosave committed but activation failed: "
+                        + activationError.GetType().Name + ": " + activationError.Message);
+                    LogAction("REJECTED", "Autosave committed but activation was quarantined: "
+                                          + activationError.Message);
+                    return;
+                }
+
+                _syncStateInitialized = true;
+                _lastGameplayReady = false;
+                ExecutionSafety.Invalidate("verified autosave load committed a new save epoch");
+                LogAction("SAVE", "Verified native autosave committed as "
+                                  + GameEpochController.Shared.Current.Fingerprint
+                                  + "; waiting for a later synchronized frame and plan");
+            }
+            catch (Exception loadError)
+            {
+                if (GameEpochController.Shared.Phase == GameEpochPhase.Loading)
+                    GameEpochController.Shared.FailLoad(loadingEpoch,
+                        "autosave load threw after its epoch closed: "
+                        + loadError.GetType().Name + ": " + loadError.Message,
+                        TryCaptureLiveSaveFingerprint());
+                else
+                    GameEpochController.Shared.Quarantine(
+                        "autosave load threw after commit: "
+                        + loadError.GetType().Name + ": " + loadError.Message);
+                _syncStateInitialized = true;
+                _lastGameplayReady = false;
+                LogAction("REJECTED", "Autosave load failed: " + loadError.Message);
+            }
         }
 
         private static CustomAllocation ActiveProfile
@@ -1459,6 +1614,18 @@ namespace NGUInjector
             var rebirth = data.stats == null ? -1L : data.stats.rebirthNumber;
             return new SaveStateFingerprint(
                 EpochHash.Sha256((serialized ?? string.Empty).Trim()), data.version,
+                data.lastTime, rebirth, difficulty, data.highestBoss,
+                data.highestHardBoss, data.highestSadisticBoss,
+                CaptureRunSignature(data));
+        }
+
+        private static SaveStateFingerprint CaptureImportedSaveFingerprint(PlayerData data)
+        {
+            if (data == null) return null;
+            var difficulty = data.settings == null
+                ? string.Empty : data.settings.rebirthDifficulty.ToString();
+            var rebirth = data.stats == null ? -1L : data.stats.rebirthNumber;
+            return new SaveStateFingerprint(string.Empty, data.version,
                 data.lastTime, rebirth, difficulty, data.highestBoss,
                 data.highestHardBoss, data.highestSadisticBoss,
                 CaptureRunSignature(data));
