@@ -48,8 +48,9 @@ namespace NGUInjector.Autopilot
         public bool AllowQuirkSpending = false;
         public bool AllowEndSequence = false;
 
-        // Task-29 staged authority ceiling. These flags document the deployment boundary as data,
-        // but this wave deliberately normalizes every unproven live path back to false on load.
+        // Staged authority ceiling. These flags document the deployment boundary as data. Ordinary
+        // rebirth is separately admitted by its typed preview/reset transaction; challenge and
+        // difficulty authority remain independent and fail-closed.
         public bool AllowVerifiedReversibleActions = true;
         public bool AllowGlobalSchedulerExecution = false;
         public bool AllowPermanentPurchaseExecution = false;
@@ -91,7 +92,6 @@ namespace NGUInjector.Autopilot
             config.AllowApSpending = false;
             config.AllowPerkSpending = false;
             config.AllowQuirkSpending = false;
-            config.AllowRebirths = false;
             config.AllowChallenges = false;
             config.AllowEndSequence = false;
             config.ManageMoneyPit = false;

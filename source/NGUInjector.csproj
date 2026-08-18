@@ -83,6 +83,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Autopilot\MechanicsOracle.cs" />
     <Compile Include="Autopilot\MechanicsStochastic.cs" />
     <Compile Include="Autopilot\MutationCoordinator.cs" />
+    <Compile Include="Autopilot\OrdinaryRebirthTransaction.cs" />
     <Compile Include="Autopilot\NativeBindingRegistry.cs" />
     <Compile Include="Autopilot\OptimizationSnapshot.cs" />
     <Compile Include="Autopilot\PermanentMarginalOracle.cs" />

@@ -143,6 +143,7 @@ compile_run_define EndgameTransactionTests ENDGAME_TRANSACTION_TEST_STUBS \
 compile_full_run CardCookingTests CardCookingTests
 compile_full_run QuestYggTests QuestYggTests
 compile_full_run EndgameDependencyTests EndgameDependencyTests
+compile_full_run OrdinaryRebirthTransactionTests OrdinaryRebirthTransactionTests
 
 compile_reflection_run ChallengeControllerTests "$temporary_relative/NGUIdleAutopilot.dll"
 compile_reflection_run RebirthTransitionTests "$temporary_relative/NGUIdleAutopilot.dll"
@@ -150,4 +151,4 @@ compile_reflection_run ResetExecutionTests "$temporary_relative/NGUIdleAutopilot
 ./test-rebirth-policy.command
 ./tests/test_deployment_lifecycle.command
 
-print "PASS: aggregate task1-29 regression runner completed 31 focused suites"
+print "PASS: aggregate regression runner completed 32 focused suites"

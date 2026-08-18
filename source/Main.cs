@@ -1787,6 +1787,7 @@ namespace NGUInjector
             var rejectionEpochBefore = System.Threading.Interlocked.Read(ref _rejectionEpoch);
             RootTransaction mutationRoot = null;
             long executionStateVersion = -1;
+            var ordinaryRebirthCommitted = false;
             try
             {
                 ObserveGameEpochTransitions();
@@ -1950,22 +1951,36 @@ namespace NGUInjector
                     }
                 }
 
-                // Rebirth is the transaction commit boundary. Exceptions and normal-return
-                // REJECTED mutations both leave the live snapshot uncertain, so preserve the
-                // run and retry after a clean full sweep.
+                // Rebirth is the final typed transaction boundary. Do not enter challenges here:
+                // their separately keyed admission remains disabled until copied-save calibration.
                 if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore)
                     transactionErrors.Add("one or more native mutations were rejected during this sweep");
                 if (executionStateVersion != ExecutionSafety.StateVersion)
                     transactionErrors.Add("execution state changed during this sweep; commit lease invalidated");
-                if (transactionErrors.Count == 0 && (Settings.AutoRebirth
-                    || Autopilot != null && Autopilot.CanExecuteIrreversible && Autopilot.Config.AllowRebirths))
+                if (transactionErrors.Count == 0 && Autopilot != null
+                    && Autopilot.CanExecuteIrreversible && Autopilot.Config.AllowRebirths)
                 {
-                    ExecutionSafety.ReportHold("typed-intent:rebirth",
-                        "Rebirth/challenge execution is held until the exact route intent is wired to this root.");
+                    var rebirth = Autopilot.ExecuteOrdinaryRebirth(mutationRoot);
+                    ordinaryRebirthCommitted = rebirth.Committed;
+                    if (rebirth.Failed)
+                        transactionErrors.Add("ordinary rebirth transaction failed: "
+                                              + rebirth.Reason);
                 }
-                if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore
-                    && transactionErrors.Count == 0)
-                    transactionErrors.Add("the rebirth/challenge mutation was rejected");
+                else if (Settings.AutoRebirth && (Autopilot == null
+                         || Autopilot.Config == null || !Autopilot.Config.AllowRebirths))
+                {
+                    ExecutionSafety.ReportHold("typed-intent:legacy-rebirth",
+                        "Legacy AutoRebirth is held; only the typed autopilot ordinary-reset intent may execute.");
+                }
+                if (!ordinaryRebirthCommitted)
+                {
+                    if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore
+                        && transactionErrors.Count == 0)
+                        transactionErrors.Add("a typed mutation was rejected");
+                    if (mutationRoot != null && !mutationRoot.RequiredStepsSatisfied
+                        && transactionErrors.Count == 0)
+                        transactionErrors.Add("one or more required typed child intents did not settle");
+                }
                 transactionComplete = transactionErrors.Count == 0;
                 transactionError = string.Join(" | ", transactionErrors.ToArray());
             }

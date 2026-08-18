@@ -155,8 +155,9 @@ internal static class RebirthPolicyGoldenTests
             "AllowGlobalSchedulerExecution", "AllowPermanentPurchaseExecution",
             "AllowMoneyPitExecution", "AllowDifficultyExecution",
             "AllowTitanOneThroughTwelveExecution", "AllowTitanThirteenFourteenExecution",
-            "AllowMove69Execution", "AllowEndSequence", "AllowRebirths", "AllowChallenges"
+            "AllowMove69Execution", "AllowEndSequence", "AllowChallenges"
         };
+        SetField(config, "AllowRebirths", true);
         foreach (var name in held) SetField(config, name, true);
         var ceiling = configType.GetMethod("ApplyDeploymentAuthorityCeiling",
             BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
@@ -164,6 +165,8 @@ internal static class RebirthPolicyGoldenTests
         ceiling.Invoke(null, new[] {config});
         foreach (var name in held)
             Assert(!(bool)Field(config, name), name + " remains fail-closed after normalization");
+        Assert((bool)Field(config, "AllowRebirths"),
+            "explicit ordinary rebirth authority survives the deployment ceiling");
         Assert((bool)Property(config, "GlobalSchedulerIsShadowOnly"),
             "global scheduler is hard shadow-only independent of serialized input");
 
@@ -182,6 +185,9 @@ internal static class RebirthPolicyGoldenTests
         Assert(managerType.GetMethod("RecordAutomationRoot",
                    BindingFlags.Instance | BindingFlags.NonPublic) != null,
             "Main bridge publishes exact root settlement telemetry");
+        Assert(managerType.GetMethod("ExecuteOrdinaryRebirth",
+                   BindingFlags.Instance | BindingFlags.NonPublic) != null,
+            "Main bridge exposes the typed ordinary-rebirth transaction");
     }
 
     public static int Main()

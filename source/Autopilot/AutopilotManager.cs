@@ -142,6 +142,18 @@ namespace NGUInjector.Autopilot
             // terminal transactions, and T13/T14 deliberately receive no live call here.
         }
 
+        internal OrdinaryRebirthExecutionOutcome ExecuteOrdinaryRebirth(
+            RootTransaction root)
+        {
+            if (root == null || root.IsClosed || !CanExecuteIrreversible || Plan == null
+                || Config == null || !Config.AllowRebirths)
+                return new OrdinaryRebirthExecutionOutcome
+                {
+                    Reason = "ordinary rebirth authority/root/plan is unavailable"
+                };
+            return OrdinaryRebirthTransaction.Execute(root, Main.Character, Plan, Config);
+        }
+
         internal void RecordAutomationRoot(RootTransaction root, string state)
         {
             if (Plan == null) return;
