@@ -98,12 +98,44 @@ internal static class RebirthPolicyGoldenTests
             "unreflected Blood-adjusted preview blocks mutation");
     }
 
+    private static void TestDueProfileSignatureIsStable()
+    {
+        Assert((string)Call("NGUInjector.Autopilot.AutopilotPlan", "RebirthSignatureFor",
+                3600, false, 3599.9) == "3600",
+            "future checkpoint retains its exact generated TIME target");
+        Assert((string)Call("NGUInjector.Autopilot.AutopilotPlan", "RebirthSignatureFor",
+                3600, false, 3600.0) == "DUE",
+            "due checkpoint canonicalizes to a stable signature");
+        Assert((string)Call("NGUInjector.Autopilot.AutopilotPlan", "RebirthSignatureFor",
+                3601, false, 9000.0) == "DUE",
+            "moving current-second optimizer targets stay canonical after due");
+        Assert((string)Call("NGUInjector.Autopilot.AutopilotPlan", "RebirthSignatureFor",
+                3660, true, 9000.0) == "UNSCHEDULED-HOLD",
+            "execution hold remains distinct from a due checkpoint");
+    }
+
+    private static void TestGeneratedProfileWatcherNormalization()
+    {
+        Assert((bool)Call("NGUInjector.Autopilot.AutopilotPlan", "IsGeneratedAllocationPath",
+                "autopilot.generated.json"), "generated leaf name is recognized");
+        Assert((bool)Call("NGUInjector.Autopilot.AutopilotPlan", "IsGeneratedAllocationPath",
+                @"runtime\profiles\autopilot.generated.json"),
+            "generated relative Wine path is recognized");
+        Assert((bool)Call("NGUInjector.Autopilot.AutopilotPlan", "IsGeneratedAllocationPath",
+                "/tmp/runtime/profiles/AUTOPILOT.GENERATED.JSON"),
+            "generated absolute path comparison is case-insensitive");
+        Assert(!(bool)Call("NGUInjector.Autopilot.AutopilotPlan", "IsGeneratedAllocationPath",
+                "default.json"), "legacy profile remains watcher-managed");
+    }
+
     public static int Main()
     {
         try
         {
             _assembly = Assembly.LoadFrom("NGUIdleAutopilot.dll");
             TestExplicitHoldBaseline();
+            TestDueProfileSignatureIsStable();
+            TestGeneratedProfileWatcherNormalization();
             TestObservedAllNegativeMutationCase();
             TestLowerNumberPositivePersistentCase();
             TestRecoveryCounterfactuals();

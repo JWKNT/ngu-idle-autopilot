@@ -77,12 +77,17 @@ namespace NGUInjector.Autopilot
         internal readonly List<PlanBreakpoint> Magic = new List<PlanBreakpoint>();
         internal readonly List<PlanBreakpoint> R3 = new List<PlanBreakpoint>();
 
-        internal string Signature()
+        internal string Signature(Character c)
         {
             // The optimizer's elapsed+60 diagnostic probe moves every second while
             // reset is blocked. It is not executable policy and must not regenerate
-            // the allocation profile (which would reclaim/reapply every resource).
-            var rebirthSignature = RebirthExecutionHold ? "UNSCHEDULED-HOLD" : RebirthSeconds.ToString();
+            // the allocation profile (which would reclaim/reapply every resource). Likewise,
+            // once a positive checkpoint is due, the optimizer may return the current second
+            // forever. Canonicalize that moving target so the generated TIME rebirth remains
+            // installed long enough to reach its commit gate.
+            var elapsed = c == null || c.rebirthTime == null ? -1.0 : c.rebirthTime.totalseconds;
+            var rebirthSignature = RebirthSignatureFor(RebirthSeconds,
+                RebirthExecutionHold, elapsed);
             return Stage + "|" + Objective + "|" + rebirthSignature + "|" + RebirthReason + "|"
                    + RebirthExecutionHold + "|"
                    + EndgameObjective + "|" + EndgameMissingSummary + "|"
@@ -91,6 +96,24 @@ namespace NGUInjector.Autopilot
                    + string.Join(";", NGUDifficulties.Select(x => x.Time + ":" + x.Value).ToArray()) + "|" + WandoosOS
                    + "|" + string.Join(",", Diggers.Select(x => x.ToString()).ToArray())
                    + "|" + string.Join(",", Challenges.ToArray()) + "|" + BreakpointSignature(Energy) + "|" + BreakpointSignature(Magic) + "|" + BreakpointSignature(R3);
+        }
+
+        internal static string RebirthSignatureFor(int targetSeconds, bool executionHold,
+            double elapsedSeconds)
+        {
+            if (executionHold) return "UNSCHEDULED-HOLD";
+            if (targetSeconds >= 0 && elapsedSeconds >= targetSeconds) return "DUE";
+            return targetSeconds.ToString();
+        }
+
+        internal static bool IsGeneratedAllocationPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            var normalized = path.Replace('\\', '/');
+            var separator = normalized.LastIndexOf('/');
+            var leaf = separator < 0 ? normalized : normalized.Substring(separator + 1);
+            return string.Equals(leaf, "autopilot.generated.json",
+                StringComparison.OrdinalIgnoreCase);
         }
 
         /*

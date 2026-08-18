@@ -266,13 +266,13 @@ namespace NGUInjector.Autopilot
             {
                 TargetSeconds = selected.Time,
                 Reason = c.bossID < c.highestBoss
-                    ? selected.Reason + "; this second minimizes the modeled reset/replay ETA back to Boss "
-                      + (c.highestBoss + 1)
+                    ? selected.Reason + "; aggregate persistent value remains positive while replaying toward Boss "
+                      + (c.highestBoss + 1) + " even though native Number is replaced on reset"
                     : selected.Reason,
                 RunnerUpSeconds = runnerUp.Time,
                 RunnerUpDeltaSeconds = Math.Abs(runnerUp.Time - selected.Time),
                 RunnerUpReason = c.bossID < c.highestBoss
-                    ? runnerUp.Reason + "; alternate record-recovery route"
+                    ? runnerUp.Reason + "; alternate below-record persistent-value route"
                     : runnerUp.Reason,
                 SelectedScorePerHour = selected.Score,
                 RunnerUpScorePerHour = runnerUp.Score,
@@ -281,11 +281,10 @@ namespace NGUInjector.Autopilot
                 CandidateSummary = summary,
                 CandidateCount = candidates.Count,
                 RecoveryMode = c.bossID < c.highestBoss,
-                RecoveryEtaSeconds = selected.RecoveryEta >= int.MaxValue ? -1
-                    : (int)Math.Ceiling(selected.RecoveryEta),
+                RecoveryEtaSeconds = -1,
                 RecoveryRemainingBosses = selected.RemainingCatchupBosses,
                 RecoveryReason = c.bossID < c.highestBoss
-                    ? "minimizes the repeated-cycle ETA back to the persistent boss record"
+                    ? "native rebirth replaces Number, so record replay has no valid geometric ETA; aggregate one-run persistent value controls"
                     : "boss record is already caught up",
                 ExpectedCatchupExp = selected.ExpectedCatchupExp,
                 ExpectedCatchupExpPerHour = selected.ExpectedCatchupExpPerHour,
@@ -462,9 +461,7 @@ namespace NGUInjector.Autopilot
                                + capCompression * 8.0
                                + catchupUtility;
             var persistentRate = 3600.0 * cycleUtility / duration;
-            candidate.Score = recoveryMode && candidate.ProjectedGainRatio > 1.000001
-                ? persistentRate + 3600.0 / Math.Max(1.0, candidate.RecoveryEta)
-                : persistentRate;
+            candidate.Score = persistentRate;
         }
 
         /*

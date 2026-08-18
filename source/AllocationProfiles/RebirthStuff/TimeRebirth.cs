@@ -7,7 +7,7 @@ using NGUInjector.Managers;
 FILE PURPOSE
 
 TimeRebirth bridges the optimizer's exact selected run age to BaseRebirth's final safety checks.
-It revalidates the no-reset counterfactual, recovery route, final Blood-adjusted native Number
+It revalidates the no-reset counterfactual, aggregate persistent score, final Blood-adjusted native Number
 preview, nearby boss events, synchronization, and discrete Titan events at execution time. Ordinary
 rebirth and challenge entry are distinct authorizations: challenge policy can cross a reset boundary
 without inheriting the ordinary utility score, while ordinary rebirth can never use challenge
@@ -17,9 +17,6 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 {
     internal class TimeRebirth : BaseRebirth
     {
-        private static int _recoveryEtaSecond = -1;
-        private static int _recoveryEtaBoss = -1;
-        private static int _recoveryEta = -1;
         private static long _bloodPreviewRun = -1;
         private static double _bloodPreviewPower = double.NaN;
         private static double _bloodPreviewAttack = double.NaN;
@@ -104,29 +101,18 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                     }
                 }
 
-                var recoveryMode = CharObj.settings.rebirthDifficulty == difficulty.normal
-                                   && CharObj.bossID < CharObj.highestBoss;
-                var resetRouteEta = -1;
-                var continueRouteEta = -1;
-                if (recoveryMode)
-                {
-                    var elapsedSecond = (int)Math.Floor(time);
-                    if (_recoveryEtaSecond != elapsedSecond || _recoveryEtaBoss != CharObj.bossID)
-                    {
-                        _recoveryEtaSecond = elapsedSecond;
-                        _recoveryEtaBoss = CharObj.bossID;
-                        _recoveryEta = AutopilotManager.SelectedBossDefeatEta(CharObj, 172800);
-                    }
-                    string recoveryReason;
-                    RebirthOptimizer.RecoveryResetEfficient(CharObj, _recoveryEta,
-                        out resetRouteEta, out continueRouteEta, out recoveryReason);
-                }
-
                 var minimumNumberRatio = Math.Min(
                     CharObj.attackMulti > 0.0 ? CharObj.nextAttackMulti / CharObj.attackMulti : 0.0,
                     CharObj.defenseMulti > 0.0 ? CharObj.nextDefenseMulti / CharObj.defenseMulti : 0.0);
+
+                // Native engage replaces Number; it does not multiply the new preview by the
+                // current Number. The former recovery branch geometrically compounded the same
+                // projected/current ratio across repeated cycles and could therefore veto a
+                // positive EXP/AP/training-cap reset forever while below the Boss record. The
+                // live aggregate score already prices the one-run Number loss. Recheck that score
+                // here, but do not impose the invalid repeated-ratio counterfactual.
                 var decision = RebirthOptimizer.EvaluateMutationPolicy(selectedScore, true,
-                    minimumNumberRatio, recoveryMode, resetRouteEta, continueRouteEta);
+                    minimumNumberRatio, false, -1, -1);
                 if (!decision.Authorized) return false;
 
                 // A kill inside the next controller tick is a discrete strict improvement not

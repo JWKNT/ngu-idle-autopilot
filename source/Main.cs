@@ -719,12 +719,29 @@ namespace NGUInjector
                 {
                     // The autopilot loads its generated profile synchronously. Do not
                     // let this watcher race in a load of the unrelated legacy default.
-                    if (!string.Equals(args.Name, "autopilot.generated.json", StringComparison.OrdinalIgnoreCase))
+                    // Mono can report a relative path in Name, not only the leaf name.
+                    if (!AutopilotPlan.IsGeneratedAllocationPath(args.Name)
+                        && !AutopilotPlan.IsGeneratedAllocationPath(args.FullPath))
                         _allocationReloadRequested = true;
                 };
-                AllocationWatcher.Created += (sender, args) => { _allocationListReloadRequested = true; };
-                AllocationWatcher.Deleted += (sender, args) => { _allocationListReloadRequested = true; };
-                AllocationWatcher.Renamed += (sender, args) => { _allocationListReloadRequested = true; };
+                AllocationWatcher.Created += (sender, args) =>
+                {
+                    if (!AutopilotPlan.IsGeneratedAllocationPath(args.Name)
+                        && !AutopilotPlan.IsGeneratedAllocationPath(args.FullPath))
+                        _allocationListReloadRequested = true;
+                };
+                AllocationWatcher.Deleted += (sender, args) =>
+                {
+                    if (!AutopilotPlan.IsGeneratedAllocationPath(args.Name)
+                        && !AutopilotPlan.IsGeneratedAllocationPath(args.FullPath))
+                        _allocationListReloadRequested = true;
+                };
+                AllocationWatcher.Renamed += (sender, args) =>
+                {
+                    if (!AutopilotPlan.IsGeneratedAllocationPath(args.Name)
+                        && !AutopilotPlan.IsGeneratedAllocationPath(args.FullPath))
+                        _allocationListReloadRequested = true;
+                };
 
                 Settings.SaveSettings();
                 Settings.LoadSettings();

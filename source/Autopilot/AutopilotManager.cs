@@ -187,7 +187,7 @@ namespace NGUInjector.Autopilot
             if (Config.ManageDiggers)
                 Plan.Diggers = DiggerManager.OptimizeForPlan(Plan);
             AutopilotPlanner.FinalizeResetLocalChoices(Main.Character, Plan);
-            var signature = Plan.Signature();
+            var signature = Plan.Signature(Main.Character);
             ObserveBossTransitions(Main.Character);
             ObserveKeyEvents(Main.Character);
 
@@ -1179,10 +1179,16 @@ namespace NGUInjector.Autopilot
             var recoveryContinueEta = -1;
             var recoveryRouteReason = string.Empty;
             var recoveryMode = c.settings.rebirthDifficulty == difficulty.normal && c.bossID < c.highestBoss;
-            var recoveryResetEfficient = !recoveryMode
-                || RebirthOptimizer.RecoveryResetEfficient(c, bossViabilityEta,
-                    out recoveryResetEta, out recoveryContinueEta, out recoveryRouteReason);
-            if (!recoveryMode)
+            // Native rebirth replaces Number rather than compounding the same projected/current
+            // ratio across replay cycles. Publish the aggregate-score gate here; a geometric
+            // recovery route would be false precision and formerly disagreed with the final gate.
+            var recoveryResetEfficient = !Plan.RebirthExecutionHold
+                                         && Plan.RebirthSelectedScorePerHour > 0.0;
+            if (recoveryMode)
+            {
+                recoveryRouteReason = "native rebirth replaces Number; no geometric repeated-cycle ETA is published, so the aggregate one-run score controls";
+            }
+            else
             {
                 recoveryResetEta = -1;
                 recoveryContinueEta = -1;
