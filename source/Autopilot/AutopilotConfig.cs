@@ -88,7 +88,9 @@ namespace NGUInjector.Autopilot
             if (config == null) throw new ArgumentNullException("config");
             // These routes remain modeled/read-only until their named copied-save fixtures,
             // build bindings, and backtests are explicitly completed in a later deployment.
-            config.AllowExpSpending = false;
+            // EXP atoms represented by LivePermanentPurchaseRuntime now have build-pinned
+            // invocation plus exact debit/effect settlement. Preserve the operator's explicit
+            // AllowExpSpending choice and publish that same authority to the staged plan.
             config.AllowApSpending = false;
             config.AllowPerkSpending = false;
             config.AllowQuirkSpending = false;
@@ -96,7 +98,7 @@ namespace NGUInjector.Autopilot
             config.AllowEndSequence = false;
             config.ManageMoneyPit = false;
             config.AllowGlobalSchedulerExecution = false;
-            config.AllowPermanentPurchaseExecution = false;
+            config.AllowPermanentPurchaseExecution = config.AllowExpSpending;
             config.AllowMoneyPitExecution = false;
             config.AllowDifficultyExecution = false;
             config.AllowTitanOneThroughTwelveExecution = false;

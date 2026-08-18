@@ -150,14 +150,15 @@ internal static class RebirthPolicyGoldenTests
         var config = Activator.CreateInstance(configType, true);
         var held = new[]
         {
-            "AllowExpSpending", "AllowApSpending", "AllowPerkSpending",
+            "AllowApSpending", "AllowPerkSpending",
             "AllowQuirkSpending", "ManageMoneyPit",
-            "AllowGlobalSchedulerExecution", "AllowPermanentPurchaseExecution",
+            "AllowGlobalSchedulerExecution",
             "AllowMoneyPitExecution", "AllowDifficultyExecution",
             "AllowTitanOneThroughTwelveExecution", "AllowTitanThirteenFourteenExecution",
             "AllowMove69Execution", "AllowEndSequence", "AllowChallenges"
         };
         SetField(config, "AllowRebirths", true);
+        SetField(config, "AllowExpSpending", true);
         foreach (var name in held) SetField(config, name, true);
         var ceiling = configType.GetMethod("ApplyDeploymentAuthorityCeiling",
             BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
@@ -165,6 +166,9 @@ internal static class RebirthPolicyGoldenTests
         ceiling.Invoke(null, new[] {config});
         foreach (var name in held)
             Assert(!(bool)Field(config, name), name + " remains fail-closed after normalization");
+        Assert((bool)Field(config, "AllowExpSpending")
+               && (bool)Field(config, "AllowPermanentPurchaseExecution"),
+            "audited EXP atoms preserve explicit authority and publish the staged purchase gate");
         Assert((bool)Field(config, "AllowRebirths"),
             "explicit ordinary rebirth authority survives the deployment ceiling");
         Assert((bool)Property(config, "GlobalSchedulerIsShadowOnly"),
