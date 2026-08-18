@@ -343,7 +343,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             actionLineRemainder = lines.popLast() ?? ""
         }
         var selected: [String] = []
-        for line in lines {
+        for rawLine in lines {
+            // The injected .NET producer writes Windows CRLF even when the read-only monitor
+            // runs on macOS. Splitting on LF leaves the CR attached; without normalizing it,
+            // the exact session suffix never matches and the live feed remains blank forever.
+            let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
             if line.hasPrefix("=== SESSION ") && line.hasSuffix(" ===") {
                 actionSessionAdmitted = line.contains(" id \(sessionId) build ")
                 continue
@@ -379,7 +383,11 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             try handle.seek(toOffset: offset)
             let data = handle.readDataToEndOfFile()
             offset += UInt64(data.count)
-            guard let raw = String(data: data, encoding: .utf8), !raw.isEmpty else { return }
+            // A concurrently appended multibyte character may be incomplete at this exact read
+            // boundary. Lossy decoding preserves the session marker and all complete log lines;
+            // strict decoding would discard the whole chunk after offset had advanced.
+            let raw = String(decoding: data, as: UTF8.self)
+            guard !raw.isEmpty else { return }
             let chunk = sessionBoundChunk(raw)
             guard !chunk.isEmpty else { return }
             textView.textStorage?.append(coloredLog(chunk))

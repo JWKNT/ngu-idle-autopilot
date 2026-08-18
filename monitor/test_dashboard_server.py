@@ -319,6 +319,19 @@ class ObservabilityTests(unittest.TestCase):
 
 
 class ActionErrorTests(unittest.TestCase):
+    def test_native_monitor_normalizes_windows_crlf_before_session_admission(self) -> None:
+        source = (Path(__file__).parent / "ActionMonitor.swift").read_text(encoding="utf-8")
+        self.assertIn('rawLine.hasSuffix("\\r")', source)
+        self.assertIn('String(decoding: data, as: UTF8.self)', source)
+
+        text = (
+            "=== SESSION 2026-08-18T02:00:00Z id current build b pid 11 ===\r\n"
+            "13:00:00.000 [ALLOC] (20s) current allocation\r\n"
+        )
+        lines, status = session_bound_lines(text, "current")
+        self.assertEqual(status, "Bound")
+        self.assertEqual(lines, ["13:00:00.000 [ALLOC] (20s) current allocation"])
+
     def test_tail_selects_only_the_exact_session_boundary(self) -> None:
         text = (
             "=== SESSION 2026-08-18T01:00:00Z id old build a pid 10 ===\n"
