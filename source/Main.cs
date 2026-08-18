@@ -1737,8 +1737,6 @@ namespace NGUInjector
                 return;
 
             RefreshAllocationOwnership();
-            ExecutionSafety.ReportHold("typed-intent:fast-allocation",
-                "Fast loadout/allocation mutations are held until both expose typed child intents.");
 
             /*
             SETTLED-STATE PUBLICATION BARRIER
@@ -1773,8 +1771,8 @@ namespace NGUInjector
                 return;
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
-            ExecutionSafety.ReportHold("typed-intent:quick-combat-rewards",
-                "Quick combat, reward, Money Pit, spin, ITOPOD, and Blood mutations are held until their typed child intents are integrated.");
+            // Resource allocation and Fight Boss now execute inside the one-second typed root.
+            // Other quick-loop reward mutations remain disconnected until they have exact intents.
         }
 
         // Runs every second; tactical combat and allocations have separate faster loops.
@@ -1822,6 +1820,11 @@ namespace NGUInjector
                 mutationRoot = rootBegin.Transaction;
                 executionStateVersion = ExecutionSafety.StateVersion;
                 Autopilot.ExecutePlannedMutations(mutationRoot);
+                var progression = ProgressionTransactions.Execute(mutationRoot, Character,
+                    ActiveProfile, Autopilot.Config, Autopilot, _combManager, _questManager);
+                if (progression.Failed)
+                    transactionErrors.Add("critical progression transaction failed: "
+                                          + progression.FailureReason);
                 if (mutationRoot.IsClosed
                     || !string.Equals(mutationRoot.Token.EpochFingerprint,
                         CurrentGameEpochFingerprint, StringComparison.Ordinal))
@@ -1836,23 +1839,9 @@ namespace NGUInjector
                     return;
                 }
 
-                ExecutionSafety.ReportHold("typed-intent:itopod-routing",
-                    "ITOPOD routing is held until its post-kill controller is integrated.");
-                if (AutopilotWants(x => x.ManageBeards))
-                    ExecutionSafety.ReportHold("typed-intent:beards",
-                        "Beard mutation is held; the exact marginal oracle is shadow-only.");
-                if (Settings.ManageInventory || AutopilotWants(x => x.ManageInventory))
-                    ExecutionSafety.ReportHold("typed-intent:inventory",
-                        "Bulk inventory mutation is held until its topology operations are coordinator child intents.");
                 if (AutopilotWants(x => x.AllowEndSequence))
                     ExecutionSafety.ReportHold("typed-intent:end-sequence",
                         "END execution is disabled for this deployment.");
-                if (AutopilotWants(x => x.ManageBloodMagic))
-                    ExecutionSafety.ReportHold("typed-intent:blood",
-                        "Blood spell execution is held until its typed delivery/cast intent is integrated.");
-                if (AutopilotWants(x => x.ManageInventory) && !Controller.midDrag)
-                    ExecutionSafety.ReportHold("typed-intent:daycare",
-                        "Daycare mutation is held until its exact exchange is a coordinator child intent.");
 
                 //if (Settings.ManageInventory && !Controller.midDrag)
                 //{
@@ -1892,9 +1881,7 @@ namespace NGUInjector
                 //    watch.Stop();
                 //}
 
-                if (LoadoutManager.CurrentLock == LockType.Titan || Settings.SwapTitanLoadouts
-                    || AutopilotWants(x => x.ManageAdventure)
-                    || Settings.ManageGoldLoadouts && Settings.NeedsGoldSwap())
+                if (LoadoutManager.CurrentLock == LockType.Titan || Settings.SwapTitanLoadouts)
                 {
                     ExecutionSafety.ReportHold("typed-intent:titan-execution",
                         "Titan loadout/digger staging is held until TitanExecutionManager is wired to the root.");
@@ -2084,8 +2071,7 @@ namespace NGUInjector
                 return;
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
-            ExecutionSafety.ReportHold("typed-intent:adventure-routing",
-                "Adventure routing/combat is held until CombatManager exposes coordinator child intents.");
+            // Adventure routing is serialized by the one-second typed progression child.
         }
 
         private void MoveToITOPOD()

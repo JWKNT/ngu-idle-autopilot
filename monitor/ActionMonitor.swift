@@ -538,6 +538,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ? decisionEpoch == rootEpoch : nil
         let rootCounts = [
             countLabel(mutationRoot, "committedSteps", "committed"),
+            countLabel(mutationRoot, "heldSteps", "held"),
             countLabel(mutationRoot, "pendingSteps", "pending"),
             countLabel(mutationRoot, "rejectedSteps", "rejected"),
             countLabel(mutationRoot, "quarantinedSteps", "quarantined")

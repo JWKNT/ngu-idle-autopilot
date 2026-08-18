@@ -81,7 +81,8 @@ namespace NGUInjector.Autopilot
                 return Hold("native minimum rebirth time is not met");
             if (input.ElapsedSeconds < input.TargetSeconds)
                 return Hold("the selected optimizer checkpoint is not due");
-            if (input.BossId <= 0) return Hold("current Fight Boss is Boss 0");
+            // Native bossID is zero-based: 0 is the playable Boss 1, not an unselected sentinel.
+            if (input.BossId < 0) return Hold("current Fight Boss selection is invalid");
             if (input.BossFight || input.BossNuke)
                 return Hold("Fight Boss is active at the reset boundary");
             if (input.NoRebirthChallenge)

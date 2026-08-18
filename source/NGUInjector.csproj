@@ -92,6 +92,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Autopilot\PlannerTrace.cs" />
     <Compile Include="Autopilot\ProgressionDependencyGraph.cs" />
     <Compile Include="Autopilot\ProgressionGoalEngine.cs" />
+    <Compile Include="Autopilot\ProgressionTransactions.cs" />
     <Compile Include="Autopilot\PurchaseDescriptorCatalog.cs" />
     <Compile Include="Autopilot\RebirthOptimizer.cs" />
     <Compile Include="Autopilot\ResetStateRegistry.cs" />

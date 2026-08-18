@@ -388,6 +388,7 @@ def build_observability(
     root_state = first_text(root, "state")
     root_epoch = first_text(root, "epochFingerprint")
     committed_steps = optional_count(root.get("committedSteps"))
+    held_steps = optional_count(root.get("heldSteps"))
     pending_steps = optional_count(root.get("pendingSteps"))
     rejected_steps = optional_count(root.get("rejectedSteps"))
     quarantined_steps = optional_count(root.get("quarantinedSteps"))
@@ -567,6 +568,7 @@ def build_observability(
             "rootState": root_state or "Unavailable",
             "rootEpochFingerprint": root_epoch or None,
             "committedSteps": committed_steps,
+            "heldSteps": held_steps,
             "pendingSteps": pending_steps,
             "rejectedSteps": rejected_steps,
             "quarantinedSteps": quarantined_steps,

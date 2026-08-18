@@ -72,7 +72,10 @@ internal static class OrdinaryRebirthTransactionTests
         input = Ready(); input.ElapsedSeconds = 3599; AssertHeld(input, "not due");
         input = Ready(); input.ElapsedSeconds = 2; input.TargetSeconds = 2;
         AssertHeld(input, "minimum");
-        input = Ready(); input.BossId = 0; AssertHeld(input, "Boss 0");
+        input = Ready(); input.BossId = 0;
+        Assert(OrdinaryRebirthGate.Evaluate(input).Ready,
+            "zero-based Boss ID 0 is the playable Boss 1");
+        input = Ready(); input.BossId = -1; AssertHeld(input, "selection is invalid");
         input = Ready(); input.BossFight = true; AssertHeld(input, "Fight Boss is active");
         input = Ready(); input.BossNuke = true; AssertHeld(input, "Fight Boss is active");
         input = Ready(); input.NoRebirthChallenge = true; AssertHeld(input, "No Rebirth");

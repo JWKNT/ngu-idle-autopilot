@@ -51,9 +51,11 @@ namespace NGUInjector.Autopilot
         internal string RootTransactionState = "not-opened";
         internal string RootEpochFingerprint = string.Empty;
         internal int RootCommittedSteps;
+        internal int RootHeldSteps;
         internal int RootPendingSteps;
         internal int RootRejectedSteps;
         internal int RootQuarantinedSteps;
+        internal string RootResultSummary = string.Empty;
 
         internal bool GlobalSchedulerCanExecute { get { return false; } }
         internal string Stage;

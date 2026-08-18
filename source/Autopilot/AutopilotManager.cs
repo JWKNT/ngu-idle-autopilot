@@ -165,15 +165,18 @@ namespace NGUInjector.Autopilot
             Plan.RootCommittedSteps = results.Count(x =>
                 x.Kind == MutationResultKind.Committed
                 || x.Kind == MutationResultKind.NoOpVerified);
+            Plan.RootHeldSteps = results.Count(x => x.Kind == MutationResultKind.Held);
             Plan.RootPendingSteps = results.Count(x => x.Kind == MutationResultKind.Pending);
             Plan.RootRejectedSteps = results.Count(x =>
-                x.Kind == MutationResultKind.Held
-                || x.Kind == MutationResultKind.RejectedUnchanged
+                x.Kind == MutationResultKind.RejectedUnchanged
                 || x.Kind == MutationResultKind.Compensated);
             Plan.RootQuarantinedSteps = results.Count(x =>
                 x.Kind == MutationResultKind.Quarantined
                 || x.Kind == MutationResultKind.Indeterminate
                 || x.Kind == MutationResultKind.CommittedWithException);
+            Plan.RootResultSummary = string.Join(" | ", results.Select(x =>
+                x.IntentId + "=" + x.Kind + (string.IsNullOrEmpty(x.Reason)
+                    ? string.Empty : ": " + x.Reason)).ToArray());
         }
 
         internal void Tick()
@@ -894,6 +897,16 @@ namespace NGUInjector.Autopilot
                 combat.IdleZone(best.Zone, bossOnlyForSet, true);
             CaptureRecovery(combat);
             return true;
+        }
+
+        internal int CurrentAdventureTargetZone
+        {
+            get { return _adventureTarget == null ? -1 : _adventureTarget.Zone; }
+        }
+
+        internal int CurrentAdventureFightType
+        {
+            get { return _adventureTarget == null ? -1 : _adventureTarget.FightType; }
         }
 
         private static bool PrepareEndgameTitan12Version(CombatManager combat)
@@ -1635,9 +1648,12 @@ namespace NGUInjector.Autopilot
                    + "\",\"epochFingerprint\":\""
                    + EscapeJson(Plan == null ? Main.CurrentGameEpochFingerprint : Plan.RootEpochFingerprint)
                    + "\",\"committedSteps\":" + (Plan == null ? 0 : Plan.RootCommittedSteps)
+                   + ",\"heldSteps\":" + (Plan == null ? 0 : Plan.RootHeldSteps)
                    + ",\"pendingSteps\":" + (Plan == null ? 0 : Plan.RootPendingSteps)
                    + ",\"rejectedSteps\":" + (Plan == null ? 0 : Plan.RootRejectedSteps)
                    + ",\"quarantinedSteps\":" + (Plan == null ? 0 : Plan.RootQuarantinedSteps)
+                   + ",\"resultSummary\":\""
+                   + EscapeJson(Plan == null ? string.Empty : Plan.RootResultSummary) + "\""
                    + "}";
         }
 
