@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using NGUInjector.AllocationProfiles;
 using NGUInjector.Managers;
 
@@ -18,10 +21,12 @@ namespace NGUInjector.Autopilot
         internal MutationResult Allocation;
         internal MutationResult Boss;
         internal MutationResult Adventure;
+        internal MutationResult Inventory;
 
         internal bool Failed
         {
-            get { return IsFailure(Allocation) || IsFailure(Boss) || IsFailure(Adventure); }
+            get { return IsFailure(Allocation) || IsFailure(Boss) || IsFailure(Adventure)
+                         || IsFailure(Inventory); }
         }
 
         internal string FailureReason
@@ -30,7 +35,8 @@ namespace NGUInjector.Autopilot
             {
                 if (IsFailure(Allocation)) return "allocation: " + Allocation.Reason;
                 if (IsFailure(Boss)) return "Fight Boss: " + Boss.Reason;
-                return IsFailure(Adventure) ? "Adventure: " + Adventure.Reason : string.Empty;
+                if (IsFailure(Adventure)) return "Adventure: " + Adventure.Reason;
+                return IsFailure(Inventory) ? "Inventory: " + Inventory.Reason : string.Empty;
             }
         }
 
@@ -48,7 +54,8 @@ namespace NGUInjector.Autopilot
     {
         internal static CriticalProgressionOutcome Execute(RootTransaction root,
             Character character, CustomAllocation allocation, AutopilotConfig config,
-            AutopilotManager autopilot, CombatManager combat, QuestManager quests)
+            AutopilotManager autopilot, CombatManager combat, QuestManager quests,
+            InventoryManager inventory)
         {
             var outcome = new CriticalProgressionOutcome();
             if (root == null || root.IsClosed || character == null || config == null)
@@ -61,19 +68,171 @@ namespace NGUInjector.Autopilot
             if (!root.IsClosed && EarlyAdventureIntent.IsEligible(character, config, quests))
                 outcome.Adventure = root.ExecuteChild(
                     new EarlyAdventureIntent(character, config, autopilot, combat, quests));
+            if (!root.IsClosed && config.ManageInventory && inventory != null)
+                outcome.Inventory = root.ExecuteChild(
+                    new InventoryMaintenanceIntent(character, inventory));
             LogNonSuccess("resource allocation", outcome.Allocation);
             LogNonSuccess("Fight Boss", outcome.Boss);
             LogNonSuccess("Adventure", outcome.Adventure);
+            LogNonSuccess("Inventory", outcome.Inventory);
             return outcome;
         }
 
         private static void LogNonSuccess(string label, MutationResult result)
         {
             if (result == null || result.Kind == MutationResultKind.Committed
-                || result.Kind == MutationResultKind.NoOpVerified)
+                || result.Kind == MutationResultKind.NoOpVerified
+                || result.Kind == MutationResultKind.Held)
                 return;
-            Main.LogAction(result.Kind == MutationResultKind.Held ? "HOLD" : "REJECTED",
-                label + " intent " + result.Kind + ": " + result.Reason);
+            Main.LogAction("REJECTED", label + " intent " + result.Kind + ": " + result.Reason);
+        }
+    }
+
+    internal sealed class InventoryMaintenanceState
+    {
+        internal int CurSpaces;
+        internal int MergePrefix;
+        internal int Occupied;
+        internal bool MidDrag;
+        internal bool[] Maxxed;
+        internal Dictionary<int, long> Contributions;
+        internal string Fingerprint = string.Empty;
+    }
+
+    internal sealed class InventoryMaintenanceIntent :
+        IMutationIntent<InventoryMaintenanceState, bool, InventoryMaintenanceState>
+    {
+        private readonly Character _character;
+        private readonly InventoryManager _inventory;
+
+        internal InventoryMaintenanceIntent(Character character, InventoryManager inventory)
+        {
+            _character = character;
+            _inventory = inventory;
+        }
+
+        public string Id { get { return "progression.inventory-maintenance"; } }
+        public MutationClass Class { get { return MutationClass.Inventory; } }
+        public MutationRisk Risk { get { return MutationRisk.FiniteResource; } }
+        public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
+        public string BindingId { get { return "InventoryManager.conservative-maintenance.v1"; } }
+        public bool Required { get { return false; } }
+        public bool CanCompensate { get { return false; } }
+        public bool CreatesNewEpoch { get { return false; } }
+        public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
+
+        public InventoryMaintenanceState CaptureBefore(MutationContext context) { return Capture(); }
+
+        public PreconditionResult CheckPreconditions(MutationContext context,
+            InventoryMaintenanceState before)
+        {
+            if (!Main.IsAutomationReady)
+                return PreconditionResult.Hold("gameplay synchronization is not current");
+            if (before == null || before.MidDrag)
+                return PreconditionResult.Hold("inventory drag/controller state is not stable");
+            if (before.CurSpaces <= before.MergePrefix || before.Occupied < 0)
+                return PreconditionResult.Hold("ordinary inventory topology is unavailable");
+            return PreconditionResult.Ready();
+        }
+
+        public bool Apply(MutationContext context, RootTransactionToken token,
+            InventoryMaintenanceState before)
+        {
+            _inventory.RunConservativeMaintenance();
+            return true;
+        }
+
+        public VerificationResult<InventoryMaintenanceState> Verify(MutationContext context,
+            InventoryMaintenanceState before, MutationApplyObservation<bool> apply)
+        {
+            var after = Capture();
+            if (!apply.ReturnedNormally || !apply.Value || after == null)
+                return VerificationResult<InventoryMaintenanceState>.Failed(
+                    "inventory maintenance did not return a complete post-state");
+            if (after.MidDrag || after.CurSpaces != before.CurSpaces
+                || after.MergePrefix != before.MergePrefix)
+                return VerificationResult<InventoryMaintenanceState>.Failed(
+                    "inventory maintenance changed capacity or left a drag active");
+            var count = Math.Min(before.Maxxed.Length, after.Maxxed.Length);
+            for (var id = 0; id < count; id++)
+            {
+                if (before.Maxxed[id] && !after.Maxxed[id])
+                    return VerificationResult<InventoryMaintenanceState>.Failed(
+                        "Item List MAXX regressed for ID " + id);
+                if (before.Maxxed[id] || after.Maxxed[id]) continue;
+                long beforeContribution;
+                long afterContribution;
+                before.Contributions.TryGetValue(id, out beforeContribution);
+                after.Contributions.TryGetValue(id, out afterContribution);
+                if (afterContribution < beforeContribution)
+                    return VerificationResult<InventoryMaintenanceState>.Failed(
+                        "un-MAXXED physical level contribution decreased for ID " + id);
+            }
+            return VerificationResult<InventoryMaintenanceState>.Satisfied(after,
+                "capacity stable, Item List monotone, and un-MAXXED contributions preserved");
+        }
+
+        public CompensationResult Compensate(MutationContext context, RecoveryToken token,
+            InventoryMaintenanceState before, MutationApplyObservation<bool> apply)
+        {
+            return CompensationResult.NotSupported(
+                "verified native merges/boosts/trash cannot be reversed by field rewriting");
+        }
+
+        public bool BeforeStateMatches(InventoryMaintenanceState a, InventoryMaintenanceState b)
+        {
+            return a != null && b != null && string.Equals(a.Fingerprint, b.Fingerprint,
+                StringComparison.Ordinal);
+        }
+
+        public string FingerprintBefore(InventoryMaintenanceState state)
+        {
+            return state == null ? "missing" : state.Fingerprint;
+        }
+
+        public string FingerprintAfter(InventoryMaintenanceState state)
+        {
+            return state == null ? "missing" : state.Fingerprint;
+        }
+
+        private InventoryMaintenanceState Capture()
+        {
+            var inv = _character == null ? null : _character.inventory;
+            var controller = _character == null ? null : _character.inventoryController;
+            if (inv == null || controller == null || inv.inventory == null
+                || inv.itemList == null || inv.itemList.itemMaxxed == null)
+                return null;
+            var all = new List<Equipment>();
+            all.Add(inv.head); all.Add(inv.chest); all.Add(inv.legs); all.Add(inv.boots);
+            all.Add(inv.weapon); all.Add(inv.weapon2);
+            if (inv.accs != null) all.AddRange(inv.accs);
+            all.AddRange(inv.inventory);
+            if (inv.daycare != null) all.AddRange(inv.daycare);
+            if (inv.macguffins != null) all.AddRange(inv.macguffins);
+            var contributions = new Dictionary<int, long>();
+            foreach (var item in all.Where(x => x != null && x.id > 0))
+            {
+                long current;
+                contributions.TryGetValue(item.id, out current);
+                contributions[item.id] = current + Math.Max(1, item.level + 1);
+            }
+            var slots = inv.inventory.Select((item, slot) => item == null
+                    ? slot + ":null"
+                    : slot + ":" + RuntimeHelpers.GetHashCode(item) + ":" + item.id
+                      + ":" + item.level + ":" + item.removable)
+                .ToArray();
+            return new InventoryMaintenanceState
+            {
+                CurSpaces = controller.curSpaces(),
+                MergePrefix = controller.totalInvMergeSlots(),
+                Occupied = inv.inventory.Count(x => x != null && x.id > 0),
+                MidDrag = controller.midDrag,
+                Maxxed = inv.itemList.itemMaxxed.ToArray(),
+                Contributions = contributions,
+                Fingerprint = string.Join("|", slots)
+                              + ":max=" + string.Join("", inv.itemList.itemMaxxed
+                                  .Select(x => x ? "1" : "0").ToArray())
+            };
         }
     }
 

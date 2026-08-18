@@ -78,6 +78,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Autopilot\GameEpoch.cs" />
     <Compile Include="Autopilot\GlobalEventScheduler.cs" />
     <Compile Include="Autopilot\ItopodPerkPlanner.cs" />
+    <Compile Include="Autopilot\LivePermanentPurchaseRuntime.cs" />
     <Compile Include="Autopilot\LootCapacity.cs" />
     <Compile Include="Autopilot\MechanicsEndgame.cs" />
     <Compile Include="Autopilot\MechanicsOracle.cs" />

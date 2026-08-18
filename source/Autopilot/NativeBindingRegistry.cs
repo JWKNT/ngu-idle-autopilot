@@ -1019,6 +1019,79 @@ namespace NGUInjector.Autopilot
             return _registry.InvokeMutation(key, controller);
         }
 
+        /*
+        EXACT CUSTOM-PURCHASE SELECTOR TRANSACTION
+
+        The Energy/Magic/R3 custom shop methods debit whatever amount is currently parsed from
+        their InputField.  A build-pinned method call is therefore not sufficient by itself: the
+        field and its parser are part of the irreversible purchase boundary.  Resolve both through
+        the audited registry, install one exact positive integer, parse it, invoke the purchase,
+        and restore the user's prior text/parsed value in finally.  The caller still has to prove
+        the currency and permanent-stat deltas through MutationCoordinator.
+        */
+        internal NativeInvocationResult BuyPermanentUpgradeWithExactInput(object controller,
+            string exactMethodName, string exactInputFieldName,
+            string exactInputUpdateMethodName, long exactAmount)
+        {
+            if (controller == null || string.IsNullOrEmpty(exactMethodName)
+                || string.IsNullOrEmpty(exactInputFieldName)
+                || string.IsNullOrEmpty(exactInputUpdateMethodName) || exactAmount <= 0L)
+                return Invalid("custom purchase target, binding names, and positive amount are required");
+
+            var typeName = controller.GetType().FullName;
+            FieldInfo inputField;
+            string reason;
+            var fieldKey = NativeBindingKeys.PurchaseInput(typeName, exactInputFieldName);
+            if (!_registry.TryGetBoundField(fieldKey, out inputField, out reason))
+                return Unavailable(fieldKey, reason);
+            if (!inputField.DeclaringType.IsInstanceOfType(controller))
+                return new NativeInvocationResult(NativeInvocationStatus.TargetMismatch,
+                    fieldKey, "custom purchase selector target type does not match", null, null);
+            var input = inputField.GetValue(controller);
+            var textProperty = input == null ? null : input.GetType().GetProperty("text",
+                BindingFlags.Instance | BindingFlags.Public);
+            if (input == null || textProperty == null || !textProperty.CanRead
+                || !textProperty.CanWrite || textProperty.PropertyType != typeof(string))
+                return new NativeInvocationResult(NativeInvocationStatus.TargetMismatch,
+                    fieldKey, "custom purchase selector is not a Unity InputField", null, null);
+
+            var updateKey = NativeBindingKeys.PurchaseInputUpdate(typeName,
+                exactInputUpdateMethodName);
+            var previousText = textProperty.GetValue(input, null) as string;
+            NativeInvocationResult result;
+            try
+            {
+                textProperty.SetValue(input, exactAmount.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture), null);
+                var parsed = _registry.InvokeMutation(updateKey, controller);
+                if (!parsed.ReturnedNormally) return parsed;
+                result = BuyPermanentUpgrade(controller, exactMethodName);
+            }
+            catch (Exception error)
+            {
+                result = new NativeInvocationResult(NativeInvocationStatus.ThrewAfterInvocation,
+                    NativeBindingKeys.PurchaseMethod(typeName, exactMethodName),
+                    "custom purchase selector/invocation threw; recapture before retry",
+                    null, error);
+            }
+            try
+            {
+                textProperty.SetValue(input, previousText ?? string.Empty, null);
+                var restored = _registry.InvokeMutation(updateKey, controller);
+                if (!restored.ReturnedNormally)
+                    return new NativeInvocationResult(NativeInvocationStatus.ThrewAfterInvocation,
+                        updateKey, "custom purchase selector restoration did not complete",
+                        result.ReturnValue, restored.Exception);
+            }
+            catch (Exception restoreError)
+            {
+                return new NativeInvocationResult(NativeInvocationStatus.ThrewAfterInvocation,
+                    updateKey, "custom purchase selector restoration threw",
+                    result.ReturnValue, restoreError);
+            }
+            return result;
+        }
+
         internal NativeInvocationResult BuyApUpgrade(object controller, int exactId,
             string exactNativeName, string exactMethodName)
         {

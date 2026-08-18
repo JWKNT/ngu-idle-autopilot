@@ -546,6 +546,14 @@ namespace NGUInjector.Autopilot
         {
             return new[]
             {
+                new PurchaseDescriptor("exp.energy.power01", PermanentCurrency.Experience, -1,
+                    "EnergyPurchases", "buyEnergyPower01", 0x0600096b,
+                    "Energy Power +0.1", Fixed(15), PurchaseUnlockRequirement.None,
+                    0, 0, new[] { Delta("permanent.energyPowerTenths", 1) }),
+                new PurchaseDescriptor("exp.energy.bar1", PermanentCurrency.Experience, -1,
+                    "EnergyPurchases", "buyEnergyBar1", 0x06000959,
+                    "Energy Bar +1", Fixed(80), PurchaseUnlockRequirement.None,
+                    0, 0, new[] { Delta("permanent.energyBars", 1) }),
                 Exp("exp.energy.custom-power", "EnergyPurchases", "buyCustomPower", 0x06000973, PurchaseCostKind.EnergyPower, "permanent.energyPower"),
                 Exp("exp.energy.custom-cap", "EnergyPurchases", "buyCustomCap", 0x06000977, PurchaseCostKind.EnergyCap, "permanent.energyCap"),
                 Exp("exp.energy.custom-bar", "EnergyPurchases", "buyCustomBar", 0x06000975, PurchaseCostKind.EnergyBar, "permanent.energyBars"),

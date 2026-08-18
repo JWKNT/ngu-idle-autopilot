@@ -208,6 +208,60 @@ namespace NGUInjector.Managers
             _cubeBoostAvg.Reset();
         }
 
+        /*
+        CONSERVATIVE ONE-SECOND MAINTENANCE SWEEP
+
+        This is the typed transaction entrypoint used by ProgressionTransactions. It deliberately
+        excludes convertibles, quest turn-in, END placement, Daycare, loadout swaps, and any broad
+        native merge/trash operation. Exact-ID filters are reconciled first; reference-aware merges
+        collapse development copies; only already-MAXXED boost IDs may then be consumed; finally one
+        independently proven redundant MAXXED item may enter the native recovery slot. Every helper
+        retains its own exact native delta checks and the outer intent verifies Item List/contribution
+        monotonicity and physical inventory bounds.
+        */
+        internal void RunConservativeMaintenance()
+        {
+            var converted = _character.inventory.GetConvertedInventory().ToArray();
+            EnsureFiltered(converted);
+            MergeEquipped(converted);
+
+            converted = _character.inventory.GetConvertedInventory().ToArray();
+            MergeInventory(converted);
+            converted = _character.inventory.GetConvertedInventory().ToArray();
+            MergeBoosts(converted);
+
+            ConsumeOnlyMaxxedBoosts();
+            ManageBoostConversion();
+            TrashProvenRedundantItem();
+        }
+
+        private void ConsumeOnlyMaxxedBoosts()
+        {
+            var list = _character.inventory.itemList;
+            if (list == null || list.itemMaxxed == null) return;
+            var protectedBoosts = _character.inventory.inventory
+                .Where(x => x != null && x.id > 0 && x.id < 40
+                            && (x.id >= list.itemMaxxed.Count || !list.itemMaxxed[x.id]))
+                .Select(x => new {Item = x, Removable = x.removable}).ToArray();
+            try
+            {
+                // Native apply-all and Cube helpers respect locks. Temporarily lock every
+                // un-MAXXED boost identity so collection progress cannot be converted into stats.
+                foreach (var entry in protectedBoosts) entry.Item.removable = false;
+                var converted = _character.inventory.GetConvertedInventory().ToArray();
+                var targets = GetImmediateBoostSlots(converted);
+                BoostInventory(targets);
+                BoostInfinityCubeToSoftcaps();
+                BoostInfinityCube();
+            }
+            finally
+            {
+                foreach (var entry in protectedBoosts)
+                    if (_character.inventory.inventory.Any(x => ReferenceEquals(x, entry.Item)))
+                        entry.Item.removable = entry.Removable;
+            }
+        }
+
         internal ih[] GetBoostSlots(ih[] ci)
         {
             return GetBoostSlots(ci, true);

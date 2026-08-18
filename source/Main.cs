@@ -1821,7 +1821,8 @@ namespace NGUInjector
                 executionStateVersion = ExecutionSafety.StateVersion;
                 Autopilot.ExecutePlannedMutations(mutationRoot);
                 var progression = ProgressionTransactions.Execute(mutationRoot, Character,
-                    ActiveProfile, Autopilot.Config, Autopilot, _combManager, _questManager);
+                    ActiveProfile, Autopilot.Config, Autopilot, _combManager, _questManager,
+                    _invManager);
                 if (progression.Failed)
                     transactionErrors.Add("critical progression transaction failed: "
                                           + progression.FailureReason);

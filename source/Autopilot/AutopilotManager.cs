@@ -61,6 +61,8 @@ namespace NGUInjector.Autopilot
         private bool[] _lastObservedCombatAbilityUnlocks;
         private long[] _lastObservedAugmentMilestones;
         private readonly MutationCoordinator _mutationCoordinator;
+        private readonly PermanentPurchaseManager _permanentPurchaseManager;
+        private long _permanentPurchasePass;
 
         internal AutopilotConfig Config { get; private set; }
         internal AutopilotPlan Plan { get; private set; }
@@ -96,6 +98,7 @@ namespace NGUInjector.Autopilot
         internal AutopilotManager(string runtimeDir, string profilesDir)
         {
             _mutationCoordinator = MutationCoordinator.Shared;
+            _permanentPurchaseManager = new PermanentPurchaseManager(true);
             _profilesDir = profilesDir;
             _configPath = Path.Combine(runtimeDir, "autopilot.json");
             _decisionPath = Path.Combine(runtimeDir, "decision.json");
@@ -138,8 +141,137 @@ namespace NGUInjector.Autopilot
             if (!root.IsClosed && Config.ManageCooking)
                 CardCookingManager.ManageCooking(Main.Character,
                     CanExecuteIrreversible, root);
-            // PermanentPurchaseManager(false), Move69Manager, difficulty/challenge executors,
-            // terminal transactions, and T13/T14 deliberately receive no live call here.
+            if (!root.IsClosed && CanExecuteIrreversible && Config.AllowExpSpending)
+                ExecuteOneExpPurchase(root);
+            // AP Hearts/late AP atoms, Move69, difficulty/challenge executors, terminal
+            // transactions, and T13/T14 retain their separate fail-closed gates.
+        }
+
+        /*
+        LIVE EXP PURCHASE BRIDGE
+
+        GetExpStatus and this selector share the same early progression policy.  Only a descriptor
+        whose complete integral state vector is supported by LivePermanentPurchaseRuntime may reach
+        the irreversible manager; unsupported later-game atoms remain telemetry-only.  One exact
+        purchase is attempted per root and every normal return must settle as the exact EXP debit
+        plus declared permanent delta before a PURCHASE event is emitted.
+        */
+        private void ExecuteOneExpPurchase(RootTransaction root)
+        {
+            PurchaseDescriptor descriptor;
+            object controller;
+            PurchaseCostState costState;
+            string policyReason;
+            if (!TrySelectLiveExpPurchase(Main.Character, out descriptor, out controller,
+                    out costState, out policyReason))
+                return;
+            var runtime = new LivePermanentPurchaseRuntime(Main.Character, controller, costState);
+            var before = runtime.Capture(descriptor);
+            var expected = LivePermanentPurchaseRuntime.ExpectedAfter(descriptor, before);
+            if (before == null || expected == null) return;
+            var planned = _permanentPurchaseManager.Plan(before, descriptor, expected,
+                Math.Max(0L, Config.ExpReserve), null, 1.0);
+            if (planned.Status != PurchasePlanStatus.Planned || planned.Plan == null) return;
+            var result = _permanentPurchaseManager.ExecuteOne(
+                new PurchasePlanningPass(++_permanentPurchasePass), root, planned.Plan, runtime);
+            if (result.Mutation == null) return;
+            if (result.Mutation.Kind == MutationResultKind.Committed)
+            {
+                Main.LogAction("PURCHASE", "Bought " + descriptor.DisplayName + " for "
+                    + planned.Plan.ExactCost + " EXP [confirmed by exact debit and permanent-stat delta]; "
+                    + policyReason);
+            }
+            else if (result.Mutation.Kind != MutationResultKind.Held)
+            {
+                Main.LogAction("REJECTED", descriptor.DisplayName + " purchase "
+                    + result.Mutation.Kind + ": " + result.Mutation.Reason);
+            }
+        }
+
+        private bool TrySelectLiveExpPurchase(Character c, out PurchaseDescriptor descriptor,
+            out object controller, out PurchaseCostState costState, out string reason)
+        {
+            descriptor = null;
+            controller = null;
+            costState = null;
+            reason = string.Empty;
+            if (c == null || c.energyPurchases == null || c.realExp <= Config.ExpReserve)
+                return false;
+
+            // Fixed progression/QoL gates outrank marginal P/C/B growth when the existing policy
+            // has admitted and funded them.
+            var gate = GetGateExpTarget(c);
+            if (gate != null)
+                return gate.Cost <= c.realExp - Config.ExpReserve
+                       && TryMapFixedExpTarget(gate, out descriptor, out controller,
+                           out costState, out reason);
+
+            // The pre-50 speed path includes one-off native flags which are not yet represented by
+            // the exact state-vector adapter. Do not spend a different atom under that policy.
+            if (c.energySpeed < 49.91f) return false;
+
+            var permanent = GetStrategicPermanentExpTarget(c);
+            if (permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
+                return permanent.Cost <= c.realExp - Config.ExpReserve
+                       && TryMapFixedExpTarget(permanent, out descriptor, out controller,
+                           out costState, out reason);
+
+            int magicSteps;
+            double magicRate;
+            string magicReason;
+            if (MagicSpeedOutranksMarginalGrowth(c, out magicSteps, out magicRate,
+                    out magicReason))
+                return false;
+
+            var qol = GetQolExpTarget(c);
+            if (qol != null && ShouldReserveForPermanentExpTarget(c, qol))
+                return qol.Cost <= c.realExp - Config.ExpReserve
+                       && TryMapFixedExpTarget(qol, out descriptor, out controller,
+                           out costState, out reason);
+
+            var marginal = BestMarginalExpCandidate(c);
+            if (marginal == null || marginal.Cost > c.realExp - Config.ExpReserve)
+                return false;
+            var key = marginal.Method == "buyEnergyPower01" ? "exp.energy.power01"
+                : marginal.Method == "buyEnergyBar1" ? "exp.energy.bar1"
+                : marginal.Method == "buyCustomCap"
+                  && marginal.Controller is EnergyPurchases ? "exp.energy.custom-cap"
+                : string.Empty;
+            if (string.IsNullOrEmpty(key) || !PurchaseDescriptorCatalog.TryGet(key, out descriptor))
+                return false;
+            controller = marginal.Controller;
+            costState = descriptor.Cost.Kind == PurchaseCostKind.EnergyCap
+                ? PurchaseCostState.WithAmount(marginal.Cap)
+                : PurchaseCostState.Fixed();
+            long sealedCost;
+            try { sealedCost = descriptor.Cost.Evaluate(costState); }
+            catch { return false; }
+            if (sealedCost != marginal.Cost) return false;
+            reason = marginal.Reason;
+            return true;
+        }
+
+        private static bool TryMapFixedExpTarget(PermanentExpTarget target,
+            out PurchaseDescriptor descriptor, out object controller,
+            out PurchaseCostState costState, out string reason)
+        {
+            descriptor = null;
+            controller = target == null ? null : target.Controller;
+            costState = null;
+            reason = target == null ? string.Empty : target.Reason;
+            if (target == null || controller == null) return false;
+            var exactController = controller;
+            descriptor = PurchaseDescriptorCatalog.AllExp().FirstOrDefault(x =>
+                string.Equals(x.DeclaringTypeName, exactController.GetType().FullName,
+                    StringComparison.Ordinal)
+                && string.Equals(x.NativeMethodName, target.Method,
+                    StringComparison.Ordinal));
+            if (descriptor == null) return false;
+            costState = descriptor.Cost.Kind == PurchaseCostKind.ExpInventorySpace
+                ? PurchaseCostState.WithCounter(Main.Character.inventoryController.curSpaces())
+                : PurchaseCostState.Fixed();
+            try { return descriptor.Cost.Evaluate(costState) == target.Cost; }
+            catch { return false; }
         }
 
         internal OrdinaryRebirthExecutionOutcome ExecuteOrdinaryRebirth(
