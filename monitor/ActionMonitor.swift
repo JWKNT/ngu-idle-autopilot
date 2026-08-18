@@ -2,9 +2,11 @@
 FILE PURPOSE
 
 ActionMonitor is a separate read-only macOS AppKit process. It tails confirmed actions and
-schema-validated decision.json, rejects stale/build/PID/session/out-of-order telemetry, and renders
-current/next rebirth policy, finite and unavailable ETAs, challenge admission evidence, deployment
-identity, transaction errors, collection debt, and a sparse Key Events history. It has no game
+schema-validated decision.json, requires its matching deployment.json identity, rejects
+stale/build/PID/session/out-of-order telemetry, and admits actions only after the exact durable
+session marker. It renders the decision/root epoch, staged authority, scheduler shadow statistics,
+current/next rebirth policy, finite and unavailable challenge/difficulty/END ETAs, capacity,
+transaction states, collection debt, and a sparse Key Events history. It has no game
 handle or mutation path; display features must follow explicit truthful producer fields and never
 turn a missing estimate into a zero-second countdown. The Live Actions presentation is the visual
 baseline and should not be restyled by goal/event changes.
@@ -14,6 +16,7 @@ import AppKit
 final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let logPath: String
     private let decisionPath: String
+    private let deploymentPath: String
     private let launchedAt = Date()
     private var offset: UInt64 = 0
     private var producerPid: Int?
@@ -28,6 +31,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var goalsTextView: NSTextView!
     private var keyEventsTextView: NSTextView!
     private var keyEventRemainder = ""
+    private var actionLineRemainder = ""
+    private var actionSessionId: String?
+    private var actionSessionAdmitted = false
     private var statusLabel: NSTextField!
     private var summaryLabel: NSTextField!
     private var timer: Timer?
@@ -37,6 +43,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     init(logPath: String, decisionPath: String) {
         self.logPath = logPath
         self.decisionPath = decisionPath
+        self.deploymentPath = URL(fileURLWithPath: decisionPath)
+            .deletingLastPathComponent().appendingPathComponent("deployment.json").path
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -142,40 +150,6 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func poll() {
-        let fm = FileManager.default
-        if let attrs = try? fm.attributesOfItem(atPath: logPath),
-           let size = attrs[.size] as? NSNumber {
-            let length = size.uint64Value
-            if length < offset { offset = 0 }
-            if length > offset, let handle = FileHandle(forReadingAtPath: logPath) {
-                do {
-                    try handle.seek(toOffset: offset)
-                    let data = handle.readDataToEndOfFile()
-                    offset += UInt64(data.count)
-                    if let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty {
-                        textView.textStorage?.append(coloredLog(chunk))
-                        if let storage = textView.textStorage, storage.length > 750_000 {
-                            storage.deleteCharacters(in: NSRange(location: 0, length: min(150_000, storage.length)))
-                        }
-                        textView.scrollToEndOfDocument(nil)
-                        let keyChunk = keyEventChunk(chunk)
-                        if !keyChunk.isEmpty {
-                            keyEventsTextView.textStorage?.append(coloredLog(keyChunk))
-                            if let storage = keyEventsTextView.textStorage, storage.length > 500_000 {
-                                let headerLength = keyEventsHeader().length
-                                let removable = max(0, min(100_000, storage.length - headerLength))
-                                if removable > 0 {
-                                    storage.deleteCharacters(in: NSRange(location: headerLength, length: removable))
-                                }
-                            }
-                            keyEventsTextView.scrollToEndOfDocument(nil)
-                        }
-                    }
-                } catch { }
-                try? handle.close()
-            }
-        }
-
         if let data = try? Data(contentsOf: URL(fileURLWithPath: decisionPath)),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let stage = object["stage"] as? String {
@@ -187,10 +161,19 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let attributes = try? FileManager.default.attributesOfItem(atPath: decisionPath)
             let modified = attributes?[.modificationDate] as? Date ?? .distantPast
             let age = max(0, Date().timeIntervalSince(modified))
+            let gameEpoch = object["gameEpochFingerprint"] as? String ?? ""
             if schema != 2 || incomingPid <= 0 || incomingBuild.isEmpty
-                || incomingSession.isEmpty || sequence <= 0 {
+                || incomingSession.isEmpty || sequence <= 0 || gameEpoch.isEmpty {
                 statusLabel.stringValue = "AUTOMATION • REJECTED UNVERIFIED OR OUT-OF-SEQUENCE TELEMETRY"
                 statusLabel.textColor = .systemRed
+                return
+            }
+            if !deploymentMatchesDecision(object) {
+                invalidateActionTail()
+                statusLabel.stringValue = "AUTOMATION • REJECTED DEPLOYMENT / DECISION SESSION MISMATCH"
+                statusLabel.textColor = .systemRed
+                summaryLabel.stringValue = "No actions are admitted until deployment.json and decision.json share PID, session, build, and artifact hashes."
+                summaryLabel.textColor = .systemRed
                 return
             }
 
@@ -228,6 +211,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 lastDecisionSequence = 0
                 lastRenderedSequence = -1
             }
+            if actionSessionId != incomingSession {
+                resetActionTail(for: incomingSession)
+            }
             producerPid = incomingPid
             buildId = incomingBuild
             producerSessionId = incomingSession
@@ -239,6 +225,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let mutationsEnabled = object["mutationsEnabled"] as? Bool ?? false
             let transactionComplete = object["automationTransactionComplete"] as? Bool ?? false
             let transactionError = object["automationTransactionError"] as? String ?? ""
+            let transactionState = rootTransactionState(object)
             let mode = (object["mode"] as? String ?? "unknown").uppercased()
             if age > 5 {
                 statusLabel.stringValue = "\(mode) AUTOMATION • STALE TELEMETRY \(Int(age))s • LAST \(stage.uppercased())"
@@ -257,12 +244,31 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 statusLabel.textColor = .systemOrange
                 summaryLabel.stringValue = "The producer is live, but mutation authority is not active."
                 summaryLabel.textColor = .systemOrange
-            } else if !transactionComplete {
-                statusLabel.stringValue = "\(mode) • PARTIAL AUTOMATION CYCLE • SNAPSHOT #\(sequence)"
+            } else if transactionState == "Quarantined" {
+                statusLabel.stringValue = "\(mode) • QUARANTINED ROOT • SNAPSHOT #\(sequence)"
+                statusLabel.textColor = .systemRed
+                summaryLabel.stringValue = transactionError.isEmpty
+                    ? "The root epoch or a child postcondition was quarantined; no success is inferred."
+                    : "Quarantined root: \(transactionError)"
+                summaryLabel.textColor = .systemRed
+            } else if transactionState == "Error" {
+                statusLabel.stringValue = "\(mode) • ROOT ERROR • SNAPSHOT #\(sequence)"
+                statusLabel.textColor = .systemRed
+                summaryLabel.stringValue = transactionError.isEmpty
+                    ? "The latest root failed without a supplied error detail."
+                    : "Root error: \(transactionError)"
+                summaryLabel.textColor = .systemRed
+            } else if !transactionComplete || transactionState == "Pending" {
+                statusLabel.stringValue = "\(mode) • PENDING AUTOMATION ROOT • SNAPSHOT #\(sequence)"
                 statusLabel.textColor = .systemOrange
                 summaryLabel.stringValue = transactionError.isEmpty
-                    ? "A subsystem did not finish; the snapshot is current but the cycle was partial."
-                    : "Partial cycle: \(transactionError)"
+                    ? "A root or child intent is pending; this is not a committed cycle."
+                    : "Pending cycle: \(transactionError)"
+                summaryLabel.textColor = .systemOrange
+            } else if transactionState == "Held" {
+                statusLabel.stringValue = "\(mode) • AUTOMATION ROOT HELD • SNAPSHOT #\(sequence)"
+                statusLabel.textColor = .systemOrange
+                summaryLabel.stringValue = "No nonzero mutation root was admitted for this decision frame."
                 summaryLabel.textColor = .systemOrange
             } else {
                 let target = number(object, "rebirthSeconds")
@@ -280,10 +286,132 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 lastRenderedSequence = sequence
                 renderGoals(object)
             }
+            tailSessionActions()
         } else {
             statusLabel.stringValue = "AUTOMATION • WAITING FOR BOT"
             statusLabel.textColor = .systemOrange
         }
+    }
+
+    private func deploymentMatchesDecision(_ state: [String: Any]) -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: deploymentPath)),
+              let deployment = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        let schema = number(deployment, "schemaVersion")
+        let session = state["producerSessionId"] as? String ?? ""
+        let build = state["buildId"] as? String ?? ""
+        let disk = state["diskArtifactSha256"] as? String ?? ""
+        let game = state["gameAssemblySha256"] as? String ?? ""
+        return schema >= 2
+            && number(deployment, "producerPid") == number(state, "producerPid")
+            && (deployment["producerSessionId"] as? String ?? "") == session
+            && (deployment["activeBuildId"] as? String ?? "").caseInsensitiveCompare(build) == .orderedSame
+            && !disk.isEmpty
+            && (deployment["diskArtifactSha256"] as? String ?? "").caseInsensitiveCompare(disk) == .orderedSame
+            && !game.isEmpty
+            && (deployment["gameAssemblySha256"] as? String ?? "").caseInsensitiveCompare(game) == .orderedSame
+    }
+
+    private func resetActionTail(for sessionId: String) {
+        actionSessionId = sessionId
+        actionSessionAdmitted = false
+        actionLineRemainder = ""
+        keyEventRemainder = ""
+        offset = 0
+        textView.textStorage?.setAttributedString(NSAttributedString())
+        keyEventsTextView.textStorage?.setAttributedString(keyEventsHeader())
+    }
+
+    private func invalidateActionTail() {
+        actionSessionId = nil
+        actionSessionAdmitted = false
+        actionLineRemainder = ""
+        keyEventRemainder = ""
+        offset = 0
+        textView.textStorage?.setAttributedString(NSAttributedString())
+        keyEventsTextView.textStorage?.setAttributedString(keyEventsHeader())
+    }
+
+    private func sessionBoundChunk(_ chunk: String) -> String {
+        guard let sessionId = actionSessionId, !sessionId.isEmpty else { return "" }
+        let combined = actionLineRemainder + chunk
+        var lines = combined.components(separatedBy: "\n")
+        if combined.hasSuffix("\n") {
+            actionLineRemainder = ""
+            if lines.last?.isEmpty == true { lines.removeLast() }
+        } else {
+            actionLineRemainder = lines.popLast() ?? ""
+        }
+        var selected: [String] = []
+        for line in lines {
+            if line.hasPrefix("=== SESSION ") && line.hasSuffix(" ===") {
+                actionSessionAdmitted = line.contains(" id \(sessionId) build ")
+                continue
+            }
+            if actionSessionAdmitted { selected.append(line) }
+        }
+        return selected.isEmpty ? "" : selected.joined(separator: "\n") + "\n"
+    }
+
+    private func tailSessionActions() {
+        guard actionSessionId != nil else { return }
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: logPath),
+              let size = attrs[.size] as? NSNumber else { return }
+        let length = size.uint64Value
+        if length < offset {
+            offset = 0
+            actionSessionAdmitted = false
+            actionLineRemainder = ""
+        }
+        guard length > offset, let handle = FileHandle(forReadingAtPath: logPath) else { return }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: offset)
+            let data = handle.readDataToEndOfFile()
+            offset += UInt64(data.count)
+            guard let raw = String(data: data, encoding: .utf8), !raw.isEmpty else { return }
+            let chunk = sessionBoundChunk(raw)
+            guard !chunk.isEmpty else { return }
+            textView.textStorage?.append(coloredLog(chunk))
+            if let storage = textView.textStorage, storage.length > 750_000 {
+                storage.deleteCharacters(in: NSRange(location: 0, length: min(150_000, storage.length)))
+            }
+            textView.scrollToEndOfDocument(nil)
+            let keyChunk = keyEventChunk(chunk)
+            if !keyChunk.isEmpty {
+                keyEventsTextView.textStorage?.append(coloredLog(keyChunk))
+                if let storage = keyEventsTextView.textStorage, storage.length > 500_000 {
+                    let headerLength = keyEventsHeader().length
+                    let removable = max(0, min(100_000, storage.length - headerLength))
+                    if removable > 0 {
+                        storage.deleteCharacters(in: NSRange(location: headerLength, length: removable))
+                    }
+                }
+                keyEventsTextView.scrollToEndOfDocument(nil)
+            }
+        } catch { }
+    }
+
+    private func rootTransactionState(_ state: [String: Any]) -> String {
+        let root = state["mutationRoot"] as? [String: Any] ?? [:]
+        let rootId = number(root, "id")
+        let rootState = (root["state"] as? String ?? "").lowercased()
+        let decisionEpoch = state["gameEpochFingerprint"] as? String ?? ""
+        let rootEpoch = root["epochFingerprint"] as? String ?? ""
+        if number(root, "quarantinedSteps") > 0 || rootState.contains("quarant")
+            || !decisionEpoch.isEmpty && !rootEpoch.isEmpty && decisionEpoch != rootEpoch {
+            return "Quarantined"
+        }
+        if !(state["automationTransactionError"] as? String ?? "").isEmpty { return "Error" }
+        if number(root, "pendingSteps") > 0 || rootState == "open" || rootState == "pending" {
+            return "Pending"
+        }
+        if rootId <= 0 || rootState.isEmpty || rootState == "not-planned" || rootState == "held" {
+            return "Held"
+        }
+        return (state["automationTransactionComplete"] as? Bool ?? false)
+            ? "Committed" : "Pending"
     }
 
     private func updateSummary(_ state: [String: Any]) {
@@ -399,8 +527,59 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthSafetyBlockReason = state["rebirthSafetyBlockReason"] as? String ?? ""
         let challengeEvidence = state["challengeEvidenceSummary"] as? String
             ?? "No challenge-admission evidence was emitted."
-        let transactionComplete = state["automationTransactionComplete"] as? Bool ?? false
         let transactionError = state["automationTransactionError"] as? String ?? ""
+        let transactionState = rootTransactionState(state)
+        let mutationRoot = state["mutationRoot"] as? [String: Any] ?? [:]
+        let rootId = optionalNonnegativeInt(mutationRoot, "id").flatMap { $0 > 0 ? $0 : nil }
+        let rootNativeState = mutationRoot["state"] as? String ?? "Unavailable"
+        let decisionEpoch = state["gameEpochFingerprint"] as? String ?? ""
+        let rootEpoch = mutationRoot["epochFingerprint"] as? String ?? ""
+        let rootEpochMatch = !decisionEpoch.isEmpty && !rootEpoch.isEmpty
+            ? decisionEpoch == rootEpoch : nil
+        let rootCounts = [
+            countLabel(mutationRoot, "committedSteps", "committed"),
+            countLabel(mutationRoot, "pendingSteps", "pending"),
+            countLabel(mutationRoot, "rejectedSteps", "rejected"),
+            countLabel(mutationRoot, "quarantinedSteps", "quarantined")
+        ].compactMap { $0 }.joined(separator: " · ")
+        let authorityStage = state["authorityStage"] as? String ?? "Unavailable"
+        let authoritySummary = stagedAuthoritySummary(state)
+        let scheduler = state["globalScheduler"] as? [String: Any] ?? [:]
+        let schedulerStatus = scheduler["status"] as? String ?? "Unavailable"
+        let schedulerAuthority = scheduler["authority"] as? String ?? "Unavailable"
+        let schedulerAction = nonempty(scheduler["action"] as? String) ?? "Unavailable"
+        let schedulerActionId = nonempty(scheduler["actionId"] as? String)
+        let schedulerEvent = nonempty(scheduler["nextEvent"] as? String) ?? "Unavailable"
+        let schedulerEventId = nonempty(scheduler["eventId"] as? String)
+        let schedulerProvenance = nonempty(scheduler["provenance"] as? String)
+        let schedulerSamples = optionalNonnegativeInt(scheduler, "sampleCount")
+        let schedulerConfidence = optionalUnitDouble(scheduler, "confidence")
+        let schedulerEvidence = evidenceLabel(
+            provenance: schedulerProvenance, samples: schedulerSamples,
+            confidence: schedulerConfidence)
+        let schedulerBlocker = nonempty(scheduler["blocker"] as? String)
+        let schedulerBlockerDetail = nonempty(scheduler["blockerDetail"] as? String)
+        let schedulerHashes = ["snapshotHash", "modelHash", "objectiveHash"].map {
+            shortHash(scheduler[$0] as? String)
+        }.joined(separator: " / ")
+        let schedulerStats = "mean \(availableEstimate(optionalNonnegativeDouble(scheduler, "meanSeconds"))), p50 \(availableEstimate(optionalNonnegativeDouble(scheduler, "p50Seconds"))), p90 \(availableEstimate(optionalNonnegativeDouble(scheduler, "p90Seconds"))); lower \(availableEstimate(optionalNonnegativeDouble(scheduler, "lowerBoundSeconds"))), gap \(availableEstimate(optionalNonnegativeDouble(scheduler, "gapSeconds"))), regret \(availableEstimate(optionalNonnegativeDouble(scheduler, "regretSeconds")))"
+        let difficultyValue = optionalNonnegativeInt(state, "difficulty")
+        let difficultyCurrent = difficultyName(difficultyValue)
+        let difficultyTarget = firstNonempty(state,
+            ["difficultyTarget", "nextDifficulty", "difficultyTransitionTarget"])
+        let difficultyETA = firstOptionalSeconds(state,
+            ["difficultyEtaSeconds", "difficultyTransitionEtaSeconds"])
+        let difficultyBlocker = firstNonempty(state,
+            ["difficultyBlocker", "difficultyTransitionReason"])
+        let challengeClearETA = firstOptionalSeconds(state,
+            ["nextChallengeEtaSeconds", "challengeEtaSeconds", "challengePessimisticClearSeconds"])
+        let challengeRecoveryETA = firstOptionalSeconds(state, ["challengeRecoveryEtaSeconds"])
+        let endObjective = nonempty(state["endgameObjective"] as? String) ?? "Unavailable"
+        let endMissing = nonempty(state["endgameMissingSummary"] as? String) ?? "Unavailable"
+        let endReady = state["endgameReadyToTrigger"] as? Bool
+        let endAuthorized = state["endgameExecutionAuthorized"] as? Bool
+        let endState = endReady == true && endAuthorized == true ? "Pending"
+            : endReady == false || endAuthorized == false ? "Held" : "Unavailable"
         let producerPid = number(state, "producerPid")
         let producerSession = state["producerSessionId"] as? String ?? "unavailable"
         let activeBuild = state["buildId"] as? String ?? "unavailable"
@@ -663,8 +842,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ? challengeEvidence.components(separatedBy: " | ").first ?? challengeEvidence
             : "NONE ADMITTED — \(challengeEvidence)"
         let transactionGlance = transactionError.isEmpty
-            ? transactionComplete ? "complete" : "PARTIAL — no error detail emitted"
-            : "ERROR — \(transactionError)"
+            ? transactionState : "\(transactionState.uppercased()) — \(transactionError)"
         let shortBuild = String(activeBuild.prefix(12))
         let shortSession = String(producerSession.prefix(12))
         let shortDisk = String(diskHash.prefix(12))
@@ -686,6 +864,31 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ◆ REBIRTH: \(rebirthPolicy)\(noResetPolicy || rebirthExecutionHold ? "" : " — " + formatExactDuration(rebirthRemaining) + " remaining")
         ◆ CHALLENGE: \(challengeGlance)
         ◆ TRANSACTION: \(transactionGlance)
+
+        EXECUTION ENVELOPE — DEPLOYMENT + DECISION EPOCH
+        JOIN: BOUND — deployment PID/session/build/artifact hashes match this decision frame
+        DECISION EPOCH: \(shortHash(decisionEpoch))
+        ROOT: \(rootId.map { "#\($0)" } ?? "Unavailable") · \(rootNativeState) · epoch \(shortHash(rootEpoch)) (\(rootEpochMatch == true ? "matched" : rootEpochMatch == false ? "MISMATCH / QUARANTINED" : "unavailable"))
+        ROOT COUNTS: \(rootCounts.isEmpty ? "Unavailable" : rootCounts)
+        SESSION ACTION TAIL: bound only to \(shortSession); older and later session blocks are excluded
+        CAPACITY: \(capacitySummary(state))
+        AUTHORITY STAGE: \(authorityStage)
+        STAGED ROUTES: \(authoritySummary)
+
+        GLOBAL SCHEDULER — SHADOW ONLY
+        STATE: \(schedulerStatus) · AUTHORITY: \(schedulerAuthority) · can execute \((scheduler["canExecute"] as? Bool).map { $0 ? "yes" : "no" } ?? "Unavailable")
+        ACTION: \(schedulerAction)\(schedulerActionId.map { " · \($0)" } ?? "")
+        NEXT EVENT: \(schedulerEvent)\(schedulerEventId.map { " · \($0)" } ?? "")
+        HASHES S / M / O: \(schedulerHashes)
+        TERMINAL STATISTICS: \(schedulerStats)
+        EVIDENCE: \(schedulerEvidence)
+        BLOCKER: \(schedulerBlocker.map { $0 + (schedulerBlockerDetail.map { " — " + $0 } ?? "") } ?? "Unavailable")
+
+        PROGRESSION HORIZONS
+        REBIRTH: \(rebirthPolicy) — \(noResetPolicy || rebirthExecutionHold ? "ETA unavailable while held" : availableEstimate(Double(rebirthRemaining)))
+        CHALLENGE: \(challengeGlance) — clear \(availableEstimate(challengeClearETA.map(Double.init))), recovery \(availableEstimate(challengeRecoveryETA.map(Double.init)))
+        DIFFICULTY: \(difficultyCurrent)\(difficultyTarget.map { " → " + $0 } ?? "") — \(availableEstimate(difficultyETA.map(Double.init)))\(difficultyBlocker.map { " — " + $0 } ?? "")
+        END: \(endState) — p90 \(availableEstimate(optionalNonnegativeDouble(scheduler, "p90Seconds"))); objective \(endObjective); missing \(endMissing); evidence \(schedulerEvidence)
 
         REBIRTH DECISION — LIVE MODEL
         CURRENT POLICY: \(rebirthPolicy)
@@ -1026,6 +1229,111 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func number(_ object: [String: Any], _ key: String) -> Int {
         return (object[key] as? NSNumber)?.intValue ?? 0
+    }
+
+    private func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private func optionalNonnegativeDouble(_ object: [String: Any], _ key: String) -> Double? {
+        guard !(object[key] is Bool), let value = (object[key] as? NSNumber)?.doubleValue,
+              value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+
+    private func optionalUnitDouble(_ object: [String: Any], _ key: String) -> Double? {
+        guard let value = optionalNonnegativeDouble(object, key), value <= 1 else { return nil }
+        return value
+    }
+
+    private func optionalNonnegativeInt(_ object: [String: Any], _ key: String) -> Int? {
+        guard let value = optionalNonnegativeDouble(object, key) else { return nil }
+        return Int(value)
+    }
+
+    private func firstNonempty(_ object: [String: Any], _ keys: [String]) -> String? {
+        for key in keys {
+            if let value = nonempty(object[key] as? String) { return value }
+        }
+        return nil
+    }
+
+    private func firstOptionalSeconds(_ object: [String: Any], _ keys: [String]) -> Int? {
+        for key in keys {
+            if let value = optionalNonnegativeInt(object, key) { return value }
+        }
+        return nil
+    }
+
+    private func countLabel(_ object: [String: Any], _ key: String, _ label: String) -> String? {
+        guard let value = optionalNonnegativeInt(object, key) else { return nil }
+        return "\(label) \(groupedInteger(value))"
+    }
+
+    private func shortHash(_ value: String?) -> String {
+        guard let value = nonempty(value) else { return "Unavailable" }
+        return String(value.prefix(12))
+    }
+
+    private func availableEstimate(_ seconds: Double?) -> String {
+        guard let seconds = seconds, seconds.isFinite, seconds >= 0 else { return "Unavailable" }
+        return formatEstimate(Int(seconds.rounded()))
+    }
+
+    private func evidenceLabel(provenance: String?, samples: Int?, confidence: Double?) -> String {
+        guard let provenance = nonempty(provenance), provenance.lowercased() != "unknown"
+        else { return "Unavailable" }
+        var parts = [provenance]
+        if let samples = samples { parts.append("\(groupedInteger(samples)) samples") }
+        if let confidence = confidence {
+            parts.append(String(format: "%.1f%% confidence", confidence * 100))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func stagedAuthoritySummary(_ state: [String: Any]) -> String {
+        guard let staged = state["stagedAuthority"] as? [String: Any] else {
+            return "Unavailable"
+        }
+        let routes: [(String, String)] = [
+            ("verifiedReversible", "reversible"),
+            ("permanentPurchases", "purchases"),
+            ("moneyPit", "Money Pit"),
+            ("challenges", "challenges"),
+            ("difficulty", "difficulty"),
+            ("titan1Through12", "T1–12"),
+            ("titan13Through14", "T13–14"),
+            ("move69", "MOVE69"),
+            ("endSequence", "END")
+        ]
+        return routes.map { key, label in
+            let status = staged[key] as? Bool
+            return "\(label) \(status == true ? "enabled" : status == false ? "HELD" : "Unavailable")"
+        }.joined(separator: " · ")
+    }
+
+    private func capacitySummary(_ state: [String: Any]) -> String {
+        guard let total = optionalNonnegativeInt(state, "inventoryTotalSlots"),
+              let free = optionalNonnegativeInt(state, "inventoryFreeSlots") else {
+            return "Unavailable"
+        }
+        let used = optionalNonnegativeInt(state, "inventoryUsedSlots")
+        let reserve = optionalNonnegativeInt(state, "collectionRequiredFreeReserve")
+        let margin = reserve.map { free - $0 }
+        let status = margin.map { $0 < 0 ? "HELD" : "available" } ?? "observed"
+        return "\(status) — \(used.map(String.init) ?? "Unavailable")/\(total) used, \(free) free; reserve \(reserve.map(String.init) ?? "Unavailable"), margin \(margin.map(String.init) ?? "Unavailable"); provenance live counters, exact delivery proof Unavailable"
+    }
+
+    private func difficultyName(_ value: Int?) -> String {
+        guard let value = value else { return "Unavailable" }
+        switch value {
+        case 0: return "Normal"
+        case 1: return "Evil"
+        case 2: return "Sadistic"
+        default: return "Unavailable"
+        }
     }
 
     private func expPurchaseName(_ decision: String) -> String {

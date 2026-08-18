@@ -4,11 +4,10 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Xml.Serialization;
+using System.Threading;
 using NGUInjector.AllocationProfiles.BreakpointTypes;
 using NGUInjector.AllocationProfiles.RebirthStuff;
 using NGUInjector.Managers;
-using SimpleJSON;
 using UnityEngine;
 
 /*
@@ -24,7 +23,10 @@ namespace NGUInjector.AllocationProfiles
     [Serializable]
     internal class CustomAllocation : AllocationProfile
     {
+        private static long _installationVersionClock;
         private BreakpointWrapper _wrapper;
+        private readonly AllocationPlanSlot _planSlot = new AllocationPlanSlot();
+        private long _materializedPlanVersion;
         private AllocationBreakPoint _currentMagicBreakpoint;
         private AllocationBreakPoint _currentEnergyBreakpoint;
         private AllocationBreakPoint _currentR3Breakpoint;
@@ -49,6 +51,12 @@ namespace NGUInjector.AllocationProfiles
             = "Resource 3 allocation has not completed a verified sweep yet";
 
         internal bool IsAllocationRunning;
+        internal long InstalledPlanVersion => _planSlot.Current == null
+            ? 0
+            : _planSlot.Current.InstallationVersion;
+        internal string InstalledPlanFingerprint => _planSlot.Current == null
+            ? string.Empty
+            : _planSlot.Current.Fingerprint;
 
         public CustomAllocation(string profilesDir, string profile)
         {
@@ -58,250 +66,235 @@ namespace NGUInjector.AllocationProfiles
 
         internal void ReloadAllocation()
         {
-            if (File.Exists(_allocationPath))
-            {
-                try
-                {
-                    var text = File.ReadAllText(_allocationPath);
-                    var parsed = JSON.Parse(text);
-                    var breakpoints = parsed["Breakpoints"];
-                    _wrapper = new BreakpointWrapper {Breakpoints = new Breakpoints()};
-                    var rb = breakpoints["Rebirth"];
-                    var rbtime = breakpoints["RebirthTime"];
-                    var hasRebirthObject = rb != null && rb.IsObject && rb["Type"] != null
-                                           && !string.IsNullOrEmpty(rb["Type"].Value);
-                    var allocationRebirthTime = !hasRebirthObject ? (int)ParseTime(rbtime) :
-                        rb["Type"] != null && rb["Type"].Value.ToUpper() == "TIME" ? (int)ParseTime(rb["Target"]) : -1;
-                    if (!hasRebirthObject)
-                    {
-                        _wrapper.Breakpoints.Rebirth = allocationRebirthTime <= 0
-                            ? (BaseRebirth)new NoRebirth()
-                            : BaseRebirth.CreateRebirth(allocationRebirthTime, "time", new string[0]);
-                    }
-                    else
-                    {
-                        if (rb["Type"] == null || rb["Target"] == null)
-                            _wrapper.Breakpoints.Rebirth = new NoRebirth();
-
-                        var type = rb["Type"].Value.ToUpper();
-                        var target = type == "TIME" ? ParseTime(rb["Target"]) : rb["Target"].AsDouble;
-                        _wrapper.Breakpoints.Rebirth = BaseRebirth.CreateRebirth(target, type, rb["Challenges"].AsArray.Children.Select(x => x.Value.ToUpper()).ToArray());
-                    }
-
-                    _wrapper.Breakpoints.Magic = breakpoints["Magic"].Children.Select(bp => new AllocationBreakPoint
-                    {
-                        Time = ParseTime(bp["Time"]),
-                        Priorities = BaseBreakpoint.ParseBreakpointArray(bp["Priorities"].AsArray.Children.Select(x => x.Value.ToUpper())
-                            .ToArray(), ResourceType.Magic, allocationRebirthTime).Where(x => x != null).ToArray()
-                    }).OrderByDescending(x => x.Time).ToArray();
-
-                    _wrapper.Breakpoints.Energy = breakpoints["Energy"].Children.Select(bp => new AllocationBreakPoint
-                    {
-                        Time = ParseTime(bp["Time"]),
-                        Priorities = BaseBreakpoint.ParseBreakpointArray(bp["Priorities"].AsArray.Children.Select(x => x.Value.ToUpper())
-                            .ToArray(), ResourceType.Energy, allocationRebirthTime).Where(x => x != null).ToArray()
-                    }).OrderByDescending(x => x.Time).ToArray();
-
-                    _wrapper.Breakpoints.R3 = breakpoints["R3"].Children.Select(bp => new AllocationBreakPoint
-                    {
-                        Time = ParseTime(bp["Time"]),
-                        Priorities = BaseBreakpoint.ParseBreakpointArray(bp["Priorities"].AsArray.Children.Select(x => x.Value.ToUpper())
-                            .ToArray(), ResourceType.R3, allocationRebirthTime).Where(x => x != null).ToArray()
-                    }).OrderByDescending(x => x.Time).ToArray();
-
-                    _wrapper.Breakpoints.Gear = breakpoints["Gear"].Children
-                        .Select(bp => new GearBreakpoint
-                        {
-                            Time = ParseTime(bp["Time"]),
-                            Gear = bp["ID"].AsArray.Children.Select(x => x.AsInt).ToArray()
-                        })
-                        .OrderByDescending(x => x.Time).ToArray();
-
-                    _wrapper.Breakpoints.Diggers = breakpoints["Diggers"].Children
-                        .Select(bp => new DiggerBreakpoint
-                        {
-                            Time = ParseTime(bp["Time"]),
-                            Diggers = bp["List"].AsArray.Children.Select(x => x.AsInt).ToArray()
-                        }).OrderByDescending(x => x.Time).ToArray();
-
-                    _wrapper.Breakpoints.Wandoos = breakpoints["Wandoos"].Children
-                        .Select(bp => new WandoosBreakpoint {Time = ParseTime(bp["Time"]), OS = bp["OS"].AsInt})
-                        .OrderByDescending(x => x.Time).ToArray();
-
-                    _wrapper.Breakpoints.NGUBreakpoints = breakpoints["NGUDiff"].Children
-                        .Select(bp => new NGUDiffBreakpoint {Time = ParseTime(bp["Time"]), Diff = bp["Diff"].AsInt})
-                        .Where(x => x.Diff <= 2).OrderByDescending(x => x.Time).ToArray();
-
-
-                    Main.Log(BuildAllocationString());
-
-                    _currentDiggerBreakpoint = null;
-                    _currentEnergyBreakpoint = null;
-                    _currentGearBreakpoint = null;
-                    _currentWandoosBreakpoint = null;
-                    _currentMagicBreakpoint = null;
-                    _currentR3Breakpoint = null;
-                    _currentNguBreakpoint = null;
-
-                    this.DoAllocations();
-                }
-                catch (Exception e)
-                {
-                    Main.Log("Failed to load allocation file. Resave to reload");
-                    Main.Log(e.Message);
-                    Main.Log(e.StackTrace);
-                    _wrapper = new BreakpointWrapper
-                    {
-                        Breakpoints = new Breakpoints
-                        {
-                            Rebirth = new NoRebirth(), R3 = new AllocationBreakPoint[0],
-                            Diggers = new DiggerBreakpoint[0], Energy = new AllocationBreakPoint[0],
-                            Gear = new GearBreakpoint[0], Magic = new AllocationBreakPoint[0],
-                            NGUBreakpoints = new NGUDiffBreakpoint[0], Wandoos = new WandoosBreakpoint[0]
-                        }
-                    };
-
-                    _currentDiggerBreakpoint = null;
-                    _currentEnergyBreakpoint = null;
-                    _currentGearBreakpoint = null;
-                    _currentWandoosBreakpoint = null;
-                    _currentMagicBreakpoint = null;
-                    _currentR3Breakpoint = null;
-                    _currentNguBreakpoint = null;
-                }
-            }
-            else
-            {
-                var emptyAllocation = @"{
+            var emptyAllocation = @"{
     ""Breakpoints"": {
-      ""Magic"": [
-        {
-          ""Time"": 0,
-          ""Priorities"": []
-        }
-      ],
-      ""Energy"": [
-        {
-          ""Time"": 0,
-          ""Priorities"": []
-        }
-      ],
-    ""R3"": [
-        {
-          ""Time"": 0,
-          ""Priorities"": []
-        }
-      ],
-      ""Gear"": [
-        {
-          ""Time"": 0,
-          ""ID"": []
-        }
-      ],
-      ""Wandoos"": [
-        {
-          ""Time"": 0,
-          ""OS"": 0
-        }
-      ],
-      ""Diggers"": [
-        {
-          ""Time"": 0,
-          ""List"": []
-        }
-      ],
-      ""NGUDiff"": [
-        {
-          ""Time"": 0,
-          ""Diff"": 0
-        }
-      ],
+      ""Magic"": [{""Time"": 0, ""Priorities"": []}],
+      ""Energy"": [{""Time"": 0, ""Priorities"": []}],
+      ""R3"": [{""Time"": 0, ""Priorities"": []}],
+      ""Gear"": [{""Time"": 0, ""ID"": []}],
+      ""Wandoos"": [{""Time"": 0, ""OS"": 0}],
+      ""Diggers"": [{""Time"": 0, ""List"": []}],
+      ""NGUDiff"": [{""Time"": 0, ""Diff"": 0}],
       ""RebirthTime"": -1
     }
-  }
-        ";
+  }";
 
-                Main.Log("Created empty allocation profile. Please update allocation.json");
-                using (var writer = new StreamWriter(File.Open(_allocationPath, FileMode.CreateNew)))
-                {
-                    writer.WriteLine(emptyAllocation);
-                    writer.Flush();
-                }
-            }
-        }
-
-        private double ParseTime(JSONNode timeNode)
-        {
-            var time = 0;
-
-            if (timeNode.IsObject)
+            try
             {
-                foreach (var N in timeNode)
+                if (!File.Exists(_allocationPath))
                 {
-                    if (N.Value.IsNumber)
+                    Directory.CreateDirectory(Path.GetDirectoryName(_allocationPath));
+                    File.WriteAllText(_allocationPath, emptyAllocation);
+                    Main.Log("Created empty allocation profile. Please update allocation.json");
+                }
+
+                string text;
+                string readError;
+                if (!TryReadStable(_allocationPath, out text, out readError))
+                {
+                    RejectReload(readError);
+                    return;
+                }
+
+                string compileError;
+                if (!_planSlot.TryInstall(text, out compileError))
+                {
+                    // A watcher can observe the truncate/write interval used by many editors. The
+                    // currently installed plan and its durable shadow remain untouched on rejection.
+                    if (_planSlot.Current == null && File.Exists(LastGoodPath))
                     {
-                        switch (N.Key.ToLower())
+                        string lastGood;
+                        string shadowError;
+                        if (TryReadStable(LastGoodPath, out lastGood, out shadowError)
+                            && _planSlot.TryInstall(lastGood, out shadowError))
                         {
-                            case "h":
-                                time += 60 * 60 * N.Value.AsInt;
-                                break;
-                            case "m":
-                                time += 60 * N.Value.AsInt;
-                                break;
-                            case "s":
-                            default:
-                                time += N.Value.AsInt;
-                                break;
+                            AssignGlobalInstallationVersion();
+                            Main.Log("Allocation source was invalid; restored last-good plan v"
+                                     + InstalledPlanVersion + " from durable shadow: " + compileError);
+                            return;
                         }
                     }
+                    RejectReload(compileError);
+                    return;
                 }
-            }
 
-            if (timeNode.IsNumber)
+                AssignGlobalInstallationVersion();
+                try
+                {
+                    PersistLastGood(text);
+                }
+                catch (Exception shadowError)
+                {
+                    // The in-memory candidate is already proven and remains usable. File.Replace
+                    // leaves the prior durable plan intact, so a shadow I/O failure is observable
+                    // but cannot destroy either last-good copy.
+                    Main.Log("Allocation plan v" + InstalledPlanVersion
+                             + " installed; durable last-good shadow retained its prior version: "
+                             + shadowError.Message);
+                }
+                Main.Log(BuildAllocationString(_planSlot.Current));
+                // Deliberately do not materialize breakpoints or execute DoAllocations here.
+                // Full-mode execution lazily installs the version on its first coordinated sweep;
+                // dry-run/assist startup and hot reload therefore invoke zero game controllers.
+            }
+            catch (Exception error)
             {
-                time = timeNode.AsInt;
+                RejectReload(error.GetType().Name + ": " + error.Message);
             }
-
-            return time;
         }
 
-        private string BuildAllocationString()
+        private string LastGoodPath => _allocationPath + ".last-good";
+
+        private void RejectReload(string error)
+        {
+            Main.Log("Rejected allocation reload; retaining last-good memory/disk plan v"
+                     + InstalledPlanVersion + ": " + error);
+        }
+
+        private void AssignGlobalInstallationVersion()
+        {
+            _planSlot.Current.InstallationVersion = Interlocked.Increment(ref _installationVersionClock);
+        }
+
+        private static bool TryReadStable(string path, out string text, out string error)
+        {
+            text = string.Empty;
+            error = string.Empty;
+            try
+            {
+                var before = new FileInfo(path);
+                before.Refresh();
+                var beforeLength = before.Length;
+                var beforeWrite = before.LastWriteTimeUtc;
+                text = File.ReadAllText(path);
+                var after = new FileInfo(path);
+                after.Refresh();
+                if (beforeLength != after.Length || beforeWrite != after.LastWriteTimeUtc)
+                {
+                    error = "allocation file changed while it was being read";
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception readError)
+            {
+                error = "allocation file read failed: " + readError.Message;
+                return false;
+            }
+        }
+
+        private void PersistLastGood(string text)
+        {
+            var temporary = LastGoodPath + ".tmp";
+            File.WriteAllText(temporary, text);
+            if (File.Exists(LastGoodPath))
+                File.Replace(temporary, LastGoodPath, null);
+            else
+                File.Move(temporary, LastGoodPath);
+        }
+
+        private bool EnsureRuntimePlan()
+        {
+            var plan = _planSlot.Current;
+            if (plan == null) return false;
+            if (_materializedPlanVersion == plan.InstallationVersion && _wrapper != null) return true;
+
+            try
+            {
+                var candidate = BuildRuntimeWrapper(plan);
+                _wrapper = candidate;
+                _materializedPlanVersion = plan.InstallationVersion;
+                ResetRuntimeBreakpointState();
+                Main.Log("Materialized allocation plan v" + _materializedPlanVersion
+                         + " (" + plan.Fingerprint + ") for coordinated execution");
+                return true;
+            }
+            catch (Exception error)
+            {
+                Main.Log("Rejected runtime materialization for allocation plan v"
+                         + plan.InstallationVersion + ": " + error.Message);
+                return _wrapper != null;
+            }
+        }
+
+        private static BreakpointWrapper BuildRuntimeWrapper(CompiledAllocationPlan plan)
+        {
+            var allocationRebirthTime = plan.Rebirth.Type == "TIME" ? (int)plan.Rebirth.Target : -1;
+            BaseRebirth rebirth;
+            if (plan.Rebirth.UsesLegacyTime && allocationRebirthTime <= 0)
+                rebirth = new NoRebirth();
+            else
+                rebirth = BaseRebirth.CreateRebirth(plan.Rebirth.Target, plan.Rebirth.Type,
+                    plan.Rebirth.Challenges);
+
+            return new BreakpointWrapper
+            {
+                Breakpoints = new Breakpoints
+                {
+                    Rebirth = rebirth,
+                    Energy = BuildResourceBreakpoints(plan.Energy, ResourceType.Energy, allocationRebirthTime),
+                    Magic = BuildResourceBreakpoints(plan.Magic, ResourceType.Magic, allocationRebirthTime),
+                    R3 = BuildResourceBreakpoints(plan.R3, ResourceType.R3, allocationRebirthTime),
+                    Gear = plan.Gear.Select(x => new GearBreakpoint {Time = x.Time, Gear = x.Gear}).ToArray(),
+                    Diggers = plan.Diggers.Select(x => new DiggerBreakpoint {Time = x.Time, Diggers = x.Diggers}).ToArray(),
+                    Wandoos = plan.Wandoos.Select(x => new WandoosBreakpoint {Time = x.Time, OS = x.OS}).ToArray(),
+                    NGUBreakpoints = plan.NguDifficulties.Select(x => new NGUDiffBreakpoint
+                        {Time = x.Time, Diff = x.Difficulty}).ToArray()
+                }
+            };
+        }
+
+        private static AllocationBreakPoint[] BuildResourceBreakpoints(
+            IEnumerable<AllocationResourcePlan> plans, ResourceType type, int rebirthTime)
+        {
+            return plans.Select(x => new AllocationBreakPoint
+            {
+                Time = x.Time,
+                Priorities = BaseBreakpoint.ParseBreakpointArray(x.Priorities, type, rebirthTime)
+                    .Where(priority => priority != null).ToArray()
+            }).ToArray();
+        }
+
+        private void ResetRuntimeBreakpointState()
+        {
+            _currentDiggerBreakpoint = null;
+            _currentEnergyBreakpoint = null;
+            _currentGearBreakpoint = null;
+            _currentWandoosBreakpoint = null;
+            _currentMagicBreakpoint = null;
+            _currentR3Breakpoint = null;
+            _currentNguBreakpoint = null;
+            _hasGearSwapped = false;
+            _hasDiggerSwapped = false;
+            _hasWandoosSwapped = false;
+            _hasNGUSwapped = false;
+        }
+
+        private string BuildAllocationString(CompiledAllocationPlan plan)
         {
             var builder = new StringBuilder();
-            builder.AppendLine($"Loaded Custom Allocation from profile '{_profileName}'");
-            builder.AppendLine($"{_wrapper.Breakpoints.Energy.Length} Energy Breakpoints");
-            builder.AppendLine($"{_wrapper.Breakpoints.Magic.Length} Magic Breakpoints");
-            builder.AppendLine($"{_wrapper.Breakpoints.R3.Length} R3 Breakpoints");
-            builder.AppendLine($"{_wrapper.Breakpoints.Gear.Length} Gear Breakpoints");
-            builder.AppendLine($"{_wrapper.Breakpoints.Diggers.Length} Digger Breakpoints");
-            builder.AppendLine($"{_wrapper.Breakpoints.Wandoos.Length} Wandoos Breakpoints");
-            builder.AppendLine($"{_wrapper.Breakpoints.NGUBreakpoints.Length} NGU Difficulty Breakpoints");
-            var rb = _wrapper.Breakpoints.Rebirth;
-            if (rb is NoRebirth)
-            {
-                builder.AppendLine($"Rebirth Disabled.");
-            }else if (rb is NumberRebirth nrb)
-            {
-                builder.AppendLine($"Rebirthing when number bonus is {nrb.MultTarget}x previous number");
-            }else if (rb is TimeRebirth trb)
-            {
-                builder.AppendLine($"Rebirthing at {trb.RebirthTime} seconds");
-            }else if (rb is BossNumRebirth brb)
-            {
-                builder.AppendLine($"Rebirthing when number allows you +{brb.NumBosses} bosses");
-            }
-
-            if (rb.ChallengeTargets != null && rb.ChallengeTargets.Length > 0)
-            {
-                builder.AppendLine(
-                    $"Challenge targets: {string.Join(",", rb.ChallengeTargets.Select(x => x.ToString()).ToArray())}");
-            }
+            builder.AppendLine("Loaded Custom Allocation from profile '" + _profileName + "' as plan v"
+                               + plan.InstallationVersion + " (" + plan.Fingerprint + ")");
+            builder.AppendLine(plan.Energy.Length + " Energy Breakpoints");
+            builder.AppendLine(plan.Magic.Length + " Magic Breakpoints");
+            builder.AppendLine(plan.R3.Length + " R3 Breakpoints");
+            builder.AppendLine(plan.Gear.Length + " Gear Breakpoints");
+            builder.AppendLine(plan.Diggers.Length + " Digger Breakpoints");
+            builder.AppendLine(plan.Wandoos.Length + " Wandoos Breakpoints");
+            builder.AppendLine(plan.NguDifficulties.Length + " NGU Difficulty Breakpoints");
+            builder.AppendLine(plan.Rebirth.UsesLegacyTime && plan.Rebirth.Target <= 0
+                ? "Rebirth Disabled."
+                : "Rebirth " + plan.Rebirth.Type + " target " + plan.Rebirth.Target);
+            if (plan.Rebirth.Challenges.Length > 0)
+                builder.AppendLine("Challenge targets: " + string.Join(",", plan.Rebirth.Challenges));
 
             return builder.ToString();
         }
 
         internal void SwapNGUDiff()
         {
+            if (!EnsureRuntimePlan())
+                return;
             var bp = GetCurrentNGUDiffBreakpoint();
             if (bp == null)
                 return;
@@ -345,6 +338,8 @@ namespace NGUInjector.AllocationProfiles
 
         internal void SwapOS()
         {
+            if (!EnsureRuntimePlan())
+                return;
             var bp = GetCurrentWandoosBreakpoint();
             if (bp == null)
                 return;
@@ -399,7 +394,7 @@ namespace NGUInjector.AllocationProfiles
 
         public void DoRebirth()
         {
-            if (_wrapper == null)
+            if (!EnsureRuntimePlan())
                 return;
 
             if (_wrapper.Breakpoints.Rebirth.RebirthAvailable())
@@ -417,13 +412,7 @@ namespace NGUInjector.AllocationProfiles
 
             if (_wrapper.Breakpoints.Rebirth.DoRebirth())
             {
-                _currentDiggerBreakpoint = null;
-                _currentEnergyBreakpoint = null;
-                _currentGearBreakpoint = null;
-                _currentWandoosBreakpoint = null;
-                _currentMagicBreakpoint = null;
-                _currentR3Breakpoint = null;
-                _currentNguBreakpoint = null;
+                ResetRuntimeBreakpointState();
             }
         }
 
@@ -434,6 +423,8 @@ namespace NGUInjector.AllocationProfiles
 
         public void CastBloodSpells(bool rebirth)
         {
+            if (!EnsureRuntimePlan())
+                return;
             if (!Main.Settings.CastBloodSpells && !Main.AutopilotWants(x => x.ManageBloodMagic))
                 return;
 
@@ -543,7 +534,7 @@ namespace NGUInjector.AllocationProfiles
 
         public override void AllocateEnergy()
         {
-            if (_wrapper == null)
+            if (!EnsureRuntimePlan())
                 return;
 
             var bp = GetCurrentBreakpoint(true);
@@ -709,7 +700,7 @@ namespace NGUInjector.AllocationProfiles
 
         public override void AllocateMagic()
         {
-            if (_wrapper == null)
+            if (!EnsureRuntimePlan())
                 return;
 
             var bp = GetCurrentBreakpoint(false);
@@ -822,7 +813,7 @@ namespace NGUInjector.AllocationProfiles
 
         public override void AllocateR3()
         {
-            if (_wrapper == null)
+            if (!EnsureRuntimePlan())
                 return;
 
             var bp = GetCurrentR3Breakpoint();
@@ -880,7 +871,7 @@ namespace NGUInjector.AllocationProfiles
 
         public override void EquipGear()
         {
-            if (_wrapper == null)
+            if (!EnsureRuntimePlan())
                 return;
             var bp = GetCurrentGearBreakpoint();
             if (bp == null)
@@ -902,7 +893,7 @@ namespace NGUInjector.AllocationProfiles
 
         public override void EquipDiggers()
         {
-            if (_wrapper == null)
+            if (!EnsureRuntimePlan())
                 return;
             var bp = GetCurrentDiggerBreakpoint();
             if (bp == null)

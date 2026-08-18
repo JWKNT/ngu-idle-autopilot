@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using NGUInjector.Autopilot;
 
 /*
 FILE PURPOSE
@@ -22,9 +23,18 @@ namespace NGUInjector.Managers
         internal int ProjectedNewSlots;
         internal int RequiredFreeReserve;
         internal int IncompleteZones;
+        internal int RemainingContribution;
+        internal int OwnedInDaycare;
+        internal int MergeServiceBacklog;
+        internal int ReferenceProtectedCopies;
+        internal int UsableInventoryFreeSlots;
+        internal bool CapacityAdmitted;
+        internal bool OnlineOnly = true;
         internal double UsefulBoostDebt;
         internal double UsefulBoostGain;
+        internal double SetRewardNativeMagnitude;
         internal string UsefulBoostTarget = string.Empty;
+        internal string CadenceSignature = string.Empty;
         internal double ObservedKillSeconds = -1.0;
         internal double ExpectedTargetDropSeconds = -1.0;
         internal double TargetDropConfidenceSeconds = -1.0;
@@ -42,55 +52,7 @@ namespace NGUInjector.Managers
     // only useful Adventure target.
     internal static class AdventureCollectionPlanner
     {
-        // Immutable drop-source data audited from LootDrop.zone*Drop in the shipped
-        // Assembly-CSharp.  At runtime we additionally require ItemNameDesc.type to
-        // be actual equipment, so misc/secret consumables in these tables can never
-        // become collection targets by accident.
-        private static readonly Dictionary<int, int[]> ZoneLootIds = new Dictionary<int, int[]>
-        {
-            {0, new[] {120, 75, 62, 65, 64, 63}},
-            {1, new[] {40, 41, 42, 43, 44, 45, 46, 77, 278}},
-            {2, new[] {135, 47, 48, 49, 50, 51, 52, 53, 432, 281}},
-            {3, new[] {54, 55, 56, 57, 58, 59, 60, 61, 53, 433}},
-            {4, new[] {66, 67, 172, 53, 434}},
-            {5, new[] {68, 69, 70, 71, 72, 73, 74, 53, 66, 435, 283}},
-            {7, new[] {85, 86, 87, 88, 89, 90, 91, 66, 436, 368}},
-            {9, new[] {95, 96, 97, 98, 99, 100, 101, 437, 279}},
-            {10, new[] {103, 104, 105, 106, 107, 108, 109, 110, 66, 438}},
-            {12, new[] {122, 123, 124, 125, 126, 127, 66, 439, 282}},
-            {13, new[] {130, 131, 132, 133, 134, 339, 76, 440, 287}},
-            {15, new[] {143, 144, 145, 146, 147, 148, 76, 441, 367, 285}},
-            {17, new[] {164, 165, 166, 167, 168, 67, 128, 94, 163, 442}},
-            {18, new[] {173, 174, 175, 176, 177, 94, 163, 128, 178, 443}},
-            {20, new[] {221, 222, 223, 224, 225, 226, 227, 142, 444, 369, 280}},
-            {21, new[] {213, 214, 215, 216, 217, 218, 219, 220, 142, 445, 284}},
-            {22, new[] {231, 232, 233, 234, 235, 236, 142, 446, 370, 286}},
-            {24, new[] {251, 252, 253, 254, 255, 256, 257, 142, 128, 447}},
-            {25, new[] {258, 259, 260, 261, 262, 263, 264, 142, 128, 448}},
-            {27, new[] {301, 302, 303, 304, 305, 306, 307, 142, 128, 449}},
-            {28, new[] {308, 309, 310, 311, 312, 313, 314, 142, 128, 450}},
-            {29, new[] {315, 316, 317, 318, 319, 320, 321, 142, 128, 451, 371}},
-            {31, new[] {345, 346, 347, 348, 349, 350, 351, 170, 169, 452}},
-            {32, new[] {352, 353, 354, 355, 356, 357, 358, 229, 230}},
-            {33, new[] {359, 360, 361, 362, 363, 364, 365, 366, 229, 230}},
-            {35, new[] {392, 393, 394, 395, 396, 397, 398, 399, 229, 230}},
-            {36, new[] {400, 401, 402, 403, 404, 405, 406, 407, 229, 230}},
-            {37, new[] {408, 409, 410, 411, 412, 413, 414, 415, 229, 230}},
-            {39, new[] {453, 454, 455, 456, 457, 458, 459, 460, 295, 296}},
-            {40, new[] {496, 497, 498, 499, 500, 501, 502, 503, 295, 296}},
-            {41, new[] {461, 462, 463, 464, 465, 466, 467, 468, 295, 296}}
-        };
-
-        // Normal Bonus Accessories do not belong to the local zone set.  They must
-        // be seeded as known debt even before the first copy drops; merely looking at
-        // itemDropped would otherwise make the bot leave the zone forever.
-        private static readonly Dictionary<int, int> KnownBonusAccessory = new Dictionary<int, int>
-        {
-            {2, 432}, {3, 433}, {4, 434}, {5, 435}, {7, 436}, {9, 437},
-            {10, 438}, {12, 439}, {13, 440}, {15, 441}, {17, 442}, {18, 443},
-            {20, 444}, {21, 445}, {22, 446}, {24, 447}, {25, 448}, {27, 449},
-            {28, 450}, {29, 451}, {31, 452}
-        };
+        private static readonly CollectionCadenceLedger Cadence = new CollectionCadenceLedger();
 
         internal static AdventureCollectionTarget Evaluate(Character c, ZoneTarget front)
         {
@@ -142,6 +104,8 @@ namespace NGUInjector.Managers
             result.IsBackfill = selected.Zone < front.Zone;
             result.SetReward = selected.CoreSetIncomplete ? CoreSetReward(selected.Zone)
                 : "Core-set reward already claimed";
+            result.SetRewardNativeMagnitude = selected.CoreSetIncomplete
+                ? selected.SetRewardNativeMagnitude : 0.0;
             double usefulBoostDebt = 0.0;
             double usefulBoostGain = 0.0;
             string usefulBoostTarget = string.Empty;
@@ -163,10 +127,19 @@ namespace NGUInjector.Managers
             // MajorUnlockPlanner with source-audited probabilities.
             result.BossOnly = selected.OnlyBossExclusiveDebt && !needsNormalEnemyBoosts;
             result.RemainingItems = selected.RemainingItems;
+            result.RemainingContribution = selected.RemainingContribution;
             result.ProjectedNewSlots = selected.ProjectedNewSlots;
-            result.RequiredFreeReserve = Math.Min(8, Math.Max(3, selected.ProjectedNewSlots + 2));
+            result.OwnedInDaycare = selected.OwnedInDaycare;
+            result.MergeServiceBacklog = selected.MergeServiceBacklog;
+            result.ReferenceProtectedCopies = selected.ReferenceProtectedCopies;
+            result.RequiredFreeReserve = selected.Service == null
+                ? Math.Max(3, selected.WorstCaseTransientSlots + 2)
+                : selected.Service.Capacity.RequiredFreeSlots;
+            result.UsableInventoryFreeSlots = selected.Service == null
+                ? FreeInventorySlots(c) : selected.Service.UsableFreeSlots;
+            result.CapacityAdmitted = selected.Service != null && selected.Service.Capacity.Admitted;
             result.MissingSummary = selected.MissingSummary;
-            PopulateStochasticEvidence(c, result);
+            PopulateStochasticEvidence(c, result, selected);
             result.Reason = selected.CoreSetIncomplete
                 ? needsNormalEnemyBoosts
                     ? "Full-clearing for ordinary-enemy boosts while bosses advance the MAXX set: "
@@ -181,14 +154,14 @@ namespace NGUInjector.Managers
 
         internal static int FreeInventorySlots(Character c)
         {
-            return c == null || c.inventory == null || c.inventory.inventory == null
-                ? 0 : c.inventory.inventory.Count(x => x == null || x.id == 0);
+            var topology = InventoryManager.CaptureOrdinaryTopology(c);
+            return topology == null ? 0 : topology.UsableFreeSlotCount;
         }
 
         internal static int TotalInventorySlots(Character c)
         {
-            return c == null || c.inventory == null || c.inventory.inventory == null
-                ? 0 : c.inventory.inventory.Count;
+            var topology = InventoryManager.CaptureOrdinaryTopology(c);
+            return topology == null ? 0 : topology.UsableSlotCount;
         }
 
         internal static bool InventoryPressureHigh(Character c, AdventureCollectionTarget collection)
@@ -196,9 +169,8 @@ namespace NGUInjector.Managers
             var total = TotalInventorySlots(c);
             var free = FreeInventorySlots(c);
             if (total <= 0) return false;
-            // Remaining MAXX debt is not equivalent to required slots: another
-            // copy normally merges into an already-owned physical item. Reserve
-            // capacity only for missing physical IDs plus two drop/sweep buffers.
+            // Native admission never merges.  The source's exact per-call batch and two service
+            // buffers therefore remain reserved even when a physical merge target already exists.
             var debtReserve = collection == null ? 3 : Math.Max(3, collection.RequiredFreeReserve);
             return free <= Math.Max(debtReserve, (int)Math.Ceiling(total * .10));
         }
@@ -237,29 +209,15 @@ namespace NGUInjector.Managers
         {
             if (c == null || id <= 0) return true;
             if (!IsMaxxed(c, id)) return true;
-            foreach (var pair in ZoneLootIds)
-            {
-                if (!pair.Value.Contains(id)) continue;
-                if (HasCoreSet(pair.Key) && !CoreSetComplete(c, pair.Key))
-                    return true;
-            }
-            return false;
+            // One set member cannot advance another member's Item List flag. Once this exact ID
+            // is MAXXED, it is protected only when the source catalog cannot prove safe filtering.
+            return !LootSourceCatalog.IsKnownSafeExactFilterItem(id);
         }
 
         internal static bool IsKnownCompletedOrdinaryItem(Character c, int id)
         {
             if (c == null || id <= 0 || !IsMaxxed(c, id)) return false;
-            var knownSource = false;
-            foreach (var pair in ZoneLootIds)
-            {
-                if (!pair.Value.Contains(id)) continue;
-                knownSource = true;
-                if (HasCoreSet(pair.Key) && !CoreSetComplete(c, pair.Key))
-                    return false;
-            }
-            // Unknown-source and Titan equipment intentionally remains unfiltered:
-            // the optimizer cannot prove that a unique set/puzzle use is complete.
-            return knownSource;
+            return LootSourceCatalog.IsKnownSafeExactFilterItem(id);
         }
 
         internal static bool CoreSetComplete(Character c, int zone)
@@ -275,8 +233,8 @@ namespace NGUInjector.Managers
                 case 5: return list.HSBComplete;
                 case 7: return list.clockComplete;
                 case 9: return list.twoDComplete;
-                case 10: return list.gaudyComplete;
-                case 12: return list.ghostComplete;
+                case 10: return list.ghostComplete;
+                case 12: return list.gaudyComplete;
                 case 13: return list.megaComplete;
                 case 15: return list.beardverseComplete;
                 case 17: return list.badlyDrawnComplete;
@@ -298,54 +256,63 @@ namespace NGUInjector.Managers
                 case 39: return list.constructionComplete;
                 case 40: return list.duckComplete;
                 case 41: return list.netherComplete;
+                case 43: return list.pirateComplete;
                 default: return true;
             }
         }
 
         private static bool HasCoreSet(int zone)
         {
-            return zone != 4 && ZoneLootIds.ContainsKey(zone);
+            var source = LootSourceCatalog.OrdinaryZone(zone);
+            return source != null && source.HasCoreSet;
         }
 
         private static ZoneDebt DebtFor(Character c, int zone)
         {
-            var debt = new ZoneDebt {Zone = zone, CoreSetIncomplete = !CoreSetComplete(c, zone)};
+            var catalog = LootSourceCatalog.OrdinaryZone(zone);
+            var debt = new ZoneDebt
+            {
+                Zone = zone,
+                CoreSetIncomplete = !CoreSetComplete(c, zone),
+                WorstCaseTransientSlots = catalog == null ? 1 : catalog.WorstCaseTransientSlots,
+                SetRewardNativeMagnitude = catalog == null || catalog.SetReward == null
+                    ? 0.0 : catalog.SetReward.NativeProgressionMagnitude
+            };
+            if (catalog == null) return debt;
             var missing = new List<string>();
-            var missingIds = new HashSet<int>();
-            var physicallyOwned = PhysicalEquipmentIds(c);
-            int bonus;
-            if (KnownBonusAccessory.TryGetValue(zone, out bonus) && IsEquipment(c, bonus) && !IsMaxxed(c, bonus))
+            var states = new List<CollectionItemState>();
+            foreach (var source in catalog.Items().GroupBy(x => x.ItemId).Select(x => x.First()))
             {
-                missing.Add(ItemName(c, bonus));
-                missingIds.Add(bonus);
+                if (!IsEquipment(c, source.ItemId)) continue;
+                var copies = PhysicalCopiesFor(c, source.ItemId);
+                // Active/configured/native loadout contexts are mutually exclusive and need one
+                // survivor; every Daycare copy is simultaneous with that survivor.
+                var requiredCopies = 1
+                    + copies.Count(x => x.Location == CollectionPhysicalLocation.Daycare);
+                var state = CollectionItemState.Build(new CollectionItemObservation(
+                    source.ItemId, IsMaxxed(c, source.ItemId), IsDropped(c, source.ItemId),
+                    requiredCopies, copies.ToArray()), LootSourceCatalog.SourcesForItem(source.ItemId));
+                states.Add(state);
+                // itemDropped is deliberately not an availability gate. A source-known optional
+                // that has never rolled remains permanent MAXX debt until policy values it at zero.
+                if (!state.HasSourceBackedDebt) continue;
+                missing.Add(ItemName(c, source.ItemId));
             }
-
-            int[] ids;
-            if (ZoneLootIds.TryGetValue(zone, out ids))
-            {
-                foreach (var id in ids.Distinct())
-                {
-                    if (!IsEquipment(c, id) || IsMaxxed(c, id)) continue;
-                    // An incomplete core-set flag proves at least one listed set piece remains even
-                    // before its first physical drop. Enumerating those IDs gives inventory reserve
-                    // the real worst case instead of a synthetic single-slot placeholder. Optional
-                    // rares outside an incomplete set still require native itemDropped evidence.
-                    if (!debt.CoreSetIncomplete && !IsDropped(c, id)
-                        && (!KnownBonusAccessory.ContainsKey(zone) || KnownBonusAccessory[zone] != id))
-                        continue;
-                    var name = ItemName(c, id);
-                    if (!missing.Contains(name)) missing.Add(name);
-                    missingIds.Add(id);
-                }
-            }
-            debt.RemainingItems = missing.Count;
-            int bonusId;
-            debt.OnlyBossExclusiveDebt = !debt.CoreSetIncomplete
-                                         && KnownBonusAccessory.TryGetValue(zone, out bonusId)
-                                         && missingIds.Count > 0
-                                         && missingIds.All(id => id == bonusId)
-                                         && IsBossExclusive(c, zone, bonusId);
-            debt.ProjectedNewSlots = missingIds.Count(id => !physicallyOwned.Contains(id));
+            var outstanding = states.Where(x => x.HasSourceBackedDebt).ToList();
+            debt.Items = outstanding;
+            debt.RemainingItems = outstanding.Count;
+            debt.RemainingContribution = outstanding.Sum(x => x.RemainingContribution);
+            debt.ProjectedNewSlots = outstanding.Sum(x => x.ProjectedPersistentSlots);
+            debt.OwnedInDaycare = outstanding.Count(x => x.OwnedInDaycare);
+            debt.MergeServiceBacklog = outstanding.Sum(x => x.MergeServiceBacklog);
+            debt.ReferenceProtectedCopies = outstanding.Sum(x => x.ReferenceProtectedCopies);
+            // Neither currently audited ordinary branch is boss-exclusive. Zone 43 explicitly has
+            // separate normal and boss one-of-eight laws, so a full clear remains valid.
+            debt.OnlyBossExclusiveDebt = false;
+            var topology = InventoryManager.CaptureOrdinaryTopology(c);
+            if (topology != null)
+                debt.Service = new CollectionServiceState(topology, outstanding,
+                    debt.WorstCaseTransientSlots, 2);
             if (debt.CoreSetIncomplete && debt.RemainingItems == 0)
             {
                 // Fail closed if a future game version changes the set table without updating this
@@ -363,24 +330,56 @@ namespace NGUInjector.Managers
             return debt;
         }
 
-        private static HashSet<int> PhysicalEquipmentIds(Character c)
+        private static List<CollectionPhysicalCopy> PhysicalCopiesFor(Character c, int itemId)
         {
-            var result = new HashSet<int>();
+            var result = new List<CollectionPhysicalCopy>();
             if (c == null || c.inventory == null) return result;
-            Action<Equipment> add = item =>
+            Action<Equipment, CollectionPhysicalLocation, bool, int> add = (item, location, referenced, effective) =>
             {
-                if (item != null && item.id > 0) result.Add(item.id);
+                if (item == null || item.id != itemId) return;
+                result.Add(new CollectionPhysicalCopy(item.id, Math.Min(100, Math.Max(0, item.level)),
+                    Math.Min(100, Math.Max(item.level, effective)), location, item, referenced));
             };
-            add(c.inventory.head);
-            add(c.inventory.chest);
-            add(c.inventory.legs);
-            add(c.inventory.boots);
-            add(c.inventory.weapon);
-            add(c.inventory.weapon2);
+            add(c.inventory.head, CollectionPhysicalLocation.Equipped,
+                ProgressionLoadoutOptimizer.IsAuthoritativeItem(c.inventory.head), c.inventory.head == null ? 0 : c.inventory.head.level);
+            add(c.inventory.chest, CollectionPhysicalLocation.Equipped,
+                ProgressionLoadoutOptimizer.IsAuthoritativeItem(c.inventory.chest), c.inventory.chest == null ? 0 : c.inventory.chest.level);
+            add(c.inventory.legs, CollectionPhysicalLocation.Equipped,
+                ProgressionLoadoutOptimizer.IsAuthoritativeItem(c.inventory.legs), c.inventory.legs == null ? 0 : c.inventory.legs.level);
+            add(c.inventory.boots, CollectionPhysicalLocation.Equipped,
+                ProgressionLoadoutOptimizer.IsAuthoritativeItem(c.inventory.boots), c.inventory.boots == null ? 0 : c.inventory.boots.level);
+            add(c.inventory.weapon, CollectionPhysicalLocation.Equipped,
+                ProgressionLoadoutOptimizer.IsAuthoritativeItem(c.inventory.weapon), c.inventory.weapon == null ? 0 : c.inventory.weapon.level);
+            add(c.inventory.weapon2, CollectionPhysicalLocation.Equipped,
+                ProgressionLoadoutOptimizer.IsAuthoritativeItem(c.inventory.weapon2), c.inventory.weapon2 == null ? 0 : c.inventory.weapon2.level);
             if (c.inventory.accs != null)
-                foreach (var item in c.inventory.accs) add(item);
+                foreach (var item in c.inventory.accs)
+                    add(item, CollectionPhysicalLocation.Equipped,
+                        ProgressionLoadoutOptimizer.IsAuthoritativeItem(item), item == null ? 0 : item.level);
             if (c.inventory.inventory != null)
-                foreach (var item in c.inventory.inventory) add(item);
+                for (var i = 0; i < c.inventory.inventory.Count; i++)
+                {
+                    var item = c.inventory.inventory[i];
+                    add(item, CollectionPhysicalLocation.OrdinaryInventory,
+                        item != null && (ProgressionLoadoutOptimizer.IsAuthoritativeItem(item)
+                            || InventoryManager.IsNativeLoadoutReference(c, i)), item == null ? 0 : item.level);
+                }
+            if (c.inventory.daycare != null)
+                for (var i = 0; i < c.inventory.daycare.Count; i++)
+                {
+                    var item = c.inventory.daycare[i];
+                    var effective = item == null ? 0 : item.level;
+                    try
+                    {
+                        if (item != null && c.inventoryController != null
+                            && c.inventoryController.daycares != null
+                            && i < c.inventoryController.daycares.Count
+                            && c.inventoryController.daycares[i] != null)
+                            effective += c.inventoryController.daycares[i].levelsAdded();
+                    }
+                    catch { }
+                    add(item, CollectionPhysicalLocation.Daycare, true, Math.Min(100, effective));
+                }
             return result;
         }
 
@@ -414,20 +413,16 @@ namespace NGUInjector.Managers
                 ? ZoneStatHelper.UserOverrides[zone].Name : "zone " + zone;
         }
 
-        private static bool IsBossExclusive(Character c, int zone, int itemId)
-        {
-            // The installed 1.260 LootDrop methods award Normal Bonus Accessories from the shared
-            // post-enemy branch, so none of the currently audited IDs is boss-exclusive. Keep this
-            // method as the explicit extension point for a future source-proven target.
-            return false;
-        }
-
-        private static void PopulateStochasticEvidence(Character c, AdventureCollectionTarget target)
+        private static void PopulateStochasticEvidence(Character c, AdventureCollectionTarget target,
+            ZoneDebt debt)
         {
             if (target == null || target.Target == null || c.adventureController == null) return;
             var zone = target.Target.Zone;
-            var observed = CombatManager.ObservedKillSeconds(zone, target.BossOnly);
-            target.ObservedKillSeconds = observed;
+            var signature = CaptureCadenceSignature(c, zone, target.BossOnly);
+            target.CadenceSignature = signature == null ? string.Empty : signature.Key;
+            CollectionCadenceSample exactCadence = null;
+            var hasExactCadence = signature != null && Cadence.TryGet(signature, out exactCadence);
+            target.ObservedKillSeconds = hasExactCadence ? exactCadence.MeanSecondsPerTrial : -1.0;
             try
             {
                 var enemies = c.adventureController.enemyList[zone];
@@ -443,10 +438,107 @@ namespace NGUInjector.Managers
             {
                 target.BossSpawnShare = 0.0;
             }
-            target.StochasticEvidence = observed > 0.0
-                ? "Observed combat signature mean is " + observed.ToString("0.00")
-                  + "s/kill; exact remaining-item probability is unknown, so no ETA is asserted"
-                : "No matching combat-signature sample and no exact remaining-item probability; no ETA is asserted";
+            if (!hasExactCadence)
+            {
+                var broadFallback = CombatManager.ObservedKillSeconds(zone, target.BossOnly);
+                target.StochasticEvidence = broadFallback > 0.0
+                    ? "A broad zone sample exists (" + broadFallback.ToString("0.00")
+                      + "s/kill) but does not match the full collection policy signature; no ETA is asserted"
+                    : "No exact online combat-signature sample; no equipment ETA is asserted";
+                return;
+            }
+
+            if (zone != 43 || debt == null || debt.Items == null || debt.Items.Count == 0)
+            {
+                target.StochasticEvidence = "Exact online signature mean is "
+                    + exactCadence.MeanSecondsPerTrial.ToString("0.00")
+                    + "s/kill; this source has no exact branch probability model, so no ETA is asserted";
+                return;
+            }
+
+            var pirate = debt.Items.Where(x => x.ItemId >= 507 && x.ItemId <= 514).ToList();
+            if (pirate.Count == 0)
+            {
+                target.StochasticEvidence = "Exact online signature is available; remaining zone-43 debt is outside the Pirate probability branch";
+                return;
+            }
+            var ids = pirate.Select(x => x.ItemId).ToArray();
+            // An absent physical target needs its first level-zero arrival plus 100 merge
+            // contributions. Keep public RemainingContribution at the audited 100 while the
+            // stochastic state prices that separate acquisition event as deficit 101.
+            var deficits = pirate.Select(x => (byte)Math.Min(101,
+                x.RemainingContribution + (x.NeedsInitialCopy ? 1 : 0))).ToArray();
+            double rootedLoot;
+            try { rootedLoot = Math.Max(0.0, c.lootFactorRooted()); }
+            catch { rootedLoot = 0.0; }
+            var outcomes = LootSourceCatalog.PirateMixedOutcomes(ids, rootedLoot,
+                target.BossSpawnShare);
+            var evidence = new ForecastEvidence
+            {
+                Grade = ForecastEvidenceGrade.SourceExact,
+                ProbabilitySource = "LootDrop.zone43Drop Pirate one-of-eight",
+                CadenceSource = "exact collection combat signature",
+                SourceHash = LootSourceCatalog.SourceHash,
+                SampleCount = exactCadence.OnlineSamples,
+                OnlineOnly = true,
+                Notes = "Normal and boss group probabilities are mixed by the current enemy-list boss share."
+            };
+            var capacity = debt.Service == null
+                ? ForecastCapacityProof.Prove(debt.WorstCaseTransientSlots, 0, false, true,
+                    "No live ordinary topology was available.")
+                : debt.Service.ForecastProof();
+            var forecast = MechanicsStochastic.SparseMonotoneForecast(deficits,
+                outcomes, 50000, evidence, capacity);
+            if (!forecast.Valid || double.IsInfinity(forecast.MeanTrials))
+            {
+                target.StochasticEvidence = "Pirate probability is source-exact and online-only, but "
+                    + (forecast.InvalidReason.Length > 0 ? forecast.InvalidReason
+                        : "the current collection state has no finite admitted forecast");
+                return;
+            }
+            target.ExpectedTargetDropSeconds = forecast.MeanTrials * exactCadence.MeanSecondsPerTrial;
+            target.TargetDropConfidenceSeconds = forecast.P90Trials == long.MaxValue
+                ? -1.0 : forecast.P90Trials * exactCadence.MeanSecondsPerTrial;
+            target.StochasticEvidence = (forecast.Exact ? "Exact" : "Bounded")
+                + " source-backed Pirate forecast from " + exactCadence.OnlineSamples
+                + " online signature samples; ordinary/Titan offline progress contributes zero trials";
+        }
+
+        // Report hooks: combat integration may record only a confirmed eligible online kill. The
+        // signature is supplied by CaptureCadenceSignature before the fight and is never collapsed
+        // to zone-only evidence.
+        internal static bool RecordOnlineEligibleKill(CollectionCombatSignature signature,
+            double seconds)
+        {
+            return Cadence.Record(signature, seconds, true);
+        }
+
+        internal static CollectionCombatSignature CaptureCadenceSignature(Character c,
+            int zone, bool bossOnly)
+        {
+            if (c == null || zone < 0) return null;
+            var items = new[]
+            {
+                c.inventory == null ? null : c.inventory.head,
+                c.inventory == null ? null : c.inventory.chest,
+                c.inventory == null ? null : c.inventory.legs,
+                c.inventory == null ? null : c.inventory.boots,
+                c.inventory == null ? null : c.inventory.weapon,
+                c.inventory == null ? null : c.inventory.weapon2
+            }.Concat(c.inventory == null || c.inventory.accs == null
+                ? Enumerable.Empty<Equipment>() : c.inventory.accs)
+                .Where(x => x != null && x.id > 0)
+                .Select(x => x.id + ":" + x.level).ToArray();
+            var fast = ZoneStatHelper.UserOverrides != null
+                       && ZoneStatHelper.UserOverrides.ContainsKey(zone)
+                       && ZoneStatHelper.UserOverrides[zone]
+                           .FightType(c.totalAdvAttack(), c.totalAdvDefense()) == 2;
+            var beast = c.adventure != null && c.adventure.beastModeOn;
+            return new CollectionCombatSignature(zone, bossOnly, fast, beast,
+                c.totalAdvAttack(), c.totalAdvDefense(),
+                c.adventure == null ? 0.0 : c.adventure.curHP,
+                c.totalAdvHP(), c.totalAdvHPRegen(), string.Join(",", items),
+                Math.Max(0L, ProgressionLoadoutOptimizer.LastObjectiveEpoch));
         }
 
         /*
@@ -459,14 +551,12 @@ namespace NGUInjector.Managers
         */
         private static string CoreSetReward(int zone)
         {
-            switch (zone)
-            {
-                case 0: return "+2 Energy Speed and 10 EXP";
-                case 1: return "+5 Adventure Power/Toughness, +15 HP, +0.2 regen, and 20 EXP";
-                case 2: return "+5 Energy Power, 200 EXP, and six Energy consumables";
-                case 3: return "+2 Magic Power, +40,000 Magic Cap, +2 Magic Per Bar, and 300 EXP";
-                default: return "the zone's native permanent Item List set bonus";
-            }
+            var source = LootSourceCatalog.OrdinaryZone(zone);
+            if (source == null || source.SetReward == null)
+                return "no source-catalogued set reward";
+            return source.SetReward.Description
+                   + (source.SetReward.NumericSourceExact ? " [numeric source-exact]"
+                       : " [numeric conversion pending]");
         }
 
         private sealed class ZoneDebt
@@ -475,9 +565,17 @@ namespace NGUInjector.Managers
             internal bool CoreSetIncomplete;
             internal bool HasDebt;
             internal int RemainingItems;
+            internal int RemainingContribution;
             internal int ProjectedNewSlots;
+            internal int OwnedInDaycare;
+            internal int MergeServiceBacklog;
+            internal int ReferenceProtectedCopies;
+            internal int WorstCaseTransientSlots;
+            internal double SetRewardNativeMagnitude;
             internal bool OnlyBossExclusiveDebt;
             internal string MissingSummary;
+            internal List<CollectionItemState> Items;
+            internal CollectionServiceState Service;
         }
     }
 }

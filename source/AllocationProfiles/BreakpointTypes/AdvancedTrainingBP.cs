@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using NGUInjector.Autopilot;
 using NGUInjector.Managers;
 using UnityEngine;
 
@@ -63,7 +64,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             // the finite, solved target so hitTarget/advanceEnergy cannot silently
             // return this allocation or train past its reset-horizon value.
             Character.advancedTraining.levelTarget[Index] = target;
-            SetInput(CalculateATCap());
+            var allocation = CalculateATCap();
+            if (allocation <= 0 || !SetInput(allocation))
+                return false;
             switch (Index)
             {
                 case 0:
@@ -135,8 +138,15 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 return false;
             }
 
-            var plannedEnergy = Math.Max(1L,
-                Math.Min(Character.curEnergy, (long)Math.Ceiling(Character.curEnergy * CapPercent)));
+            var fraction = Math.Max(0L, (long)Math.Round(CapPercent * 1000000.0,
+                MidpointRounding.AwayFromZero));
+            var plannedEnergy = Math.Min(Character.curEnergy,
+                ExactResourceAllocator.CeilingShare(Character.curEnergy, fraction, 1000000L));
+            if (plannedEnergy <= 0)
+            {
+                LastHorizonDecision = "Blocked: Advanced Training has zero exact Energy budget";
+                return false;
+            }
             var attackEta = CompletionSeconds(1, attackTarget, plannedEnergy);
             var defenseEta = CompletionSeconds(0, defenseTarget, plannedEnergy);
             var completionEta = Math.Max(attackEta, defenseEta);
@@ -202,14 +212,32 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
             var k = controller.baseTime / (energy * factor);
             var progress = Math.Max(0.0, Math.Min(0.999999, Character.advancedTraining.barProgress[index]));
-            var seconds = Math.Max(0.02, (1.0 - progress) * k * (level + 1.0));
+            var firstPerTick = 1.0 / Math.Max(double.Epsilon,
+                k * (level + 1.0) * 50.0);
+            var seconds = ExactResourceAllocator.NativeCompletionSeconds(progress, firstPerTick);
             var firstFollowing = level + 1L;
             var lastFollowing = target - 1L;
             if (lastFollowing < firstFollowing) return seconds;
 
-            // For a new level L, native time is max(0.02, k*(L+1)).
-            // Split the arithmetic series at the one-level-per-tick cap rather
-            // than looping through millions of late-game targets five times/sec.
+            // For a new level L, native time is ceil(k*(L+1)/0.02)*0.02. Retain
+            // exact event chunks for ordinary ranges. For extreme target gaps use
+            // a conservative upper bound (continuous sum plus one tick per event),
+            // which may hold AT but can never admit reset-local work too late.
+            var followingCount = lastFollowing - firstFollowing + 1L;
+            if (followingCount <= 10000L)
+            {
+                for (var offset = 0L; offset < followingCount; offset++)
+                {
+                    var following = firstFollowing + offset;
+                    var perTick = 1.0 / Math.Max(double.Epsilon,
+                        k * (following + 1.0) * 50.0);
+                    seconds += ExactResourceAllocator.NativeCompletionSeconds(0.0, perTick);
+                }
+                return seconds;
+            }
+
+            // Split the arithmetic series at the one-level-per-tick cap before
+            // applying the conservative sub-tick rounding envelope.
             var cappedThrough = k <= 0 ? lastFollowing
                 : (long)Math.Floor(0.02 / k - 1.0);
             var cappedLast = Math.Min(lastFollowing, Math.Max(firstFollowing - 1, cappedThrough));
@@ -220,7 +248,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             {
                 var count = lastFollowing - linearFirst + 1.0;
                 var sumLevelsPlusOne = count * ((linearFirst + 1.0) + (lastFollowing + 1.0)) / 2.0;
-                seconds += k * sumLevelsPlusOne;
+                seconds += k * sumLevelsPlusOne + count * 0.02;
             }
             return seconds;
         }
@@ -230,7 +258,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Type == ResourceType.Energy;
         }
 
-        private float CalculateATCap()
+        private long CalculateATCap()
         {
             var calcA = CalculateATCap(500);
             if (calcA.PPT < 1)
@@ -256,25 +284,22 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             if (Character.wishes.wishes[190].level >= 1)
                 return ret;
 
-            var formula = 50f * divisor /
-                          (Mathf.Sqrt(Character.totalEnergyPower()) * Character.totalAdvancedTrainingSpeedBonus());
+            var factor = Math.Sqrt(Math.Max(0.0, Character.totalEnergyPower()))
+                         * Character.totalAdvancedTrainingSpeedBonus();
+            if (factor <= 0.0 || MaxAllocation <= 0)
+                return ret;
+            var formula = 50.0 * divisor / factor;
 
             if (formula >= Character.hardCap())
             {
                 formula = Character.hardCap();
             }
 
-            var num = (long)(formula / (long)Math.Ceiling(formula / (double)MaxAllocation) * 1.00000202655792);
-
-            if (num + 1L <= long.MaxValue)
-                ++num;
-            if (num > Character.idleEnergy)
-                num = Character.idleEnergy;
-            if (num < 0L)
-                num = 0L;
+            var num = ExactResourceAllocator.CapAtTickBoundary(formula, MaxAllocation,
+                Character.idleEnergy);
 
             ret.Num = num;
-            ret.PPT = (double)num / formula;
+            ret.PPT = formula > 0.0 ? (double)num / formula : 0.0;
             return ret;
         }
 

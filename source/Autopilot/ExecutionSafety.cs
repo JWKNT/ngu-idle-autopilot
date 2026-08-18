@@ -5,15 +5,16 @@ using System.Threading;
 /*
 FILE PURPOSE
 
-ExecutionSafety is the mandatory permission boundary between schedulers and native NGU Idle
-mutations. It snapshots the active autopilot mode and mutation ownership for one scheduler pass,
-issues class-specific leases, and invalidates those leases whenever synchronization, configuration,
-or profile ownership changes. Inputs are AutopilotConfig plus explicit mutation class/owner; outputs
-are immutable leases and throttled HOLD telemetry. A dry-run snapshot never grants a game mutation,
-assist never grants finite-resource or irreversible automation, and legacy/autopilot writers may
-not simultaneously own the same class. The class deliberately does not choose gameplay strategy or
-verify game-specific deltas; managers remain responsible for native postconditions after a lease is
-granted. New mutation entry points must declare their class here before calling a native controller.
+ExecutionSafety owns the immutable admission snapshot used by a nonzero root mutation transaction.
+It freezes autopilot mode and feature ownership for one scheduler pass, issues class-specific child
+leases, and invalidates those leases whenever synchronization, configuration, or profile ownership
+changes. Inputs are AutopilotConfig plus explicit mutation class/owner; outputs are immutable leases
+and throttled HOLD telemetry. A dry-run snapshot never grants a game mutation, assist never grants
+finite-resource or irreversible automation, and legacy/autopilot writers may not simultaneously own
+the same class. There is deliberately no unscoped/cycle-zero fallback: callers outside a root receive
+NoActiveTransaction, and overlapping roots are rejected instead of replacing the active snapshot.
+MutationCoordinator owns invocation, exact postconditions, compensation, quarantine, and journaling;
+this file remains the policy/admission component so existing callers can migrate incrementally.
 */
 namespace NGUInjector.Autopilot
 {
@@ -45,7 +46,8 @@ namespace NGUInjector.Autopilot
         Rebirth,
         Challenge,
         EndSequence,
-        SaveLoad
+        SaveLoad,
+        Difficulty
     }
 
     internal enum MutationOwner
@@ -67,15 +69,17 @@ namespace NGUInjector.Autopilot
     internal sealed class MutationLease
     {
         internal readonly MutationClass Class;
+        internal readonly MutationRisk Risk;
         internal readonly MutationOwner Owner;
         internal readonly long StateVersion;
         internal readonly long CycleId;
         internal readonly string CycleName;
 
-        internal MutationLease(MutationClass mutationClass, MutationOwner owner,
+        internal MutationLease(MutationClass mutationClass, MutationRisk risk, MutationOwner owner,
             long stateVersion, long cycleId, string cycleName)
         {
             Class = mutationClass;
+            Risk = risk;
             Owner = owner;
             StateVersion = stateVersion;
             CycleId = cycleId;
@@ -86,17 +90,29 @@ namespace NGUInjector.Autopilot
         {
             get { return ExecutionSafety.IsCurrent(this); }
         }
+
+        internal long RootTransactionId
+        {
+            get { return CycleId; }
+        }
     }
 
     internal sealed class ExecutionCycle : IDisposable
     {
         private readonly long _cycleId;
+        private readonly long _stateVersion;
         private bool _disposed;
 
-        internal ExecutionCycle(long cycleId)
+        internal ExecutionCycle(long cycleId, long stateVersion)
         {
+            if (cycleId <= 0) throw new ArgumentOutOfRangeException("cycleId");
             _cycleId = cycleId;
+            _stateVersion = stateVersion;
         }
+
+        internal long CycleId { get { return _cycleId; } }
+        internal long StateVersion { get { return _stateVersion; } }
+        internal bool IsDisposed { get { return _disposed; } }
 
         public void Dispose()
         {
@@ -119,6 +135,7 @@ namespace NGUInjector.Autopilot
             internal bool Assist;
             internal bool Full;
             internal bool AllowLegacyFallback;
+            internal Dictionary<MutationClass, bool> AutopilotOwnership;
         }
 
         private static readonly object Gate = new object();
@@ -136,12 +153,47 @@ namespace NGUInjector.Autopilot
 
         internal static ExecutionCycle BeginCycle(string name, AutopilotConfig config)
         {
+            ExecutionCycle cycle;
+            string reason;
+            if (!TryBeginCycle(name, config, out cycle, out reason))
+                throw new InvalidOperationException(reason);
+            return cycle;
+        }
+
+        /*
+        ROOT ADMISSION
+
+        A root is exclusive and always has an ID greater than zero.  In particular, a nested
+        scheduler callback cannot silently replace the outer snapshot and then clear it when the
+        inner scope exits. MutationCoordinator uses the non-throwing form so root rejection becomes
+        a typed result; BeginCycle remains as a compatibility adapter for callers migrated later.
+        */
+        internal static bool TryBeginCycle(string name, AutopilotConfig config,
+            out ExecutionCycle cycle, out string reason)
+        {
+            cycle = null;
+            reason = string.Empty;
             ObserveConfig(config);
             lock (Gate)
             {
+                if (_active != null)
+                {
+                    reason = "NestedRootTransaction: root " + _active.CycleId
+                             + " (" + _active.Name + ") is already active";
+                    return false;
+                }
+
                 var cycleId = ++_cycleSequence;
+                if (cycleId <= 0)
+                {
+                    // Overflow is not realistic in a game process, but ID zero/negative is never
+                    // allowed to regain its former unscoped meaning.
+                    _cycleSequence = 1;
+                    cycleId = 1;
+                }
                 _active = CreateSnapshot(cycleId, name, config);
-                return new ExecutionCycle(cycleId);
+                cycle = new ExecutionCycle(cycleId, _active.StateVersion);
+                return true;
             }
         }
 
@@ -166,12 +218,24 @@ namespace NGUInjector.Autopilot
         internal static bool TryAcquire(MutationClass mutationClass, MutationOwner owner,
             out MutationLease lease, out string reason)
         {
+            return TryAcquire(mutationClass, RiskFor(mutationClass), owner, out lease, out reason);
+        }
+
+        internal static bool TryAcquire(MutationClass mutationClass, MutationRisk declaredRisk,
+            MutationOwner owner, out MutationLease lease, out string reason)
+        {
             lease = null;
             reason = string.Empty;
             Snapshot snapshot;
             lock (Gate)
             {
-                snapshot = _active ?? CreateSnapshot(0, "unscoped", CurrentConfig());
+                snapshot = _active;
+            }
+
+            if (snapshot == null || snapshot.CycleId <= 0)
+            {
+                reason = "NoActiveTransaction: native mutations require a nonzero root transaction";
+                return false;
             }
 
             if (snapshot.StateVersion != StateVersion)
@@ -196,7 +260,7 @@ namespace NGUInjector.Autopilot
                     reason = "legacy mutation fallback is disabled while autopilot owns execution";
                     return false;
                 }
-                if (AutopilotOwns(snapshot.Config, mutationClass))
+                if (SnapshotAutopilotOwns(snapshot, mutationClass))
                 {
                     reason = "autopilot already owns this mutation class";
                     return false;
@@ -208,13 +272,14 @@ namespace NGUInjector.Autopilot
                 reason = "legacy GlobalEnabled is off";
                 return false;
             }
-            if (owner == MutationOwner.Autopilot && !AutopilotOwns(snapshot.Config, mutationClass))
+            if (owner == MutationOwner.Autopilot
+                && !SnapshotAutopilotOwns(snapshot, mutationClass))
             {
                 reason = "the corresponding autopilot feature does not own this mutation class";
                 return false;
             }
 
-            var risk = RiskFor(mutationClass);
+            var risk = EffectiveRisk(RiskFor(mutationClass), declaredRisk);
             if (snapshot.Assist
                 && (risk == MutationRisk.FiniteResource || risk == MutationRisk.Irreversible))
             {
@@ -228,17 +293,36 @@ namespace NGUInjector.Autopilot
                 return false;
             }
 
-            lease = new MutationLease(mutationClass, owner, snapshot.StateVersion,
+            lease = new MutationLease(mutationClass, risk, owner, snapshot.StateVersion,
                 snapshot.CycleId, snapshot.Name);
             return true;
         }
 
         internal static bool IsCurrent(MutationLease lease)
         {
-            if (lease == null || lease.StateVersion != StateVersion) return false;
+            if (lease == null || lease.CycleId <= 0 || lease.StateVersion != StateVersion)
+                return false;
             lock (Gate)
             {
-                return lease.CycleId == 0 || _active != null && _active.CycleId == lease.CycleId;
+                return _active != null && _active.CycleId == lease.CycleId;
+            }
+        }
+
+        internal static bool IsRootCurrent(long rootTransactionId, long stateVersion)
+        {
+            if (rootTransactionId <= 0 || stateVersion != StateVersion) return false;
+            lock (Gate)
+            {
+                return _active != null && _active.CycleId == rootTransactionId
+                       && _active.StateVersion == stateVersion;
+            }
+        }
+
+        internal static long ActiveRootTransactionId
+        {
+            get
+            {
+                lock (Gate) return _active == null ? 0 : _active.CycleId;
             }
         }
 
@@ -264,6 +348,12 @@ namespace NGUInjector.Autopilot
 
         internal static MutationOwner OwnerFor(MutationClass mutationClass)
         {
+            lock (Gate)
+            {
+                if (_active != null)
+                    return SnapshotAutopilotOwns(_active, mutationClass)
+                        ? MutationOwner.Autopilot : MutationOwner.Legacy;
+            }
             var config = CurrentConfig();
             return config != null && config.Enabled && AutopilotOwns(config, mutationClass)
                 ? MutationOwner.Autopilot : MutationOwner.Legacy;
@@ -271,6 +361,9 @@ namespace NGUInjector.Autopilot
 
         private static Snapshot CreateSnapshot(long cycleId, string name, AutopilotConfig config)
         {
+            var ownership = new Dictionary<MutationClass, bool>();
+            foreach (MutationClass mutationClass in Enum.GetValues(typeof(MutationClass)))
+                ownership[mutationClass] = AutopilotOwns(config, mutationClass);
             return new Snapshot
             {
                 CycleId = cycleId,
@@ -281,8 +374,17 @@ namespace NGUInjector.Autopilot
                 DryRun = config != null && config.Enabled && config.IsDryRun,
                 Assist = config != null && config.Enabled && config.IsAssist,
                 Full = config != null && config.Enabled && config.IsFull,
-                AllowLegacyFallback = config == null || config.AllowLegacyFallback
+                AllowLegacyFallback = config == null || config.AllowLegacyFallback,
+                AutopilotOwnership = ownership
             };
+        }
+
+        private static bool SnapshotAutopilotOwns(Snapshot snapshot,
+            MutationClass mutationClass)
+        {
+            bool owns;
+            return snapshot != null && snapshot.AutopilotOwnership != null
+                   && snapshot.AutopilotOwnership.TryGetValue(mutationClass, out owns) && owns;
         }
 
         private static AutopilotConfig CurrentConfig()
@@ -290,7 +392,7 @@ namespace NGUInjector.Autopilot
             return Main.Autopilot == null ? null : Main.Autopilot.Config;
         }
 
-        private static MutationRisk RiskFor(MutationClass mutationClass)
+        internal static MutationRisk RiskFor(MutationClass mutationClass)
         {
             switch (mutationClass)
             {
@@ -313,6 +415,7 @@ namespace NGUInjector.Autopilot
                 case MutationClass.PermanentSpend:
                 case MutationClass.Rebirth:
                 case MutationClass.Challenge:
+                case MutationClass.Difficulty:
                 case MutationClass.EndSequence:
                 case MutationClass.SaveLoad:
                     return MutationRisk.Irreversible;
@@ -321,6 +424,21 @@ namespace NGUInjector.Autopilot
                 default:
                     return MutationRisk.Reversible;
             }
+        }
+
+        private static MutationRisk EffectiveRisk(MutationRisk classRisk,
+            MutationRisk declaredRisk)
+        {
+            if (classRisk == MutationRisk.Irreversible
+                || declaredRisk == MutationRisk.Irreversible)
+                return MutationRisk.Irreversible;
+            if (classRisk == MutationRisk.FiniteResource
+                || declaredRisk == MutationRisk.FiniteResource)
+                return MutationRisk.FiniteResource;
+            if (classRisk == MutationRisk.MixedPolicy
+                || declaredRisk == MutationRisk.MixedPolicy)
+                return MutationRisk.MixedPolicy;
+            return MutationRisk.Reversible;
         }
 
         private static bool AutopilotOwns(AutopilotConfig config, MutationClass mutationClass)
@@ -358,6 +476,9 @@ namespace NGUInjector.Autopilot
                            || config.AllowCardYeeting;
                 case MutationClass.Rebirth: return config.AllowRebirths;
                 case MutationClass.Challenge: return config.AllowChallenges;
+                // Difficulty authority is introduced by the dedicated transition executor. Until
+                // its independently configured gate is integrated, new intents remain fail-closed.
+                case MutationClass.Difficulty: return false;
                 case MutationClass.EndSequence: return config.AllowEndSequence;
                 case MutationClass.SaveLoad: return false;
                 default: return false;

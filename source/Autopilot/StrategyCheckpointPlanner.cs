@@ -12,12 +12,11 @@ It reads one Character snapshot, enumerates exact local discontinuities (Number 
 Basic Training, fruit maturity, Titan clocks, Fight Boss viability, Beard and MacGuffin banks),
 and returns a scored recommendation plus runner-up evidence.  It never mutates the game.
 
-The score is deliberately split into exact mechanics and declared policy weights.  Native preview
-ratios, clock arithmetic, fruit tiers, and time factors are facts; their exchange rate against a
-terminal-route second is not exposed by NGU Idle and is therefore a heuristic prior.  Callers must
-preserve puzzle/challenge constraints and the executor must revalidate every discrete event before
-committing a rebirth.  Adding a mechanic means adding a candidate boundary and a separately named
-utility term, never hiding a new fixed schedule inside a stage branch.
+The score is deliberately split into exact mechanics and declared policy weights. Native preview
+ratios, clock arithmetic, fruit tiers, Beard floors/subset projections, and per-item MacGuffin bank
+deltas are facts; their exchange rate against a terminal-route second is still the incumbent
+heuristic fallback. RebirthRouteEvaluator is the shadow seconds-to-terminal contract and remains
+non-authoritative until tasks 28/29 wire a complete snapshot.
 */
 namespace NGUInjector.Autopilot
 {
@@ -83,9 +82,12 @@ namespace NGUInjector.Autopilot
                 "guide/stage prior", 0.18, legal, horizon);
 
             // The native time multiplier is discontinuous at these exact run ages.
-            foreach (var boundary in new[] {300, 420, 600, 720, 900, 1800, 3600})
+            foreach (var exact in RebirthTransitionKernel.TimeMultiplierBoundaries)
+            {
+                var boundary = (int)exact;
                 Add(candidates, boundary, "Number time-multiplier discontinuity at " + boundary + "s",
                     "native rule", 0.08, legal, horizon);
+            }
 
             AddApBoundaries(candidates, elapsed, legal, horizon);
             AddTrainingBoundary(c, candidates, elapsed, legal, horizon);
@@ -94,11 +96,16 @@ namespace NGUInjector.Autopilot
             AddTitanBoundaries(c, candidates, elapsed, legal, horizon);
 
             if (c.settings.beardsOn)
-                Add(candidates, 86400, "Beard trim time factor reaches its native maximum",
+            {
+                Add(candidates, 3600, "Beard trimming conversion begins",
+                    "native rule", 0.12, legal, horizon);
+                Add(candidates, BeardMaximumFactorSeconds(c),
+                    "Beard trim time factor reaches its native maximum",
                     "native rule", 0.25, legal, horizon);
+            }
             if (EquippedMacGuffinCount(c) > 0)
             {
-                Add(candidates, 180, "MacGuffin bank begins producing levels", "native rule",
+                Add(candidates, 180, "MacGuffin permanent bonus bank begins", "native rule",
                     0.06, legal, horizon);
                 Add(candidates, 1800, "MacGuffin time factor changes from quadratic to square-root",
                     "native rule", 0.18, legal, horizon);
@@ -344,19 +351,16 @@ namespace NGUInjector.Autopilot
 
             if (c.settings.beardsOn)
             {
-                var bankedSeconds = Math.Min(86400.0, target);
-                var beardFactor = Math.Min(8.0, 1.0 + bankedSeconds / 10800.0);
-                utility += 1.8 * bankedSeconds / 86400.0 * beardFactor;
+                // The route solver accepts task 20's projected final subset as explicit input. The
+                // still-authoritative fallback must not act on that shadow re-equip decision, so it
+                // values only currently active, already-earned temporary levels through the exact
+                // native floor. A reset that currently banks zero receives exactly zero utility.
+                utility += Math.Log(1.0 + CurrentActiveBeardBankDelta(c, target));
             }
 
-            var guffs = EquippedMacGuffinCount(c);
-            if (guffs > 0)
-            {
-                var sadTroll = c.settings.rebirthDifficulty == difficulty.sadistic
-                               && c.allChallenges.trollChallenge.sadisticCompletions() >= 2;
-                utility += (sadTroll ? 2.8 : 1.1) * Math.Sqrt(guffs)
-                           * MacGuffinTimeFactor(target, sadTroll) / (sadTroll ? 48.0 : 20.0);
-            }
+            // Sum exact per-equipped-item accumulator delta-log, including the early Sadistic
+            // square segment and live booster state. Equipped-count/sqrt(time) has no authority.
+            utility += ExactMacGuffinBankDeltaLog(c, target, Math.Max(0, target - elapsed));
 
             var ap = MechanicsProgression.TimeAp(target);
             utility += Math.Min(1.5, ap * 0.015);
@@ -376,26 +380,122 @@ namespace NGUInjector.Autopilot
 
         private static double NumberTimeMultiplier(double seconds)
         {
-            if (seconds < 300.0) return seconds / 2048.0 / 3600.0;
-            if (seconds < 420.0) return seconds / 512.0 / 3600.0;
-            if (seconds < 600.0) return seconds / 128.0 / 3600.0;
-            if (seconds < 720.0) return seconds / 32.0 / 3600.0;
-            if (seconds < 900.0) return seconds / 8.0 / 3600.0;
-            if (seconds < 1800.0) return seconds / 4.0 / 3600.0;
-            if (seconds < 3600.0) return seconds / 2.0 / 3600.0;
-            return 1.0 + seconds / 172800.0;
+            return RebirthTransitionKernel.ExactTimeMultiplier(seconds);
         }
 
-        private static double MacGuffinTimeFactor(double seconds, bool sadisticTrollTwo)
+        private static double ExactMacGuffinBankDeltaLog(Character c, double targetSeconds,
+            double additionalSeconds)
         {
-            if (seconds < 180.0) return 0.0;
-            if (sadisticTrollTwo)
+            if (c == null || c.inventory == null || c.inventory.macguffins == null)
+                return 0.0;
+            var sadisticTrollTwo = c.settings.rebirthDifficulty == difficulty.sadistic
+                                   && c.allChallenges.trollChallenge.sadisticCompletions() >= 2;
+            var booster = MacGuffinBoosterAtReset(c, additionalSeconds);
+            var total = 0.0;
+            foreach (var item in c.inventory.macguffins)
             {
-                if (seconds <= 86400.0) return seconds / 1800.0;
-                return Math.Min(104.864100, 48.0 * Math.Pow(seconds / 86400.0, 0.4));
+                if (item == null || item.id <= 0) continue;
+                var index = MacGuffinBonusIndex(item.id);
+                var before = index >= 0 && c.inventory.macguffinBonuses != null
+                             && index < c.inventory.macguffinBonuses.Count
+                    ? Math.Max(0.0, (double)c.inventory.macguffinBonuses[index]) : 1.0;
+                var level = item.level >= int.MaxValue ? int.MaxValue
+                    : item.level <= int.MinValue ? int.MinValue : (int)item.level;
+                var bank = PermanentMarginalOracle.EvaluateMacGuffinBank(
+                    new MacGuffinConversionInput
+                    {
+                        ItemId = item.id,
+                        ItemLevel = level,
+                        PersistentAccumulatorBefore = before,
+                        RouteSensitivity = 1.0
+                    }, targetSeconds, sadisticTrollTwo, booster);
+                total += bank.WeightedDeltaLogEffect;
             }
-            if (seconds < 1800.0) return Math.Pow(seconds / 1800.0, 2.0);
-            return Math.Min(20.0, Math.Sqrt(seconds / 1800.0));
+            return double.IsNaN(total) || double.IsInfinity(total) ? 0.0 : Math.Max(0.0, total);
+        }
+
+        private static long CurrentActiveBeardBankDelta(Character c, double targetSeconds)
+        {
+            if (c == null || c.beards == null || c.beards.beards == null
+                || c.beards.activeBeards == null) return 0L;
+            long perk21 = 0L;
+            try
+            {
+                if (c.adventure.itopod.perkLevel.Count > 21)
+                    perk21 = c.adventure.itopod.perkLevel[21];
+            }
+            catch
+            {
+                perk21 = 0L;
+            }
+            var total = 0L;
+            foreach (var id in c.beards.activeBeards.Distinct())
+            {
+                if (id < 0 || id >= c.beards.beards.Count) continue;
+                var delta = PermanentMarginalOracle.BeardBankDelta(
+                    c.beards.beards[id].beardLevel, targetSeconds, perk21);
+                total = total > long.MaxValue - delta ? long.MaxValue : total + delta;
+            }
+            return total;
+        }
+
+        private static double MacGuffinBoosterAtReset(Character c, double additionalSeconds)
+        {
+            try
+            {
+                var active = c.arbitrary.macGuffinBooster1InUse
+                             || c.arbitrary.macGuffinBooster1Time.totalseconds
+                                > additionalSeconds;
+                return active ? Math.Max(0.0, (double)c.allArbitrary.potionModifier()) : 1.0;
+            }
+            catch
+            {
+                return 1.0;
+            }
+        }
+
+        private static int BeardMaximumFactorSeconds(Character c)
+        {
+            try
+            {
+                var perk = c.adventure.itopod.perkLevel.Count > 21
+                    ? c.adventure.itopod.perkLevel[21] : 0L;
+                return (int)Math.Max(3600L, 3600L * Math.Max(0L, 24L - perk));
+            }
+            catch
+            {
+                return 86400;
+            }
+        }
+
+        private static int MacGuffinBonusIndex(int itemId)
+        {
+            switch (itemId)
+            {
+                case 198: return 0;
+                case 199: return 1;
+                case 200: return 2;
+                case 201: return 3;
+                case 202: return 4;
+                case 203: return 5;
+                case 204: return 6;
+                case 205: return 7;
+                case 206: return 8;
+                case 207: return 9;
+                case 208: return 10;
+                case 209: return 11;
+                case 210: return 12;
+                case 211: return 13;
+                case 250: return 14;
+                case 228: return 15;
+                case 291: return 16;
+                case 289: return 17;
+                case 290: return 18;
+                case 298: return 19;
+                case 299: return 20;
+                case 300: return 21;
+                default: return -1;
+            }
         }
 
         private static double FruitBankUtility(Character c, int additionalSeconds)

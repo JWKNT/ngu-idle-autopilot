@@ -9,10 +9,12 @@ using Object = UnityEngine.Object;
 FILE PURPOSE
 
 This file owns assembly lifecycle inside Unity: injection creates the single named persistent Main
-component and ejection destroys it while invalidating every outstanding execution lease. Inputs are
-the injector's Init/Unload calls and Unity's object registry; output is exactly one scheduler host.
-Exactly-one-host and lease invalidation prevent duplicated timers, stale callbacks, and double
-mutations. Gameplay policy, deployment selection, and manager mechanics do not belong here.
+component and ejection first asks Main to close its game epoch/cancel pending work, then destroys the
+host and invalidates every execution lease. Inputs are the injector's Init/Unload calls and Unity's
+object registry; output is exactly one scheduler host. Exactly-one-host, early Main publication,
+epoch closure, and lease invalidation prevent duplicated timers, stale callbacks, stuck OS input,
+and double mutations. Gameplay policy, deployment selection, and manager mechanics do not belong
+here.
 */
 namespace NGUInjector
 {
@@ -38,9 +40,11 @@ namespace NGUInjector
 
         private static void _Unload()
         {
-            NGUInjector.Autopilot.ExecutionSafety.Invalidate("injector lifecycle Unload");
+            // Main owns cancellation while its controller references and native compensation hooks
+            // are still available. Lease invalidation follows the synchronous epoch close.
             if (Main.reference != null)
                 Main.reference.Unload();
+            NGUInjector.Autopilot.ExecutionSafety.Invalidate("injector lifecycle Unload");
             if (_load == null) return;
             _load.SetActive(false);
             Object.Destroy(_load);

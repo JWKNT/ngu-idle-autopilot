@@ -10,6 +10,8 @@ RitualBP allocates Magic to Blood Magic rituals, respecting unlocks, caps, and n
 state. Ritual levels and Blood have different reset/persistence semantics, so spell/reserve
 strategy lives in AutopilotManager; this breakpoint only realizes an admitted ritual target.
 */
+using NGUInjector.Autopilot;
+
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class RitualBP : BaseBreakpoint
@@ -38,7 +40,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             }
 
             var cap = GetRitualCap(Index);
-            SetInput(Math.Min(cap, MaxAllocation));
+            var allocation = Math.Min(cap, MaxAllocation);
+            if (allocation <= 0 || !SetInput(allocation))
+                return false;
             Character.bloodMagicController.bloodMagics[Index].add();
             return true;
         }
@@ -50,6 +54,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         private long GetRitualCap(int index)
         {
+            if (MaxAllocation <= 0)
+                return 0L;
             if (Character.settings.rebirthDifficulty == difficulty.normal)
             {
                 var num = Math.Ceiling(50000.0 * Character.bloodMagicController.normalSpeedDividers[index] / (Character.totalMagicPower() * (double)Character.bloodMagicController.bloodMagics[index].totalBloodMagicSpeedBonus())) * 1.000002;
@@ -57,8 +63,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     num = 1.0;
                 if (num > Character.hardCap())
                     num = Character.hardCap();
-                var num2 = (long)(num / (long)Math.Ceiling((double)num / (double)Character.energyMagicPanel.energyMagicInput) * 1.00000202655792);
-                return num2;
+                return ExactResourceAllocator.CapAtTickBoundary(num, MaxAllocation,
+                    Character.magic.idleMagic);
             }
             if (Character.settings.rebirthDifficulty == difficulty.evil)
             {
@@ -67,8 +73,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     num = 1.0;
                 if (num > Character.hardCap())
                     num = Character.hardCap();
-                var num2 = (long)(num / (long)Math.Ceiling((double)num / (double)Character.energyMagicPanel.energyMagicInput) * 1.00000202655792);
-                return num2;
+                return ExactResourceAllocator.CapAtTickBoundary(num, MaxAllocation,
+                    Character.magic.idleMagic);
             }
             if (Character.settings.rebirthDifficulty == difficulty.sadistic)
             {
@@ -77,8 +83,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     num = 1.0;
                 if (num > Character.hardCap())
                     num = Character.hardCap();
-                var num2 = (long)(num / (long)Math.Ceiling((double)num / (double)Character.energyMagicPanel.energyMagicInput) * 1.00000202655792);
-                return num2;
+                return ExactResourceAllocator.CapAtTickBoundary(num, MaxAllocation,
+                    Character.magic.idleMagic);
             }
 
             return 0;

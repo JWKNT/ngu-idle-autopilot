@@ -12,6 +12,12 @@ evidence; they are not proof of mutation. Live controller state does not belong 
 */
 namespace NGUInjector.Autopilot
 {
+    internal enum AutopilotAuthorityStage
+    {
+        ObserveOnly,
+        VerifiedReversible
+    }
+
     internal sealed class PlanBreakpoint
     {
         internal int Time;
@@ -26,6 +32,30 @@ namespace NGUInjector.Autopilot
 
     internal sealed class AutopilotPlan
     {
+        internal AutopilotAuthorityStage AuthorityStage =
+            AutopilotAuthorityStage.ObserveOnly;
+        internal PlannerAuthority GlobalSchedulerAuthority = PlannerAuthority.ShadowOnly;
+        internal ScheduleDecision GlobalSchedule;
+        internal PlannerBlocker GlobalScheduleBlocker = new PlannerBlocker(
+            PlannerBlockerKind.OutsideModel,
+            "live task-27 snapshot and task-28 transition adapters are not yet complete");
+        internal bool PermanentPurchasesAuthorized;
+        internal bool MoneyPitAuthorized;
+        internal bool ChallengesAuthorized;
+        internal bool DifficultyAuthorized;
+        internal bool TitanOneThroughTwelveAuthorized;
+        internal bool TitanThirteenFourteenAuthorized;
+        internal bool Move69Authorized;
+        internal bool EndSequenceAuthorized;
+        internal long RootTransactionId;
+        internal string RootTransactionState = "not-opened";
+        internal string RootEpochFingerprint = string.Empty;
+        internal int RootCommittedSteps;
+        internal int RootPendingSteps;
+        internal int RootRejectedSteps;
+        internal int RootQuarantinedSteps;
+
+        internal bool GlobalSchedulerCanExecute { get { return false; } }
         internal string Stage;
         internal string Objective;
         internal int RebirthSeconds = -1;
@@ -77,6 +107,25 @@ namespace NGUInjector.Autopilot
         internal readonly List<PlanBreakpoint> Magic = new List<PlanBreakpoint>();
         internal readonly List<PlanBreakpoint> R3 = new List<PlanBreakpoint>();
 
+        internal void ApplyDeploymentAuthority(AutopilotConfig config)
+        {
+            if (config == null) throw new ArgumentNullException("config");
+            AuthorityStage = config.AllowVerifiedReversibleActions
+                ? AutopilotAuthorityStage.VerifiedReversible
+                : AutopilotAuthorityStage.ObserveOnly;
+            // Each named high-risk route remains fail-closed in this deployment. Keeping the
+            // values on the plan makes the effective ceiling observable and snapshot-stable.
+            PermanentPurchasesAuthorized = config.AllowPermanentPurchaseExecution;
+            MoneyPitAuthorized = config.AllowMoneyPitExecution;
+            ChallengesAuthorized = config.AllowChallenges;
+            DifficultyAuthorized = config.AllowDifficultyExecution;
+            TitanOneThroughTwelveAuthorized = config.AllowTitanOneThroughTwelveExecution;
+            TitanThirteenFourteenAuthorized = config.AllowTitanThirteenFourteenExecution;
+            Move69Authorized = config.AllowMove69Execution;
+            EndSequenceAuthorized = config.AllowEndSequence;
+            GlobalSchedulerAuthority = PlannerAuthority.ShadowOnly;
+        }
+
         internal string Signature(Character c)
         {
             // The optimizer's elapsed+60 diagnostic probe moves every second while
@@ -88,7 +137,13 @@ namespace NGUInjector.Autopilot
             var elapsed = c == null || c.rebirthTime == null ? -1.0 : c.rebirthTime.totalseconds;
             var rebirthSignature = RebirthSignatureFor(RebirthSeconds,
                 RebirthExecutionHold, elapsed);
-            return Stage + "|" + Objective + "|" + rebirthSignature + "|" + RebirthReason + "|"
+            return AuthorityStage + "|" + GlobalSchedulerAuthority + "|"
+                   + PermanentPurchasesAuthorized + "|" + MoneyPitAuthorized + "|"
+                   + ChallengesAuthorized + "|" + DifficultyAuthorized + "|"
+                   + TitanOneThroughTwelveAuthorized + "|"
+                   + TitanThirteenFourteenAuthorized + "|" + Move69Authorized + "|"
+                   + EndSequenceAuthorized + "|"
+                   + Stage + "|" + Objective + "|" + rebirthSignature + "|" + RebirthReason + "|"
                    + RebirthExecutionHold + "|"
                    + EndgameObjective + "|" + EndgameMissingSummary + "|"
                    + Titan12VersionTarget + "|" + EndgameReadyToTrigger + "|"

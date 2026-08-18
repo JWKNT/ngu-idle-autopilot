@@ -29,28 +29,61 @@ namespace NGUInjector.Managers
             killSeconds = double.PositiveInfinity;
             if (c == null || c.bossCurHP <= 0 || c.curHP <= 0)
                 return false;
-            double survivalSeconds;
-            var viable = EvaluateFixedBossFight(c, c.attack, c.defense, c.curHP, c.bossCurHP,
-                out killSeconds, out survivalSeconds);
-            // "Eventually survivable" is not the same as progression-optimal. Holding a
-            // boss fight for hours blocks rebirth and every later boss check. Wait for
-            // allocations to improve instead unless the exact expected fight is short.
-            if (killSeconds > 120.0)
-                return false;
+            FightBossProjection projection;
+            var viable = EvaluateFixedBossFight(c, c.attack, c.defense, c.bossCurHP,
+                out projection);
+            killSeconds = projection.KillSeconds;
             return viable;
         }
 
+        // Preferred overload for a live/current-health evaluation.  Candidate Attack may change
+        // maximum HP, but the projection always begins from live c.curHP clamped to that maximum.
+        internal static bool EvaluateFixedBossFight(Character c, double attack, double defense,
+            double bossHp, out FightBossProjection projection)
+        {
+            projection = null;
+            if (c == null || c.curHP <= 0 || bossHp <= 0) return false;
+            var candidateMaxHp = Math.Max(0.0, 10.0 + attack * 10.0);
+            var currentHpAfterSwap = MechanicsFightBoss.CurrentHpAfterMaxChange(
+                Math.Max(0.0, c.curHP), candidateMaxHp);
+            projection = MechanicsFightBoss.Evaluate(attack, defense,
+                currentHpAfterSwap, candidateMaxHp,
+                c.bossAttack, c.bossDefense, bossHp, c.bossMaxHP, c.bossRegen,
+                MechanicsFightBoss.DefaultCombatHorizonTicks);
+            return projection.PlayerWins;
+        }
+
+        // Compatibility overload.  Caller-supplied HP is treated only as an additional upper
+        // bound on live current HP.  Passing a projected/full maximum therefore cannot heal the
+        // player.  Call EvaluateFixedBossFightAfterRecovery when a route explicitly waits to heal.
         internal static bool EvaluateFixedBossFight(Character c, double attack, double defense,
             double playerHp, double bossHp, out double killSeconds, out double survivalSeconds)
         {
             killSeconds = double.PositiveInfinity;
             survivalSeconds = double.PositiveInfinity;
             if (c == null || playerHp <= 0 || bossHp <= 0) return false;
-            var projection = MechanicsFightBoss.Evaluate(attack, defense, playerHp,
-                c.bossAttack, c.bossDefense, bossHp, c.bossMaxHP, c.bossRegen);
+            var candidateMaxHp = Math.Max(0.0, 10.0 + attack * 10.0);
+            var boundedLiveHp = Math.Min(Math.Max(0.0, c.curHP), playerHp);
+            var currentHpAfterSwap = MechanicsFightBoss.CurrentHpAfterMaxChange(
+                boundedLiveHp, candidateMaxHp);
+            var projection = MechanicsFightBoss.Evaluate(attack, defense,
+                currentHpAfterSwap, candidateMaxHp,
+                c.bossAttack, c.bossDefense, bossHp, c.bossMaxHP, c.bossRegen,
+                MechanicsFightBoss.DefaultCombatHorizonTicks);
             killSeconds = projection.KillSeconds;
             survivalSeconds = projection.SurvivalSeconds;
             return projection.PlayerWins;
+        }
+
+        internal static FightBossRecoveryProjection EvaluateFixedBossFightAfterRecovery(
+            Character c, double attack, double defense, double bossHp, long maxRecoveryTicks)
+        {
+            if (c == null || bossHp <= 0) return null;
+            var candidateMaxHp = Math.Max(0.0, 10.0 + attack * 10.0);
+            return MechanicsFightBoss.EvaluateRecovery(attack, defense,
+                Math.Max(0.0, c.curHP), candidateMaxHp,
+                c.bossAttack, c.bossDefense, bossHp, c.bossMaxHP, c.bossRegen,
+                MechanicsFightBoss.DefaultCombatHorizonTicks, maxRecoveryTicks);
         }
 
         internal static bool ExecuteVerifiedMove(Button button, Action execute, string description)

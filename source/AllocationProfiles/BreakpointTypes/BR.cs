@@ -62,7 +62,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                                + "can be funded before the selected rebirth checkpoint";
                 return;
             }
-            var allocationLeft = (long)MaxAllocation;
+            var allocationLeft = MaxAllocation;
             var allocated = 0L;
             var allocatedTracks = new List<string>();
             var goldBlocked = 0;
@@ -121,7 +121,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 }
 
                 var cap = CalculateMaxAllocation(i, allocationLeft);
-                SetInput(cap);
+                if (cap <= 0 || !SetInput(cap))
+                    continue;
                 var before = Character.bloodMagic.ritual[i].magic;
                 Character.bloodMagicController.bloodMagics[i].add();
                 var accepted = Math.Max(0L, Character.bloodMagic.ritual[i].magic - before);
@@ -173,7 +174,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                                + "the configured ritual deadline";
                 return;
             }
-            var allocationLeft = (long)MaxAllocation;
+            var allocationLeft = MaxAllocation;
             for (var i = Character.bloodMagic.ritual.Count - 1; i >= 0; i--)
             {
                 if (allocationLeft <= 0)
@@ -206,7 +207,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     continue;
 
                 var cap = CalculateMaxAllocation(i, allocationLeft);
-                SetInput(cap);
+                if (cap <= 0 || !SetInput(cap))
+                    continue;
                 Character.bloodMagicController.bloodMagics[i].add();
                 allocationLeft -= cap;
             }
@@ -236,12 +238,16 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         public float RitualTimeLeft(int id, long remaining)
         {
-            return (float)((1.0 - Character.bloodMagic.ritual[id].progress) /
-                           RitualProgressPerTick(id, remaining) / 50.0);
+            var seconds = ExactResourceAllocator.NativeCompletionSeconds(
+                Character.bloodMagic.ritual[id].progress,
+                RitualProgressPerTick(id, remaining));
+            return double.IsInfinity(seconds) ? float.PositiveInfinity : (float)seconds;
         }
 
         private long CalculateMaxAllocation(int id, long remaining)
         {
+            if (remaining <= 0)
+                return 0L;
             var num1 = Character.bloodMagicController.bloodMagics[id].capValue();
             if (remaining > num1)
             {

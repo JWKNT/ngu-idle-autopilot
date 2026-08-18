@@ -3,8 +3,9 @@ FILE PURPOSE
 
 This stylesheet adds NGU-specific information architecture to the shared JWKNT v1 foundation.
 It keeps a very large game-state reference calm through typographic hierarchy, hairline structure,
-native disclosure controls, compact tables, and semantic reset/transaction states. Rebirth and
-challenge decisions remain scannable as dedicated strips, while repeated action failures stay
+native disclosure controls, compact tables, and semantic reset/transaction states. Held, Pending,
+and Quarantined are deliberately different visual states. Rebirth, challenge, difficulty, and END
+decisions remain scannable as dedicated strips, while repeated action failures stay
 visually distinct without overwhelming the broader reference. Responsive layouts hide no data.
 */
 
@@ -12,6 +13,9 @@ visually distinct without overwhelming the broader reference. Responsive layouts
   --ok: #376247;
   --warn: #8a651c;
   --bad: #8b3939;
+  --pending: #516887;
+  --held: #8a651c;
+  --quarantined: #8b3939;
   --meter-track: #e8e8e8;
 }
 
@@ -19,6 +23,9 @@ visually distinct without overwhelming the broader reference. Responsive layouts
   --ok: #82b793;
   --warn: #d6b568;
   --bad: #d58b8b;
+  --pending: #88a8d1;
+  --held: #d6b568;
+  --quarantined: #e08f8f;
   --meter-track: #292d31;
 }
 
@@ -105,6 +112,42 @@ body { padding-bottom: 40px; font-size: 15px; line-height: 1.5; }
 .rebirth-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px; margin: 15px 0 0; }
 .challenge-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; margin: 15px 0 0; }
 
+.execution-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 34px; }
+.execution-card { min-width: 0; padding: 13px 0 0; border-top: 2px solid var(--line-strong); }
+.execution-card[data-state="pending"] { border-top-color: var(--pending); }
+.execution-card[data-state="held"] { border-top-color: var(--held); }
+.execution-card[data-state="quarantined"], .execution-card[data-state="error"] { border-top-color: var(--quarantined); }
+.execution-card[data-state="committed"], .execution-card[data-state="available"] { border-top-color: var(--ok); }
+.card-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+.card-heading h3 { margin: 0; font-size: 15px; }
+.state-chip { padding: 2px 7px; border: 1px solid currentColor; color: var(--muted); font: 600 9px/1.4 var(--mono); text-transform: uppercase; }
+[data-state="pending"] > .card-heading .state-chip, [data-state="pending"] > strong { color: var(--pending); }
+[data-state="held"] > .card-heading .state-chip, [data-state="held"] > strong { color: var(--held); }
+[data-state="quarantined"] > .card-heading .state-chip, [data-state="quarantined"] > strong,
+[data-state="error"] > .card-heading .state-chip, [data-state="error"] > strong { color: var(--quarantined); }
+[data-state="committed"] > .card-heading .state-chip, [data-state="available"] > .card-heading .state-chip,
+[data-state="committed"] > strong, [data-state="available"] > strong { color: var(--ok); }
+.forecast-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 13px 0 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.forecast-strip > div { min-width: 0; padding: 7px 9px; border-right: 1px solid var(--line); }
+.forecast-strip > div:first-child { padding-left: 0; }
+.forecast-strip > div:last-child { padding-right: 0; border-right: 0; }
+.forecast-strip dt { color: var(--muted); font-size: 9px; font-variant: small-caps; letter-spacing: .35px; }
+.forecast-strip dd { margin: 1px 0 0; font: 10px/1.4 var(--mono); overflow-wrap: anywhere; }
+.authority-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 12px 0 0; padding: 0; border-top: 1px solid var(--line); list-style: none; }
+.authority-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); }
+.authority-list li:nth-child(3n + 2), .authority-list li:nth-child(3n) { padding-left: 12px; border-left: 1px solid var(--line); }
+.authority-list strong { font-size: 11px; }
+.authority-list span { color: var(--muted); font: 9px/1.5 var(--mono); text-transform: uppercase; }
+.authority-list li[data-state="enabled"] span { color: var(--ok); }
+.authority-list li[data-state="held"] span { color: var(--held); }
+.branch-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 12px; border-top: 1px solid var(--line); }
+.branch-grid article { min-width: 0; padding: 10px 13px 9px 0; border-bottom: 1px solid var(--line); }
+.branch-grid article + article { padding-left: 13px; border-left: 1px solid var(--line); }
+.branch-grid h4 { margin: 0; color: var(--muted); font-size: 10px; font-variant: small-caps; letter-spacing: .35px; }
+.branch-grid strong { display: block; margin-top: 3px; font: 600 12px/1.4 var(--mono); }
+.branch-grid p { margin: 4px 0 1px; color: var(--muted-strong); font-size: 11px; }
+.branch-grid small { color: var(--muted); font: 9px/1.4 var(--mono); }
+
 .allocation-row-wide { grid-column: 1 / -1; padding-right: 0; padding-left: 0 !important; border-left: 0 !important; }
 .purchase-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
@@ -165,7 +208,7 @@ tr[hidden] { display: none; }
   .headline-metrics > div:nth-child(-n + 4) { border-bottom: 1px solid var(--line); }
   .headline-metrics > div:nth-child(odd) { padding-left: 0; }
   .route-grid { grid-template-columns: 1fr; }
-  .allocation-grid, .two-column, .three-column { grid-template-columns: 1fr; }
+  .allocation-grid, .two-column, .three-column, .execution-grid { grid-template-columns: 1fr; }
   .allocation-row + .allocation-row, .two-column .section-block + .section-block { padding-left: 0; border-left: 0; }
   .allocation-row, .allocation-row + .allocation-row { padding-right: 0; }
   .purchase-list { grid-template-columns: 1fr; }
@@ -178,6 +221,8 @@ tr[hidden] { display: none; }
   .unlock-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .unlock-list li:nth-child(n) { padding-right: 12px; padding-left: 0; border-left: 0; }
   .unlock-list li:nth-child(even) { padding-left: 12px; border-left: 1px solid var(--line); }
+  .branch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .branch-grid article:nth-child(odd) { padding-left: 0; border-left: 0; }
 }
 
 @media (max-width: 600px) {
@@ -196,6 +241,13 @@ tr[hidden] { display: none; }
   .unlock-list { grid-template-columns: 1fr; }
   .unlock-list li:nth-child(n) { padding-left: 0; border-left: 0; }
   .detail-pair > details + details { padding-left: 0; border-left: 0; }
+  .forecast-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .forecast-strip > div:nth-child(3) { border-right: 0; }
+  .forecast-strip > div:nth-child(-n + 3) { border-bottom: 1px solid var(--line); }
+  .authority-list { grid-template-columns: 1fr; }
+  .authority-list li:nth-child(n) { padding-left: 0; border-left: 0; }
+  .branch-grid { grid-template-columns: 1fr; }
+  .branch-grid article:nth-child(n) { padding-left: 0; border-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

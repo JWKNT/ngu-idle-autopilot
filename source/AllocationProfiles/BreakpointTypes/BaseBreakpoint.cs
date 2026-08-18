@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using NGUInjector.Autopilot;
 using UnityEngine;
 
 /*
@@ -9,8 +10,10 @@ FILE PURPOSE
 
 BaseBreakpoint defines the shared schema and validation contract for one resource-allocation
 target. It carries resource type, amount/cap semantics, priority ordering, and unlock validity.
-Derived breakpoints own native mutations; this base must stay policy-neutral and fail closed on
-invalid amounts or unavailable game features.
+Derived breakpoints own native mutations; this base keeps every request as Int64 through the
+shared native text parser and verifies its exact round trip before a controller may consume it.
+Aggregate priority expansion is marked explicitly so one CAPALLBT percentage cannot multiply by
+six or twelve rows. Invalid amounts, unavailable features, and parser disagreement fail closed.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -27,8 +30,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         protected int Index { get; set; }
         protected ResourceType Type { get; set; }
         protected bool IsCap { get; set; }
+        protected bool IsAggregateGroupCap { get; set; }
         protected Character Character { get; set; }
-        protected float MaxAllocation => CalculateMaxAllocation();
+        protected long MaxAllocation => CalculateMaxAllocation();
 
         protected BaseBreakpoint()
         {
@@ -50,7 +54,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         internal abstract bool Allocate();
         protected abstract bool CorrectResourceType();
 
-        protected float CalculateMaxAllocation()
+        protected long CalculateMaxAllocation()
         {
             var input = Character.energyMagicPanel.energyMagicInput;
             var character = Main.Character;
@@ -74,14 +78,34 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     throw new ArgumentOutOfRangeException();
             }
 
-            var capMax = (long)Math.Ceiling(capValue * CapPercent);
+            var basisPoints = Math.Max(0L, Math.Min(1000000L,
+                (long)Math.Round(CapPercent * 1000000.0, MidpointRounding.AwayFromZero)));
+            var capMax = ExactResourceAllocator.CeilingShare(capValue, basisPoints, 1000000L);
             return !IsCap ? Math.Min(input, capMax) : Math.Min(capMax, idleValue);
         }
 
-        protected void SetInput(float val)
+        protected bool SetInput(long val)
         {
-            Character.energyMagicPanel.energyRequested.text = val.ToString();
+            if (Character == null || Character.energyMagicPanel == null || val < 0)
+                return false;
+            Character.energyMagicPanel.energyRequested.text = ExactResourceAllocator.FormatExactInput(val);
             Character.energyMagicPanel.validateInput();
+            // The native UI parser goes decimal text -> double -> Int64 and therefore cannot
+            // round-trip arbitrary values above 2^53. Controllers consume this public Int64 field
+            // immediately; restore the already bounded exact value after UI validation so the
+            // gameplay mutation remains long end-to-end. The visible text remains invariant exact
+            // decimal, and the post-write assertion below is the final fail-closed boundary.
+            if (Character.energyMagicPanel.energyMagicInput != val)
+            {
+                Character.energyMagicPanel.energyMagicInput = val;
+                Character.energyMagicPanel.energyRequested.text =
+                    ExactResourceAllocator.FormatExactInput(val);
+            }
+            if (Character.energyMagicPanel.energyMagicInput == val)
+                return true;
+            Main.LogAllocation("Rejected inexact native resource input: requested " + val
+                               + ", parser accepted " + Character.energyMagicPanel.energyMagicInput);
+            return false;
         }
 
         protected double RemainingRebirthHorizon()
@@ -271,6 +295,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                             Character = Main.Character,
                             Index = i,
                             IsCap = temp.Contains("CAP"),
+                            IsAggregateGroupCap = temp.Contains("CAP"),
                             Type = type
                         };
                     }
@@ -320,7 +345,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     }
                 }else if (temp.StartsWith("ALLHACK") || temp.StartsWith("CAPALLHACK"))
                 {
-                    for (var i = 0; i < 15; i++)
+                    for (var i = 0; i < 16; i++)
                     {
                         yield return new HackBP
                         {

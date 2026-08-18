@@ -20,7 +20,12 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         internal int GetOffset()
         {
-            return (int)Math.Floor(PPT * 50 * 10);
+            if (double.IsNaN(PPT) || PPT <= 0.0)
+                return 0;
+            var offset = Math.Floor(PPT * 50.0 * 10.0);
+            if (double.IsInfinity(offset) || offset >= int.MaxValue)
+                return int.MaxValue;
+            return (int)offset;
         }
     }
 }

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using NGUInjector.Autopilot;
 
 /*
 FILE PURPOSE
@@ -53,7 +54,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         internal override bool Allocate()
         {
             var alloc = CalculateAugCap();
-            SetInput(alloc);
+            if (alloc <= 0 || !SetInput(alloc))
+                return false;
             if (Index % 2 == 0)
             {
                 Character.augmentsController.augments[AugIndex].addEnergyAug();
@@ -70,7 +72,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Type == ResourceType.Energy;
         }
 
-        internal float CalculateAugCap()
+        internal long CalculateAugCap()
         {
             var calcA = CalculateAugCapCalc(500);
             if (calcA.PPT < 1)
@@ -169,13 +171,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 formula = Character.hardCap();
 
             var num4 = formula <= 1.0 ? 1L : (long)formula;
-            var num = (long)(num4 / (long)Math.Ceiling(num4 / (double) MaxAllocation) * 1.00000202655792);
-            if (num + 1L <= long.MaxValue)
-                ++num;
-            if (num > Character.idleEnergy)
-                num = Character.idleEnergy;
-            if (num < 0L)
-                num = 0L;
+            var num = ExactResourceAllocator.CapAtTickBoundary(num4, MaxAllocation,
+                Character.idleEnergy);
             var ppt = (double)num / num4;
             ret.Num = num;
             ret.PPT = ppt;

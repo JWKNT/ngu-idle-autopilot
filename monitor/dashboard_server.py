@@ -6,10 +6,11 @@ Purpose: serve the public dashboard shell as a local NGU Idle client and expose 
 bot's confirmed telemetry to that shell through a small read-only HTTP API.
 
 Mechanism: a loopback-only ThreadingHTTPServer serves the repository's docs/ tree
-and builds /api/state from runtime/decision.json plus a filtered tail of
-runtime/logs/actions.log.  A derived observability view normalizes optional rebirth,
-challenge, transaction, and producer-identity fields without changing their meaning;
-it never invents an ETA when the producer supplied no finite estimate.  The optional
+and builds /api/state from the matching runtime/deployment.json + decision.json epoch
+and an explicitly session-bound tail of runtime/logs/actions.log.  A derived
+observability view normalizes optional rebirth, challenge, difficulty, terminal,
+capacity, scheduler, transaction, and producer-identity fields without changing their
+meaning; it never invents an ETA when the producer supplied no finite estimate.  The optional
 daemon mode detaches from the launcher and records its own PID for exact lifecycle
 cleanup.  The public jehlp.net copy may request the same endpoint; explicit CORS and
 Private Network Access headers permit that hand-off when the browser allows it.
@@ -52,6 +53,10 @@ EVENT_LINE = re.compile(
     r"\[(?P<category>[^\]]+)\]\s+"
     r"(?:\((?P<run>[^)]*)\)\s+)?(?P<message>.*)$"
 )
+SESSION_MARKER = re.compile(
+    r"^=== SESSION (?P<observed>\S+) id (?P<session>\S+) "
+    r"build (?P<build>\S+) pid (?P<pid>\d+) ===$"
+)
 EVIDENCE_SUFFIX = re.compile(r"\s+\[confirmed(?:[^\]]*)\]\s*$", re.IGNORECASE)
 ALWAYS_INTERESTING = {"TITAN", "DISCOVERY", "REBIRTH", "CHALLENGE", "MACGUFFIN", "DEATH"}
 IRREVERSIBLE_TERMS = {
@@ -77,6 +82,7 @@ CHALLENGE_ADMISSION = re.compile(
     r"recovery (?P<recovery>[\d.]+)(?P<recovery_unit>[smh])\]:\s*"
     r"(?P<evidence>.*?)(?=\s+\|\s+|$)"
 )
+_SESSION_BOUNDARIES: dict[tuple[str, str], tuple[int, int, int, int, bytes]] = {}
 
 
 def iso_age_seconds(value: Any) -> float | None:
@@ -109,6 +115,18 @@ def optional_seconds(value: Any) -> int | None:
     """Return only finite, non-negative ETA values; -1 means unavailable upstream."""
     result = finite_number(value)
     return None if result is None or result < 0 else int(round(result))
+
+
+def optional_count(value: Any) -> int | None:
+    """Return a non-negative integer count without turning a missing value into zero."""
+    result = finite_number(value)
+    return None if result is None or result < 0 else int(result)
+
+
+def optional_nonnegative_number(value: Any) -> float | None:
+    """Preserve an emitted finite statistic exactly while rejecting legacy -1 sentinels."""
+    result = finite_number(value)
+    return None if result is None or result < 0 else result
 
 
 def first_text(state: dict[str, Any], *keys: str) -> str:
@@ -179,7 +197,90 @@ def parse_challenge_admission(summary: str) -> dict[str, Any] | None:
     }
 
 
-def build_observability(state: dict[str, Any]) -> dict[str, Any]:
+def _same_text(left: Any, right: Any, *, casefold: bool = False) -> bool:
+    if not isinstance(left, str) or not left.strip() or not isinstance(right, str) or not right.strip():
+        return False
+    return left.casefold() == right.casefold() if casefold else left == right
+
+
+def deployment_matches_decision(
+    state: dict[str, Any], deployment: dict[str, Any] | None
+) -> bool:
+    """Require the same process, session, build, and artifact hashes on both frames."""
+    if not isinstance(deployment, dict):
+        return False
+    deployment_schema = optional_count(deployment.get("schemaVersion"))
+    producer_pid = optional_count(state.get("producerPid"))
+    deployment_pid = optional_count(deployment.get("producerPid"))
+    return bool(
+        deployment_schema is not None
+        and deployment_schema >= 2
+        and producer_pid is not None
+        and producer_pid > 0
+        and producer_pid == deployment_pid
+        and _same_text(state.get("producerSessionId"), deployment.get("producerSessionId"))
+        and _same_text(state.get("buildId"), deployment.get("activeBuildId"), casefold=True)
+        and _same_text(
+            state.get("diskArtifactSha256"), deployment.get("diskArtifactSha256"), casefold=True
+        )
+        and _same_text(
+            state.get("gameAssemblySha256"), deployment.get("gameAssemblySha256"), casefold=True
+        )
+    )
+
+
+def normalized_scheduler(state: dict[str, Any]) -> dict[str, Any]:
+    source = state.get("globalScheduler")
+    scheduler = source if isinstance(source, dict) else {}
+    provenance = first_text(scheduler, "provenance")
+    sample_count = optional_count(scheduler.get("sampleCount"))
+    confidence = finite_number(scheduler.get("confidence"))
+    if not provenance or provenance.casefold() == "unknown":
+        provenance = ""
+        confidence = None
+        sample_count = None
+    if confidence is not None and not 0 <= confidence <= 1:
+        confidence = None
+    return {
+        "status": first_text(scheduler, "status") or "Unavailable",
+        "authority": first_text(scheduler, "authority") or None,
+        "canExecute": scheduler.get("canExecute") if isinstance(scheduler.get("canExecute"), bool) else None,
+        "snapshotHash": first_text(scheduler, "snapshotHash") or None,
+        "modelHash": first_text(scheduler, "modelHash") or None,
+        "objectiveHash": first_text(scheduler, "objectiveHash") or None,
+        "action": first_text(scheduler, "action") or None,
+        "actionId": first_text(scheduler, "actionId") or None,
+        "nextEvent": first_text(scheduler, "nextEvent") or None,
+        "eventId": first_text(scheduler, "eventId") or None,
+        "meanSeconds": optional_nonnegative_number(scheduler.get("meanSeconds")),
+        "p50Seconds": optional_nonnegative_number(scheduler.get("p50Seconds")),
+        "p90Seconds": optional_nonnegative_number(scheduler.get("p90Seconds")),
+        "lowerBoundSeconds": optional_nonnegative_number(scheduler.get("lowerBoundSeconds")),
+        "upperBoundSeconds": optional_nonnegative_number(scheduler.get("upperBoundSeconds")),
+        "gapSeconds": optional_nonnegative_number(scheduler.get("gapSeconds")),
+        "regretSeconds": optional_nonnegative_number(scheduler.get("regretSeconds")),
+        "runnerUp": first_text(scheduler, "runnerUp") or None,
+        "blocker": first_text(scheduler, "blocker") or None,
+        "blockerDetail": first_text(scheduler, "blockerDetail") or None,
+        "rolloutFallback": scheduler.get("rolloutFallback")
+        if isinstance(scheduler.get("rolloutFallback"), bool)
+        else None,
+        "expandedNodes": optional_count(scheduler.get("expandedNodes")),
+        "generatedTransitions": optional_count(scheduler.get("generatedTransitions")),
+        "dominancePruned": optional_count(scheduler.get("dominancePruned")),
+        "observationStatus": first_text(scheduler, "observationStatus") or None,
+        "observedSeconds": optional_nonnegative_number(scheduler.get("observedSeconds")),
+        "timingResidualSeconds": finite_number(scheduler.get("timingResidualSeconds")),
+        "deltaResidual": finite_number(scheduler.get("deltaResidual")),
+        "provenance": provenance or None,
+        "sampleCount": sample_count,
+        "confidence": confidence,
+    }
+
+
+def build_observability(
+    state: dict[str, Any], deployment: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Build a stable read-only decision view from optional producer telemetry.
 
     Missing data stays ``None``.  In particular, an execution hold has no countdown,
@@ -272,10 +373,93 @@ def build_observability(state: dict[str, Any]) -> dict[str, Any]:
 
     transaction_error = first_text(state, "automationTransactionError")
     transaction_complete = first_bool(state, "automationTransactionComplete")
-    transaction_status = "error" if transaction_error else "complete" if transaction_complete else "partial"
     build_id = first_text(state, "buildId")
     session_id = first_text(state, "producerSessionId")
     producer_pid = finite_number(state.get("producerPid"))
+    decision_epoch = first_text(state, "gameEpochFingerprint")
+    deployment_epoch = first_text(deployment or {}, "gameEpochFingerprint")
+    deployment_match = deployment_matches_decision(state, deployment)
+
+    root_source = state.get("mutationRoot")
+    root = root_source if isinstance(root_source, dict) else {}
+    root_id = optional_count(root.get("id"))
+    if root_id == 0:
+        root_id = None
+    root_state = first_text(root, "state")
+    root_epoch = first_text(root, "epochFingerprint")
+    committed_steps = optional_count(root.get("committedSteps"))
+    pending_steps = optional_count(root.get("pendingSteps"))
+    rejected_steps = optional_count(root.get("rejectedSteps"))
+    quarantined_steps = optional_count(root.get("quarantinedSteps"))
+    root_epoch_matches = (
+        root_epoch == decision_epoch if root_epoch and decision_epoch else None
+    )
+    lowered_root_state = root_state.casefold()
+    if (quarantined_steps or 0) > 0 or "quarant" in lowered_root_state or root_epoch_matches is False:
+        transaction_status = "Quarantined"
+    elif transaction_error:
+        transaction_status = "Error"
+    elif (pending_steps or 0) > 0 or lowered_root_state in {"open", "pending"}:
+        transaction_status = "Pending"
+    elif root_id is None or lowered_root_state in {"", "held", "not-planned", "not planned"}:
+        transaction_status = "Held"
+    elif transaction_complete:
+        transaction_status = "Committed"
+    else:
+        transaction_status = "Pending"
+
+    if not build_id or not session_id or producer_pid is None or producer_pid <= 0 or not decision_epoch:
+        join_status = "Pending"
+    elif not deployment_match or root_epoch_matches is False:
+        join_status = "Quarantined"
+    else:
+        join_status = "Bound"
+
+    staged_source = state.get("stagedAuthority")
+    staged = staged_source if isinstance(staged_source, dict) else {}
+    staged_authority = {
+        key: "Enabled" if value is True else "Held" if value is False else "Unavailable"
+        for key, value in (
+            ("verifiedReversible", staged.get("verifiedReversible")),
+            ("permanentPurchases", staged.get("permanentPurchases")),
+            ("moneyPit", staged.get("moneyPit")),
+            ("challenges", staged.get("challenges")),
+            ("difficulty", staged.get("difficulty")),
+            ("titan1Through12", staged.get("titan1Through12")),
+            ("titan13Through14", staged.get("titan13Through14")),
+            ("move69", staged.get("move69")),
+            ("endSequence", staged.get("endSequence")),
+        )
+    }
+
+    inventory_total = optional_count(state.get("inventoryTotalSlots"))
+    inventory_used = optional_count(state.get("inventoryUsedSlots"))
+    inventory_free = optional_count(state.get("inventoryFreeSlots"))
+    capacity_reserve = optional_count(state.get("collectionRequiredFreeReserve"))
+    capacity_margin = (
+        inventory_free - capacity_reserve
+        if inventory_free is not None and capacity_reserve is not None
+        else None
+    )
+    capacity_status = "Unavailable" if inventory_total is None or inventory_free is None else (
+        "Held" if capacity_margin is not None and capacity_margin < 0 else "Available"
+    )
+
+    scheduler = normalized_scheduler(state)
+    difficulty_value = optional_count(state.get("difficulty"))
+    difficulty_names = {0: "Normal", 1: "Evil", 2: "Sadistic"}
+    difficulty_target = first_text(
+        state, "difficultyTarget", "nextDifficulty", "difficultyTransitionTarget"
+    )
+    difficulty_authority = staged_authority["difficulty"]
+    difficulty_status = "Pending" if difficulty_authority == "Enabled" and difficulty_target else (
+        "Held" if difficulty_authority == "Held" else "Unavailable"
+    )
+    end_ready = first_bool(state, "endgameReadyToTrigger")
+    end_authorized = first_bool(state, "endgameExecutionAuthorized")
+    end_status = "Pending" if end_ready and end_authorized else (
+        "Held" if end_authorized is False or end_ready is False else "Unavailable"
+    )
 
     return {
         "rebirth": {
@@ -298,6 +482,9 @@ def build_observability(state: dict[str, Any]) -> dict[str, Any]:
             "recoveryReason": first_text(
                 state, "rebirthRecoveryReason", "rebirthOptimizerRecoveryReason"
             ),
+            "model": first_text(state, "rebirthOptimizerModel") or None,
+            "provenance": first_text(state, "rebirthEtaProvenance") or None,
+            "confidence": finite_number(state.get("rebirthEtaConfidence")),
             "currentAttack": current_attack,
             "currentDefense": current_defense,
             "previewAttack": preview_attack,
@@ -318,9 +505,46 @@ def build_observability(state: dict[str, Any]) -> dict[str, Any]:
             "targetBoss": int(target_boss) if target_boss is not None else None,
             "targetLevel": int(target_level) if target_level is not None else None,
             "reason": challenge_summary or "The producer emitted no challenge-admission evidence.",
+            "provenance": first_text(state, "challengeEtaProvenance") or None,
+            "confidence": finite_number(state.get("challengeEtaConfidence")),
+        },
+        "difficulty": {
+            "status": difficulty_status,
+            "current": difficulty_names.get(difficulty_value) if difficulty_value is not None else None,
+            "target": difficulty_target or None,
+            "etaSeconds": first_seconds(
+                state, "difficultyEtaSeconds", "difficultyTransitionEtaSeconds"
+            ),
+            "blocker": first_text(
+                state, "difficultyBlocker", "difficultyTransitionReason"
+            ) or None,
+            "provenance": first_text(state, "difficultyEtaProvenance") or None,
+            "confidence": finite_number(state.get("difficultyEtaConfidence")),
+        },
+        "end": {
+            "status": end_status,
+            "objective": first_text(state, "endgameObjective") or None,
+            "missing": first_text(state, "endgameMissingSummary") or None,
+            "titan12VersionTarget": optional_count(state.get("endgameTitan12VersionTarget")),
+            "ready": end_ready,
+            "authorized": end_authorized,
+            "meanSeconds": scheduler["meanSeconds"],
+            "p50Seconds": scheduler["p50Seconds"],
+            "p90Seconds": scheduler["p90Seconds"],
+            "lowerBoundSeconds": scheduler["lowerBoundSeconds"],
+            "provenance": scheduler["provenance"],
+            "confidence": scheduler["confidence"],
         },
         "identity": {
-            "verifiedEnvelope": bool(build_id and session_id and producer_pid and producer_pid > 0),
+            "verifiedEnvelope": bool(
+                deployment_match and decision_epoch and root_epoch_matches is not False
+            ),
+            "decisionEnvelopeComplete": bool(
+                build_id and session_id and producer_pid and producer_pid > 0 and decision_epoch
+            ),
+            "joinStatus": join_status,
+            "deploymentDecisionMatch": deployment_match,
+            "rootEpochMatchesDecision": root_epoch_matches,
             "buildId": build_id or None,
             "producerPid": int(producer_pid) if producer_pid is not None and producer_pid > 0 else None,
             "producerSessionId": session_id or None,
@@ -331,12 +555,40 @@ def build_observability(state: dict[str, Any]) -> dict[str, Any]:
             ) or None,
             "activeImageHashAvailable": state.get("activeImageHashAvailable") is True,
             "activeMatchesDisk": first_text(state, "activeMatchesDisk") or "unknown",
+            "decisionEpochFingerprint": decision_epoch or None,
+            "deploymentEpochFingerprint": deployment_epoch or None,
+            "rootEpochFingerprint": root_epoch or None,
         },
         "transaction": {
             "status": transaction_status,
             "complete": transaction_complete is True,
             "error": transaction_error or None,
+            "rootId": root_id,
+            "rootState": root_state or "Unavailable",
+            "rootEpochFingerprint": root_epoch or None,
+            "committedSteps": committed_steps,
+            "pendingSteps": pending_steps,
+            "rejectedSteps": rejected_steps,
+            "quarantinedSteps": quarantined_steps,
         },
+        "authority": {
+            "stage": first_text(state, "authorityStage") or "Unavailable",
+            "routes": staged_authority,
+        },
+        "capacity": {
+            "status": capacity_status,
+            "totalSlots": inventory_total,
+            "usedSlots": inventory_used,
+            "freeSlots": inventory_free,
+            "requiredReserve": capacity_reserve,
+            "projectedNewSlots": optional_count(state.get("collectionProjectedNewSlots")),
+            "marginSlots": capacity_margin,
+            "pressure": first_text(state, "inventoryPressure") or None,
+            "provenance": "LiveCounters" if inventory_total is not None and inventory_free is not None else None,
+            "confidence": 1.0 if inventory_total is not None and inventory_free is not None else None,
+            "exactDeliveryProof": first_bool(state, "capacityProofExact"),
+        },
+        "scheduler": scheduler,
     }
 
 
@@ -452,9 +704,94 @@ def tail_text(path: Path, limit: int = 1_000_000) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def recent_key_events(path: Path, maximum: int = 30) -> list[dict[str, str]]:
+def session_bound_lines(text: str, session_id: str | None) -> tuple[list[str], str]:
+    """Select exactly one append-only producer session, or fail closed with no lines."""
+    if not session_id:
+        return [], "MissingSession"
+    selected: list[str] = []
+    admitted = False
+    found = False
+    for line in text.splitlines():
+        marker = SESSION_MARKER.match(line.strip())
+        if marker:
+            admitted = marker.group("session") == session_id
+            found = found or admitted
+            continue
+        if admitted:
+            selected.append(line)
+    return (selected, "Bound") if found else ([], "Unbound")
+
+
+def session_tail_lines(
+    path: Path, session_id: str | None, limit: int = 1_000_000
+) -> tuple[list[str], str]:
+    """Read a bounded current-session tail even when its marker predates the tail window.
+
+    The first lookup scans the append-only file for the exact marker and caches its byte
+    boundary. Later polls validate that marker in place, then read only the bounded tail.
+    A subsequent different session marker closes admission, so a decision that lags a new
+    producer still cannot display the newer producer's lines.
+    """
+    if not session_id:
+        return [], "MissingSession"
+    if not path.is_file():
+        return [], "Unbound"
+    try:
+        stat = path.stat()
+        key = (str(path.resolve()), session_id)
+        boundary = _SESSION_BOUNDARIES.get(key)
+        marker_start = marker_end = -1
+        marker_bytes = b""
+        with path.open("rb") as stream:
+            if boundary and boundary[0] == stat.st_dev and boundary[1] == stat.st_ino:
+                _, _, cached_start, cached_end, cached_bytes = boundary
+                if stat.st_size >= cached_end:
+                    stream.seek(cached_start)
+                    if stream.read(cached_end - cached_start) == cached_bytes:
+                        marker_start, marker_end, marker_bytes = (
+                            cached_start, cached_end, cached_bytes
+                        )
+            if marker_end < 0:
+                stream.seek(0)
+                while True:
+                    start = stream.tell()
+                    raw = stream.readline()
+                    if not raw:
+                        break
+                    marker = SESSION_MARKER.match(raw.decode("utf-8", errors="replace").strip())
+                    if marker and marker.group("session") == session_id:
+                        marker_start, marker_end, marker_bytes = start, stream.tell(), raw
+                if marker_end < 0:
+                    return [], "Unbound"
+                _SESSION_BOUNDARIES[key] = (
+                    stat.st_dev, stat.st_ino, marker_start, marker_end, marker_bytes
+                )
+
+            start = max(marker_end, stat.st_size - max(1, limit))
+            stream.seek(start)
+            if start > marker_end:
+                stream.readline()
+            admitted = True
+            selected: list[str] = []
+            for raw in stream:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                marker = SESSION_MARKER.match(line.strip())
+                if marker:
+                    admitted = marker.group("session") == session_id
+                    continue
+                if admitted:
+                    selected.append(line)
+            return selected, "Bound"
+    except OSError:
+        return [], "Unbound"
+
+
+def recent_key_events(
+    path: Path, maximum: int = 30, session_id: str | None = None
+) -> list[dict[str, str]]:
     events: list[dict[str, str]] = []
-    for line in reversed(tail_text(path).splitlines()):
+    lines, _ = session_tail_lines(path, session_id)
+    for line in reversed(lines):
         match = EVENT_LINE.match(line.strip())
         if not match:
             continue
@@ -477,7 +814,9 @@ def recent_key_events(path: Path, maximum: int = 30) -> list[dict[str, str]]:
     return events
 
 
-def recent_action_errors(path: Path, maximum: int = 12) -> list[dict[str, Any]]:
+def recent_action_errors(
+    path: Path, maximum: int = 12, session_id: str | None = None
+) -> list[dict[str, Any]]:
     """Return distinct recent safety/error messages with bounded-tail occurrence counts.
 
     A controller can reject the same unsafe attempt on every sweep.  Showing hundreds of
@@ -486,7 +825,8 @@ def recent_action_errors(path: Path, maximum: int = 12) -> list[dict[str, Any]]:
     """
     ordered: list[dict[str, Any]] = []
     by_message: dict[tuple[str, str], dict[str, Any]] = {}
-    for line in reversed(tail_text(path).splitlines()):
+    lines, _ = session_tail_lines(path, session_id)
+    for line in reversed(lines):
         match = EVENT_LINE.match(line.strip())
         if not match:
             continue
@@ -595,6 +935,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             )
             return
 
+        deployment: dict[str, Any] | None = None
+        try:
+            with (self.runtime_dir / "deployment.json").open("r", encoding="utf-8") as stream:
+                candidate = json.load(stream)
+                if isinstance(candidate, dict):
+                    deployment = candidate
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            deployment = None
+
+        observability = build_observability(state, deployment)
+        identity = observability["identity"]
+        session_id = (
+            identity["producerSessionId"]
+            if identity["deploymentDecisionMatch"] is True
+            and identity["decisionEnvelopeComplete"] is True
+            else None
+        )
+        action_log = self.runtime_dir / "logs" / "actions.log"
+        _, tail_status = session_tail_lines(action_log, session_id)
+        events = recent_key_events(action_log, session_id=session_id)
+        action_errors = recent_action_errors(action_log, session_id=session_id)
+
         timestamp = (
             state.get("snapshotUtc")
             or state.get("timestampUtc")
@@ -608,9 +970,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "servedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "stateAgeSeconds": iso_age_seconds(timestamp),
             "state": state,
-            "observability": build_observability(state),
-            "events": recent_key_events(self.runtime_dir / "logs" / "actions.log"),
-            "actionErrors": recent_action_errors(self.runtime_dir / "logs" / "actions.log"),
+            "deployment": deployment,
+            "observability": observability,
+            "actionTail": {
+                "status": tail_status if session_id else identity["joinStatus"],
+                "producerSessionId": session_id,
+                "eventCount": len(events),
+                "errorCount": len(action_errors),
+            },
+            "events": events,
+            "actionErrors": action_errors,
         }
         self._send_json(payload)
 

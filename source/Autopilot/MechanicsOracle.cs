@@ -160,85 +160,316 @@ namespace NGUInjector.Autopilot
     internal sealed class FightBossProjection
     {
         internal bool PlayerWins;
+        internal bool HorizonReached;
+        // KillTick is the exact counterfactual boss-only kill tick within the bounded horizon.
+        // PlayerWins says whether native player-death-before-hit ordering actually reaches it.
         internal long KillTick;
         internal long DeathTick;
+        internal long TicksSimulated;
         internal double KillSeconds;
         internal double SurvivalSeconds;
         internal double OutgoingDamagePerTick;
         internal double IncomingDamagePerTick;
+        internal double PlayerStartHp;
+        internal double PlayerMaxHp;
+        internal double PlayerHpAtEnd;
+        internal double BossHpAtEnd;
+    }
+
+    internal sealed class FightBossRecoveryProjection
+    {
+        // Immediate never includes pre-fight healing.  CurrentHpAfterSwap is the live current HP
+        // clamped down to the candidate maximum; raising the maximum cannot raise this value.
+        internal FightBossProjection Immediate;
+        internal FightBossProjection AfterRecovery;
+        internal FightBossProjection AtFullHp;
+        internal double CurrentHpAfterSwap;
+        internal double CandidateMaxHp;
+        internal double RequiredStartHp;
+        internal long RecoveryTicks;
+        internal double RecoverySeconds;
+        internal bool CanWinAtFullHp;
+        internal bool RecoveryWithinHorizon;
     }
 
     internal static class MechanicsFightBoss
     {
+        internal const long DefaultCombatHorizonTicks = 120L * MechanicsCadence.TicksPerSecond;
+        internal const long DefaultRecoveryHorizonTicks = 120L * MechanicsCadence.TicksPerSecond;
+
         /*
         NATIVE FIXED-FIGHT ORDER
 
         Each 0.02-second Fight Boss tick first regenerates/caps Boss HP, then damages the player
         and resolves player death, then damages the Boss and resolves victory.  Character HP regen
         is a separate callback: conservatively do not credit it before the first incoming hit and
-        use its exact per-tick amount after that.  A same-tick death therefore loses.
+        use its exact per-tick amount after each completed, nonterminal fight tick.  A same-tick
+        death therefore loses and the outgoing hit is never applied.
+
+        This intentionally uses a bounded tick loop instead of an algebraic DPS quotient.  The
+        multiplication/subtraction and repeated add/subtract order is the order in BossController;
+        reassociating `attack * .02 - defense * .02` as `.02 * (attack - defense)` changes real
+        double boundaries.  A horizon result is not a victory estimate.
         */
         internal static FightBossProjection Evaluate(
             double playerAttack, double playerDefense, double playerHp,
             double bossAttack, double bossDefense, double bossHp,
             double bossMaxHp, double bossRegen)
         {
-            foreach (var value in new[]
-                     {
-                         playerAttack, playerDefense, playerHp, bossAttack, bossDefense,
-                         bossHp, bossMaxHp, bossRegen
-                     })
-                if (double.IsNaN(value) || double.IsInfinity(value) || value < 0.0)
-                    throw new ArgumentOutOfRangeException("Fight Boss inputs must be finite and non-negative");
+            // Compatibility overload: without an independently supplied maximum, current HP is
+            // also the cap.  In particular, this overload can never manufacture pre-fight healing.
+            return Evaluate(playerAttack, playerDefense, playerHp, playerHp,
+                bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen,
+                DefaultCombatHorizonTicks);
+        }
 
+        internal static FightBossProjection Evaluate(
+            double playerAttack, double playerDefense, double playerCurrentHp, double playerMaxHp,
+            double bossAttack, double bossDefense, double bossHp,
+            double bossMaxHp, double bossRegen, long maxTicks)
+        {
+            ValidateNonNegativeFinite(playerAttack, "playerAttack");
+            ValidateNonNegativeFinite(playerDefense, "playerDefense");
+            ValidateNonNegativeFinite(playerCurrentHp, "playerCurrentHp");
+            ValidateNonNegativeFinite(playerMaxHp, "playerMaxHp");
+            ValidateNonNegativeFinite(bossAttack, "bossAttack");
+            ValidateNonNegativeFinite(bossDefense, "bossDefense");
+            ValidateNonNegativeFinite(bossHp, "bossHp");
+            ValidateNonNegativeFinite(bossMaxHp, "bossMaxHp");
+            ValidateNonNegativeFinite(bossRegen, "bossRegen");
+            ValidateHorizon(maxTicks, "maxTicks");
+
+            var currentPlayerHp = CurrentHpAfterMaxChange(playerCurrentHp, playerMaxHp);
+            var currentBossHp = bossHp;
+            var outgoingDamage = playerAttack * MechanicsCadence.SecondsPerTick;
+            outgoingDamage -= bossDefense * MechanicsCadence.SecondsPerTick;
+            if (outgoingDamage < 0.0) outgoingDamage = 0.0;
+            var incomingDamage = bossAttack * MechanicsCadence.SecondsPerTick;
+            incomingDamage -= playerDefense * MechanicsCadence.SecondsPerTick;
+            if (incomingDamage < 0.0) incomingDamage = 0.0;
             var result = new FightBossProjection
             {
                 KillTick = long.MaxValue,
                 DeathTick = long.MaxValue,
                 KillSeconds = double.PositiveInfinity,
-                SurvivalSeconds = double.PositiveInfinity
+                SurvivalSeconds = double.PositiveInfinity,
+                OutgoingDamagePerTick = outgoingDamage,
+                IncomingDamagePerTick = incomingDamage,
+                PlayerStartHp = currentPlayerHp,
+                PlayerMaxHp = playerMaxHp,
+                PlayerHpAtEnd = currentPlayerHp,
+                BossHpAtEnd = currentBossHp
             };
-            if (playerHp <= 0.0 || bossHp <= 0.0)
+            if (currentPlayerHp <= 0.0 || currentBossHp <= 0.0)
                 return result;
 
-            result.OutgoingDamagePerTick = MechanicsCadence.SecondsPerTick
-                                           * Math.Max(0.0, playerAttack - bossDefense);
-            var preHitBossHp = Math.Min(bossMaxHp, bossHp + bossRegen);
-            if (result.OutgoingDamagePerTick > 0.0)
-            {
-                if (result.OutgoingDamagePerTick >= preHitBossHp)
-                    result.KillTick = 1L;
-                else
-                {
-                    var netBossDamage = result.OutgoingDamagePerTick - bossRegen;
-                    if (netBossDamage > 0.0)
-                        result.KillTick = 1L + (long)Math.Ceiling(
-                            (preHitBossHp - result.OutgoingDamagePerTick) / netBossDamage);
-                }
-            }
-
-            result.IncomingDamagePerTick = MechanicsCadence.SecondsPerTick
-                                           * Math.Max(0.0, bossAttack - playerDefense);
             var playerRegen = 0.001 + 0.001 * playerDefense;
-            if (result.IncomingDamagePerTick > 0.0)
+            for (var tick = 1L; tick <= maxTicks; tick++)
             {
-                if (result.IncomingDamagePerTick >= playerHp)
-                    result.DeathTick = 1L;
-                else
+                // BossController.fight regenerates even before resolving the current fight frame.
+                currentBossHp += bossRegen;
+                if (currentBossHp > bossMaxHp) currentBossHp = bossMaxHp;
+
+                // Native resolves player death and returns before the outgoing hit.
+                currentPlayerHp -= incomingDamage;
+                result.TicksSimulated = tick;
+                result.PlayerHpAtEnd = currentPlayerHp;
+                result.BossHpAtEnd = currentBossHp;
+                if (currentPlayerHp <= 0.0)
                 {
-                    var netPlayerDamage = result.IncomingDamagePerTick - playerRegen;
-                    if (netPlayerDamage > 0.0)
-                        result.DeathTick = 1L + (long)Math.Ceiling(
-                            (playerHp - result.IncomingDamagePerTick) / netPlayerDamage);
+                    result.DeathTick = tick;
+                    result.SurvivalSeconds = MechanicsCadence.SecondsForTicks(tick);
+                    result.KillTick = PotentialKillTickAfterLethalIncoming(currentBossHp,
+                        bossMaxHp, bossRegen, outgoingDamage, tick, maxTicks);
+                    if (result.KillTick != long.MaxValue)
+                        result.KillSeconds = MechanicsCadence.SecondsForTicks(result.KillTick);
+                    return result;
                 }
+
+                currentBossHp -= outgoingDamage;
+                result.BossHpAtEnd = currentBossHp;
+                if (currentBossHp <= 0.0)
+                {
+                    result.PlayerWins = true;
+                    result.KillTick = tick;
+                    result.KillSeconds = MechanicsCadence.SecondsForTicks(tick);
+                    return result;
+                }
+
+                // Character.updateHP is a separate 0.02-second callback.  Giving it no credit
+                // before tick one is fail-closed under Unity's unspecified cross-component order.
+                currentPlayerHp += playerRegen;
+                if (currentPlayerHp > playerMaxHp) currentPlayerHp = playerMaxHp;
+                result.PlayerHpAtEnd = currentPlayerHp;
             }
 
-            if (result.KillTick != long.MaxValue)
-                result.KillSeconds = MechanicsCadence.SecondsForTicks(result.KillTick);
-            if (result.DeathTick != long.MaxValue)
-                result.SurvivalSeconds = MechanicsCadence.SecondsForTicks(result.DeathTick);
-            result.PlayerWins = result.KillTick < result.DeathTick;
+            result.HorizonReached = true;
             return result;
+        }
+
+        private static long PotentialKillTickAfterLethalIncoming(
+            double bossHp, double bossMaxHp, double bossRegen,
+            double outgoingDamage, long deathTick, long maxTicks)
+        {
+            if (bossHp <= 0.0 || outgoingDamage <= 0.0) return long.MaxValue;
+            // The native hit did not happen.  Apply it only to this counterfactual state so
+            // KillTick remains useful to legacy callers without changing BossHpAtEnd.
+            bossHp -= outgoingDamage;
+            if (bossHp <= 0.0) return deathTick;
+            for (var tick = deathTick + 1L; tick <= maxTicks; tick++)
+            {
+                bossHp += bossRegen;
+                if (bossHp > bossMaxHp) bossHp = bossMaxHp;
+                bossHp -= outgoingDamage;
+                if (bossHp <= 0.0) return tick;
+            }
+            return long.MaxValue;
+        }
+
+        /*
+        RECOVERY SEMANTICS
+
+        Equipping a candidate changes maximum Fight Boss HP through Attack but does not change live
+        current HP.  This route projection first clamps current HP down when the candidate maximum
+        is lower, evaluates combat immediately, and only then evaluates explicitly waited native HP
+        callbacks.  Recovery never occurs implicitly inside Immediate.  RequiredStartHp is the
+        first representable double start HP that wins within the combat horizon.
+        */
+        internal static FightBossRecoveryProjection EvaluateRecovery(
+            double playerAttack, double playerDefense,
+            double liveCurrentHp, double candidateMaxHp,
+            double bossAttack, double bossDefense, double bossHp,
+            double bossMaxHp, double bossRegen)
+        {
+            return EvaluateRecovery(playerAttack, playerDefense, liveCurrentHp, candidateMaxHp,
+                bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen,
+                DefaultCombatHorizonTicks, DefaultRecoveryHorizonTicks);
+        }
+
+        internal static FightBossRecoveryProjection EvaluateRecovery(
+            double playerAttack, double playerDefense,
+            double liveCurrentHp, double candidateMaxHp,
+            double bossAttack, double bossDefense, double bossHp,
+            double bossMaxHp, double bossRegen,
+            long maxCombatTicks, long maxRecoveryTicks)
+        {
+            ValidateHorizon(maxCombatTicks, "maxCombatTicks");
+            ValidateHorizon(maxRecoveryTicks, "maxRecoveryTicks");
+            var currentHp = CurrentHpAfterMaxChange(liveCurrentHp, candidateMaxHp);
+            var immediate = Evaluate(playerAttack, playerDefense, currentHp, candidateMaxHp,
+                bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen, maxCombatTicks);
+            var full = Evaluate(playerAttack, playerDefense, candidateMaxHp, candidateMaxHp,
+                bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen, maxCombatTicks);
+            var route = new FightBossRecoveryProjection
+            {
+                Immediate = immediate,
+                AtFullHp = full,
+                AfterRecovery = immediate,
+                CurrentHpAfterSwap = currentHp,
+                CandidateMaxHp = candidateMaxHp,
+                RequiredStartHp = double.PositiveInfinity,
+                RecoveryTicks = long.MaxValue,
+                RecoverySeconds = double.PositiveInfinity,
+                CanWinAtFullHp = full.PlayerWins
+            };
+            if (!full.PlayerWins) return route;
+
+            route.RequiredStartHp = FirstWinningStartHp(playerAttack, playerDefense, candidateMaxHp,
+                bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen, maxCombatTicks);
+            if (immediate.PlayerWins)
+            {
+                route.AfterRecovery = immediate;
+                route.RecoveryTicks = 0L;
+                route.RecoverySeconds = 0.0;
+                route.RecoveryWithinHorizon = true;
+                return route;
+            }
+
+            var hpAtRecoveryHorizon = RecoverHp(currentHp, candidateMaxHp, playerDefense,
+                maxRecoveryTicks);
+            var horizonFight = Evaluate(playerAttack, playerDefense, hpAtRecoveryHorizon,
+                candidateMaxHp, bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen,
+                maxCombatTicks);
+            if (!horizonFight.PlayerWins) return route;
+
+            // Winning is monotone in start HP, hence in the number of positive recovery ticks.
+            var low = 0L;
+            var high = maxRecoveryTicks;
+            while (low + 1L < high)
+            {
+                var middle = low + (high - low) / 2L;
+                var recoveredHp = RecoverHp(currentHp, candidateMaxHp, playerDefense, middle);
+                var projection = Evaluate(playerAttack, playerDefense, recoveredHp, candidateMaxHp,
+                    bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen, maxCombatTicks);
+                if (projection.PlayerWins) high = middle;
+                else low = middle;
+            }
+
+            var requiredRecoveredHp = RecoverHp(currentHp, candidateMaxHp, playerDefense, high);
+            route.AfterRecovery = Evaluate(playerAttack, playerDefense, requiredRecoveredHp,
+                candidateMaxHp, bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen,
+                maxCombatTicks);
+            route.RecoveryTicks = high;
+            route.RecoverySeconds = MechanicsCadence.SecondsForTicks(high);
+            route.RecoveryWithinHorizon = route.AfterRecovery.PlayerWins;
+            return route;
+        }
+
+        internal static double CurrentHpAfterMaxChange(double liveCurrentHp, double candidateMaxHp)
+        {
+            ValidateNonNegativeFinite(liveCurrentHp, "liveCurrentHp");
+            ValidateNonNegativeFinite(candidateMaxHp, "candidateMaxHp");
+            return Math.Min(liveCurrentHp, candidateMaxHp);
+        }
+
+        internal static double RecoverHp(
+            double currentHp, double maxHp, double playerDefense, long recoveryTicks)
+        {
+            ValidateNonNegativeFinite(currentHp, "currentHp");
+            ValidateNonNegativeFinite(maxHp, "maxHp");
+            ValidateNonNegativeFinite(playerDefense, "playerDefense");
+            ValidateHorizon(recoveryTicks, "recoveryTicks");
+            var hp = CurrentHpAfterMaxChange(currentHp, maxHp);
+            var regen = 0.001 + 0.001 * playerDefense;
+            for (var tick = 0L; tick < recoveryTicks; tick++)
+            {
+                hp += regen;
+                if (hp > maxHp) hp = maxHp;
+            }
+            return hp;
+        }
+
+        private static double FirstWinningStartHp(
+            double playerAttack, double playerDefense, double playerMaxHp,
+            double bossAttack, double bossDefense, double bossHp,
+            double bossMaxHp, double bossRegen, long maxCombatTicks)
+        {
+            var lowBits = BitConverter.DoubleToInt64Bits(0.0);
+            var highBits = BitConverter.DoubleToInt64Bits(playerMaxHp);
+            while (lowBits + 1L < highBits)
+            {
+                var middleBits = lowBits + (highBits - lowBits) / 2L;
+                var startHp = BitConverter.Int64BitsToDouble(middleBits);
+                var projection = Evaluate(playerAttack, playerDefense, startHp, playerMaxHp,
+                    bossAttack, bossDefense, bossHp, bossMaxHp, bossRegen, maxCombatTicks);
+                if (projection.PlayerWins) highBits = middleBits;
+                else lowBits = middleBits;
+            }
+            return BitConverter.Int64BitsToDouble(highBits);
+        }
+
+        private static void ValidateNonNegativeFinite(double value, string name)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0.0)
+                throw new ArgumentOutOfRangeException(name,
+                    "Fight Boss inputs must be finite and non-negative");
+        }
+
+        private static void ValidateHorizon(long ticks, string name)
+        {
+            if (ticks < 0L || ticks > DefaultCombatHorizonTicks)
+                throw new ArgumentOutOfRangeException(name,
+                    "Fight Boss tick horizons must be between zero and 6,000 ticks");
         }
     }
 

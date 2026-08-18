@@ -17,8 +17,23 @@ from monitor.dashboard_server import (
     compact_event_message,
     event_importance,
     is_key_event,
+    recent_key_events,
     recent_action_errors,
+    session_bound_lines,
+    session_tail_lines,
 )
+
+
+def deployment_for(state: dict) -> dict:
+    return {
+        "schemaVersion": 2,
+        "producerPid": state["producerPid"],
+        "producerSessionId": state["producerSessionId"],
+        "activeBuildId": state["buildId"],
+        "diskArtifactSha256": state["diskArtifactSha256"],
+        "gameAssemblySha256": state["gameAssemblySha256"],
+        "gameEpochFingerprint": state.get("gameEpochFingerprint", "deployment-start"),
+    }
 
 
 class KeyEventPolicyTests(unittest.TestCase):
@@ -171,37 +186,175 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIsNone(challenge["targetBoss"])
 
     def test_identity_and_transaction_error_are_reported_without_hash_inference(self) -> None:
-        view = build_observability(
-            {
+        state = {
                 "buildId": "build-a",
                 "producerPid": 123,
                 "producerSessionId": "session-a",
                 "diskArtifactSha256": "disk",
+                "gameAssemblySha256": "game",
+                "gameEpochFingerprint": "epoch-7",
                 "activeImageHashAvailable": False,
                 "activeMatchesDisk": "unknown-until-reinjection-build-id-verification",
                 "automationTransactionComplete": False,
                 "automationTransactionError": "inventory rollback mismatch",
-            }
-        )
+                "mutationRoot": {"id": 8, "state": "Aborted", "epochFingerprint": "epoch-7"},
+        }
+        view = build_observability(state, deployment_for(state))
         self.assertTrue(view["identity"]["verifiedEnvelope"])
+        self.assertEqual(view["identity"]["joinStatus"], "Bound")
         self.assertFalse(view["identity"]["activeImageHashAvailable"])
         self.assertEqual(view["identity"]["activeMatchesDisk"], "unknown-until-reinjection-build-id-verification")
-        self.assertEqual(view["transaction"]["status"], "error")
+        self.assertEqual(view["transaction"]["status"], "Error")
         self.assertEqual(view["transaction"]["error"], "inventory rollback mismatch")
+
+    def test_root_states_keep_held_pending_and_quarantined_distinct(self) -> None:
+        held = build_observability(
+            {"mutationRoot": {"id": 0, "state": "not-planned", "epochFingerprint": "e"},
+             "gameEpochFingerprint": "e"}
+        )
+        pending = build_observability(
+            {"mutationRoot": {"id": 9, "state": "Open", "epochFingerprint": "e",
+                              "pendingSteps": 2}, "gameEpochFingerprint": "e"}
+        )
+        quarantined = build_observability(
+            {"mutationRoot": {"id": 10, "state": "Quarantined", "epochFingerprint": "old",
+                              "quarantinedSteps": 1}, "gameEpochFingerprint": "new"}
+        )
+        self.assertEqual(held["transaction"]["status"], "Held")
+        self.assertIsNone(held["transaction"]["rootId"])
+        self.assertEqual(pending["transaction"]["status"], "Pending")
+        self.assertEqual(pending["transaction"]["pendingSteps"], 2)
+        self.assertEqual(quarantined["transaction"]["status"], "Quarantined")
+        self.assertFalse(quarantined["identity"]["rootEpochMatchesDecision"])
+
+    def test_scheduler_preserves_exact_statistics_and_removes_unknown_sentinels(self) -> None:
+        exact = build_observability({"globalScheduler": {
+            "status": "Planned", "authority": "ShadowOnly", "canExecute": False,
+            "snapshotHash": "save", "modelHash": "model", "objectiveHash": "objective",
+            "action": "Wait", "actionId": "wait-1", "nextEvent": "TitanDue",
+            "eventId": "titan-6", "meanSeconds": 90.25, "p50Seconds": 80,
+            "p90Seconds": 140, "lowerBoundSeconds": 60, "upperBoundSeconds": 200,
+            "gapSeconds": 30, "regretSeconds": 12, "provenance": "Empirical",
+            "sampleCount": 44, "confidence": 0.875, "rolloutFallback": True,
+        }})["scheduler"]
+        self.assertEqual(exact["meanSeconds"], 90.25)
+        self.assertEqual(exact["p50Seconds"], 80)
+        self.assertEqual(exact["p90Seconds"], 140)
+        self.assertEqual(exact["lowerBoundSeconds"], 60)
+        self.assertEqual(exact["gapSeconds"], 30)
+        self.assertEqual(exact["regretSeconds"], 12)
+        self.assertEqual(exact["provenance"], "Empirical")
+        self.assertEqual(exact["confidence"], 0.875)
+        self.assertTrue(exact["rolloutFallback"])
+
+        unavailable = build_observability({"globalScheduler": {
+            "status": "Blocked", "meanSeconds": -1, "p50Seconds": None,
+            "p90Seconds": -1, "lowerBoundSeconds": None, "gapSeconds": -1,
+            "regretSeconds": -1, "provenance": "Unknown", "sampleCount": 0,
+            "confidence": 0,
+        }})["scheduler"]
+        for key in ("meanSeconds", "p50Seconds", "p90Seconds", "lowerBoundSeconds",
+                    "gapSeconds", "regretSeconds", "provenance", "sampleCount", "confidence"):
+            self.assertIsNone(unavailable[key], key)
+
+    def test_capacity_difficulty_and_end_are_explicitly_unavailable_or_held(self) -> None:
+        missing = build_observability({})
+        self.assertEqual(missing["capacity"]["status"], "Unavailable")
+        self.assertEqual(missing["difficulty"]["status"], "Unavailable")
+        self.assertEqual(missing["end"]["status"], "Unavailable")
+        self.assertIsNone(missing["end"]["p90Seconds"])
+
+        held = build_observability({
+            "inventoryTotalSlots": 100, "inventoryUsedSlots": 99,
+            "inventoryFreeSlots": 1, "collectionRequiredFreeReserve": 3,
+            "difficulty": 1, "stagedAuthority": {"difficulty": False, "endSequence": False},
+            "endgameReadyToTrigger": True, "endgameExecutionAuthorized": False,
+        })
+        self.assertEqual(held["capacity"]["status"], "Held")
+        self.assertEqual(held["capacity"]["marginSlots"], -2)
+        self.assertEqual(held["difficulty"]["current"], "Evil")
+        self.assertEqual(held["difficulty"]["status"], "Held")
+        self.assertEqual(held["end"]["status"], "Held")
+
+    def test_deployment_mismatch_quarantines_the_join(self) -> None:
+        state = {
+            "buildId": "build-a", "producerPid": 123, "producerSessionId": "session-a",
+            "diskArtifactSha256": "disk", "gameAssemblySha256": "game",
+            "gameEpochFingerprint": "epoch-a",
+            "mutationRoot": {"id": 4, "state": "Committed", "epochFingerprint": "epoch-a"},
+        }
+        deployment = deployment_for(state)
+        deployment["producerSessionId"] = "stale-session"
+        view = build_observability(state, deployment)
+        self.assertFalse(view["identity"]["verifiedEnvelope"])
+        self.assertFalse(view["identity"]["deploymentDecisionMatch"])
+        self.assertEqual(view["identity"]["joinStatus"], "Quarantined")
 
 
 class ActionErrorTests(unittest.TestCase):
+    def test_tail_selects_only_the_exact_session_boundary(self) -> None:
+        text = (
+            "=== SESSION 2026-08-18T01:00:00Z id old build a pid 10 ===\n"
+            "12:00:00.000 [REBIRTH] (10s) stale reset\n"
+            "=== SESSION 2026-08-18T02:00:00Z id current build b pid 11 ===\n"
+            "13:00:00.000 [REBIRTH] (20s) current reset\n"
+            "13:00:01.000 [ERROR] (21s) current failure\n"
+            "=== SESSION 2026-08-18T03:00:00Z id later build c pid 12 ===\n"
+            "14:00:00.000 [REBIRTH] (30s) later reset\n"
+        )
+        lines, status = session_bound_lines(text, "current")
+        self.assertEqual(status, "Bound")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("current reset", lines[0])
+        self.assertFalse(any("stale" in line or "later" in line for line in lines))
+        self.assertEqual(session_bound_lines(text, "missing"), ([], "Unbound"))
+        self.assertEqual(session_bound_lines(text, None), ([], "MissingSession"))
+
+    def test_stale_session_events_and_errors_are_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "actions.log"
+            path.write_text(
+                "=== SESSION 2026-08-18T01:00:00Z id old build a pid 10 ===\n"
+                "12:00:00.000 [REBIRTH] (10s) stale reset\n"
+                "12:00:01.000 [ERROR] (11s) stale exception\n"
+                "=== SESSION 2026-08-18T02:00:00Z id current build b pid 11 ===\n"
+                "13:00:00.000 [REBIRTH] (20s) current reset\n",
+                encoding="utf-8",
+            )
+            events = recent_key_events(path, session_id="current")
+            errors = recent_action_errors(path, session_id="current")
+        self.assertEqual([event["message"] for event in events], ["current reset"])
+        self.assertEqual(errors, [])
+
+    def test_bounded_tail_remains_bound_when_marker_is_before_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "actions.log"
+            path.write_text(
+                "=== SESSION 2026-08-18T02:00:00Z id current build b pid 11 ===\n"
+                + "".join(
+                    f"13:00:{index:02d}.000 [ALLOC] ({index}s) filler-{index:02d}\n"
+                    for index in range(30)
+                )
+                + "13:01:00.000 [REBIRTH] (60s) current reset\n",
+                encoding="utf-8",
+            )
+            lines, status = session_tail_lines(path, "current", limit=90)
+        self.assertEqual(status, "Bound")
+        self.assertTrue(any("current reset" in line for line in lines))
+        self.assertFalse(any("filler-00" in line for line in lines))
+
     def test_repeated_failures_are_deduplicated_with_occurrence_count(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "actions.log"
             path.write_text(
+                "=== SESSION 2026-08-18T02:00:00Z id current build b pid 11 ===\n"
                 "12:00:00.000 [REJECTED] (10s) Loadout admission failed\n"
                 "12:00:01.000 [ALLOC] (11s) Routine sweep\n"
                 "12:00:02.000 [REJECTED] (12s) Loadout admission failed\n"
                 "12:00:03.000 [ERROR] (13s) Controller exception\n",
                 encoding="utf-8",
             )
-            errors = recent_action_errors(path)
+            errors = recent_action_errors(path, session_id="current")
         self.assertEqual(len(errors), 2)
         self.assertEqual(errors[0]["category"], "ERROR")
         self.assertEqual(errors[1]["count"], 2)

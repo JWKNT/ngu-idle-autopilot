@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using NGUInjector.Autopilot;
 using UnityEngine;
 using static NGUInjector.Main;
 
@@ -26,8 +27,7 @@ namespace NGUInjector.Managers
         private readonly Character _character;
         private readonly List<int> _curValidUpgradesList = new List<int>();
         private int _rankingFrame = -1;
-        // First levels open/accelerate whole systems. They are candidates for concentration, not
-        // an instruction to max every listed Wish before considering anything else.
+        // Retained as the live fallback while the typed permanent oracle is shadow-only.
         private static readonly int[] ProgressionGateOrder =
         {
             0, 1, 2, 3, 4, 8, 6, 5, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -144,7 +144,7 @@ namespace NGUInjector.Managers
             {
                 return false;
             }
-            return true;          
+            return true;
         }
 
         private bool PrecisionImpossible(int wishId)
@@ -199,6 +199,45 @@ namespace NGUInjector.Managers
                 return true;
             return _character.wishes.wishes[wishId].level == 0
                    && ProgressionGateOrder.Contains(wishId);
+        }
+
+        internal PermanentActionDescriptor DescribeShadowAction(int wishId,
+            long energy, long magic, long res3)
+        {
+            if (!isValidWish(wishId)) return null;
+            var wish = _character.wishes.wishes[wishId];
+            var property = _character.wishesController.properties[wishId];
+            var binary = IsProvenBinaryDependency(wishId);
+            var input = new WishMarginalInput
+            {
+                Id = wishId,
+                BinaryDependency = binary,
+                Dependency = binary ? PermanentDependencyKind.EndWish
+                    : PermanentDependencyKind.None,
+                EffectTarget = binary ? PermanentEffectTarget.Terminal
+                    : PermanentEffectTarget.Resource,
+                CurrentLevel = wish.level,
+                Progress = wish.progress,
+                EffectBefore = PermanentMarginalOracle.WishEffect(wish.level,
+                    property.effectPerLevel, true),
+                EffectAfter = PermanentMarginalOracle.WishEffect(wish.level + 1L,
+                    property.effectPerLevel, true)
+            };
+            return PermanentMarginalOracle.DescribeWish(input,
+                new PermanentResourceVector
+                {
+                    Energy = Math.Max(0L, energy),
+                    Magic = Math.Max(0L, magic),
+                    Res3 = Math.Max(0L, res3)
+                }, RemainingSecondsAtMax(wishId));
+        }
+
+        private bool IsProvenBinaryDependency(int wishId)
+        {
+            return wishId == 203
+                   && _character.settings.rebirthDifficulty == difficulty.sadistic
+                   && _character.wishes.wishes[wishId].level == 0
+                   && !HasInventoryItem(490);
         }
 
         private bool HasInventoryItem(int id)

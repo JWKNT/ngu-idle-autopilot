@@ -6,9 +6,9 @@ using System.Text;
 /*
 FILE PURPOSE
 
-HackBP allocates Resource 3 to a specified permanent Hack level/cap using native hack controllers.
-It validates unlocks and target bounds before mutation. Strategy for which Hack wins belongs to
-BestHackBP/plan composition; this class owns exact per-track execution.
+HackBP allocates Resource 3 to a specified permanent Hack level/cap using the native long overload.
+It validates installed bounds including ID 15 before mutation. Strategy for which Hack wins belongs
+to BestHackBP/plan composition; this class owns exact per-track execution.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -16,7 +16,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
     {
         protected override bool Unlocked()
         {
-            return Index <= 14 && Character.buttons.hacks.interactable;
+            return Autopilot.ExactResourceAllocator.IsSupportedHackId(Index,
+                       Character.hacks.hacks.Count)
+                   && Character.buttons.hacks.interactable;
         }
 
         protected override bool TargetMet()
@@ -27,7 +29,9 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         internal override bool Allocate()
         {
             var alloc = MaxAllocation;
-            Character.hacksController.addR3(Index, (long)alloc);
+            if (alloc <= 0)
+                return false;
+            Character.hacksController.addR3(Index, alloc);
             return true;
         }
 

@@ -142,14 +142,16 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         private void AllocateEnergy()
         {
             var toAllocate = CalculateTMEnergyCap();
-            SetInput(toAllocate);
+            if (toAllocate <= 0 || !SetInput(toAllocate))
+                return;
             Character.timeMachineController.addEnergy();
         }
 
         private void AllocateMagic()
         {
             var toAllocate = CalculateTMMagicCap();
-            SetInput(toAllocate);
+            if (toAllocate <= 0 || !SetInput(toAllocate))
+                return;
             Character.timeMachineController.addMagic();
         }
 
@@ -158,7 +160,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Type == ResourceType.Energy || Type == ResourceType.Magic;
         }
 
-        private float CalculateTMMagicCap()
+        private long CalculateTMMagicCap()
         {
             var calcA = CalculateMagicTM(500);
             if (calcA.PPT < 1)
@@ -170,7 +172,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return calcA.Num;
         }
 
-        private float CalculateTMEnergyCap()
+        private long CalculateTMEnergyCap()
         {
             var calcA = CalculateEnergyTM(500);
             if (calcA.PPT < 1)
@@ -204,13 +206,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 formula = Character.hardCap();
 
             var num4 = formula <= 1.0 ? 1L : (long)formula;
-            var num = (long)(num4 / (long)Math.Ceiling(num4 / (double)MaxAllocation) * 1.00000202655792);
-            if (num + 1L <= long.MaxValue)
-                ++num;
-            if (num > Character.idleEnergy)
-                num = Character.idleEnergy;
-            if (num < 0L)
-                num = 0L;
+            var num = ExactResourceAllocator.CapAtTickBoundary(num4, MaxAllocation,
+                Character.idleEnergy);
 
             ret.Num = num;
             ret.PPT = (double)num / num4;
@@ -240,13 +237,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
 
             var num4 = formula <= 1.0 ? 1L : (long)formula;
-            var num = (long)(num4 / (long)Math.Ceiling(num4 / (double)MaxAllocation) * 1.00000202655792);
-            if (num + 1L <= long.MaxValue)
-                ++num;
-            if (num > Character.magic.idleMagic)
-                num = Character.magic.idleMagic;
-            if (num < 0L)
-                num = 0L;
+            var num = ExactResourceAllocator.CapAtTickBoundary(num4, MaxAllocation,
+                Character.magic.idleMagic);
             ret.Num = num;
             ret.PPT = (double)num / num4;
             return ret;

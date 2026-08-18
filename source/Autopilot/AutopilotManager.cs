@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using NGUInjector.AllocationProfiles;
 using NGUInjector.Managers;
 using UnityEngine.UI;
@@ -12,11 +11,13 @@ using UnityEngine.UI;
 /*
 FILE PURPOSE
 
-AutopilotManager is the live policy coordinator: it reloads plans, routes bosses/Adventure,
-executes verified purchases and spells, separates persistent from reset-local spending, emits
-decision.json, and records sparse verified progression events for the read-only monitor. Irreversible
-actions require full mode plus a confirmed post-state delta. New mechanics should expose focused
-managers instead of duplicating authority.
+AutopilotManager is the task-29 integration surface: it reloads and installs pure plans, exposes the
+single GameEpoch-bound MutationCoordinator root used by Main, invokes only typed child-intent
+managers, emits exact shadow/transaction telemetry, and records sparse verified progression events.
+Planning is separate from mutation execution. Permanent purchases, Money Pit, challenge/difficulty,
+T13/T14, MOVE69, ordinary rebirth, END, and the global scheduler remain fail-closed for this deploy.
+Legacy direct mutation helpers are not called; staged authority can expand only through typed
+postconditions and copied-save/backtest evidence.
 */
 namespace NGUInjector.Autopilot
 {
@@ -48,9 +49,6 @@ namespace NGUInjector.Autopilot
         private double _apPerSecond;
         private double _goldPerSecond;
         private long _decisionSequence;
-        private byte _pendingPuzzleKey;
-        private int _pendingPuzzleSequence = -1;
-        private DateTime _pendingPuzzleKeyTime = DateTime.MinValue;
         private bool? _lastSynchronized;
         private DateTime _lastSynchronizationReport = DateTime.MinValue;
         private int _lastObservedHighestBoss = -1;
@@ -62,6 +60,7 @@ namespace NGUInjector.Autopilot
         private long[] _lastObservedTrainingMilestones;
         private bool[] _lastObservedCombatAbilityUnlocks;
         private long[] _lastObservedAugmentMilestones;
+        private readonly MutationCoordinator _mutationCoordinator;
 
         internal AutopilotConfig Config { get; private set; }
         internal AutopilotPlan Plan { get; private set; }
@@ -79,75 +78,10 @@ namespace NGUInjector.Autopilot
 
         internal bool TryTitan7PuzzleStep()
         {
-            var c = Main.Character;
-            if (_pendingPuzzleKey != 0)
-            {
-                // A menu/load transition can pause automation between key-down and
-                // key-up. Always release the native key first; never leave input
-                // logically held merely because gameplay synchronization was lost.
-                if (c == null || !CanExecuteIrreversible || !Main.IsAutomationReady)
-                {
-                    keybd_event(_pendingPuzzleKey, 0, KeyEventKeyUp, UIntPtr.Zero);
-                    _pendingPuzzleKey = 0;
-                    _pendingPuzzleSequence = -1;
-                    Main.LogAction("REJECTED", "Released pending Titan 7 key after automation paused");
-                    return false;
-                }
-                var pendingAdventure = c.adventure;
-                if ((DateTime.UtcNow - _pendingPuzzleKeyTime).TotalMilliseconds < 80)
-                    return true;
-                keybd_event(_pendingPuzzleKey, 0, KeyEventKeyUp, UIntPtr.Zero);
-                var before = _pendingPuzzleSequence;
-                var key = (char)_pendingPuzzleKey;
-                _pendingPuzzleKey = 0;
-                _pendingPuzzleSequence = -1;
-                var confirmed = pendingAdventure.titan7QuestSequence == before + 1;
-                Main.LogAction(confirmed ? "PROGRESSION" : "REJECTED",
-                    confirmed
-                        ? "Titan 7 FARTS puzzle: sent native " + key + " key input [confirmed sequence "
-                          + before + " -> " + pendingAdventure.titan7QuestSequence + "]"
-                        : "Titan 7 native " + key + " key input produced no sequence transition");
-                return true;
-            }
-            if (!CanExecuteIrreversible || !Main.IsAutomationReady || c == null)
-                return false;
-            var a = c.adventure;
-            if (!a.titan7questStarted || a.titan7questComplete || a.titan7Unlocked)
-                return false;
-            var sequence = a.titan7QuestSequence;
-            var bosses = new[] {24, 41, 62, 81, 120};
-            var letters = new[] {'F', 'A', 'R', 'T', 'S'};
-            if (sequence < 0 || sequence >= bosses.Length || c.bossID != bosses[sequence])
-                return false;
-            if (c.bossController.isFighting || c.bossController.nukeBoss)
-                return true;
-
-            c.menuSwapper.swapMenu(15);
-            if (c.menuID != 15)
-            {
-                Main.LogAction("REJECTED", "Titan 7 puzzle menu transition was rejected at Boss " + c.bossID);
-                return true;
-            }
-            var window = Process.GetCurrentProcess().MainWindowHandle;
-            if (window == IntPtr.Zero || !SetForegroundWindow(window))
-            {
-                Main.LogAction("REJECTED", "Titan 7 native key input is API-blocked because the game window could not be focused");
-                return true;
-            }
-            _pendingPuzzleKey = (byte)letters[sequence];
-            _pendingPuzzleSequence = sequence;
-            _pendingPuzzleKeyTime = DateTime.UtcNow;
-            keybd_event(_pendingPuzzleKey, 0, 0, UIntPtr.Zero);
-            return true;
+            ExecutionSafety.ReportHold("titan7-typed-input-required",
+                "Titan 7 native key delivery is disabled until it is a typed, epoch-cancelled coordinator child intent.");
+            return false;
         }
-
-        private const uint KeyEventKeyUp = 0x0002;
-
-        [DllImport("user32.dll")]
-        private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 
         internal string Status
         {
@@ -161,11 +95,73 @@ namespace NGUInjector.Autopilot
 
         internal AutopilotManager(string runtimeDir, string profilesDir)
         {
+            _mutationCoordinator = MutationCoordinator.Shared;
             _profilesDir = profilesDir;
             _configPath = Path.Combine(runtimeDir, "autopilot.json");
             _decisionPath = Path.Combine(runtimeDir, "decision.json");
             _profilePath = Path.Combine(profilesDir, "autopilot.generated.json");
             ReloadConfig(true);
+        }
+
+        internal RootBeginResult BeginAutomationRoot(string name)
+        {
+            if (Config == null)
+                return new RootBeginResult(RootBeginStatus.Held, null,
+                    "autopilot configuration is unavailable");
+            if (!GameEpochController.Shared.MutationOpen)
+                return new RootBeginResult(RootBeginStatus.Held, null,
+                    "game epoch is not active: " + GameEpochController.Shared.HoldReason);
+            var result = _mutationCoordinator.BeginRoot(name, Config);
+            if (Plan != null)
+            {
+                Plan.RootTransactionState = result.Status == RootBeginStatus.Begun
+                    ? "open" : "held";
+                Plan.RootTransactionId = result.Transaction == null
+                    ? 0L : result.Transaction.Id;
+                Plan.RootEpochFingerprint = result.Transaction == null
+                    ? Main.CurrentGameEpochFingerprint
+                    : result.Transaction.Token.EpochFingerprint;
+                if (result.Status == RootBeginStatus.Held)
+                    Plan.GlobalScheduleBlocker = new PlannerBlocker(
+                        PlannerBlockerKind.OutsideModel,
+                        "mutation root held: " + result.Reason);
+            }
+            return result;
+        }
+
+        internal void ExecutePlannedMutations(RootTransaction root)
+        {
+            if (root == null || root.IsClosed || !CanExecuteSafe || Plan == null) return;
+            if (Config.ManageCards)
+                CardCookingManager.ManageCards(Main.Character, Config,
+                    CanExecuteIrreversible, root);
+            if (!root.IsClosed && Config.ManageCooking)
+                CardCookingManager.ManageCooking(Main.Character,
+                    CanExecuteIrreversible, root);
+            // PermanentPurchaseManager(false), Move69Manager, difficulty/challenge executors,
+            // terminal transactions, and T13/T14 deliberately receive no live call here.
+        }
+
+        internal void RecordAutomationRoot(RootTransaction root, string state)
+        {
+            if (Plan == null) return;
+            Plan.RootTransactionState = state ?? string.Empty;
+            if (root == null) return;
+            Plan.RootTransactionId = root.Id;
+            Plan.RootEpochFingerprint = root.Token.EpochFingerprint;
+            var results = root.Results.ToArray();
+            Plan.RootCommittedSteps = results.Count(x =>
+                x.Kind == MutationResultKind.Committed
+                || x.Kind == MutationResultKind.NoOpVerified);
+            Plan.RootPendingSteps = results.Count(x => x.Kind == MutationResultKind.Pending);
+            Plan.RootRejectedSteps = results.Count(x =>
+                x.Kind == MutationResultKind.Held
+                || x.Kind == MutationResultKind.RejectedUnchanged
+                || x.Kind == MutationResultKind.Compensated);
+            Plan.RootQuarantinedSteps = results.Count(x =>
+                x.Kind == MutationResultKind.Quarantined
+                || x.Kind == MutationResultKind.Indeterminate
+                || x.Kind == MutationResultKind.CommittedWithException);
         }
 
         internal void Tick()
@@ -199,54 +195,6 @@ namespace NGUInjector.Autopilot
                     LoadGeneratedProfile();
             }
 
-            if (!CanExecuteSafe)
-                return;
-
-            if (Main.Character.challenges.trollChallenge.inChallenge)
-            {
-                if (!HasAutopilotLease(MutationClass.Challenge, "Troll confirmation service")
-                    || !ServiceTrollChallengeDialogs())
-                    return;
-            }
-
-            if (Config.ManageDiggers && HasAutopilotLease(MutationClass.Diggers, "planner Digger recap"))
-                DiggerManager.RecapDiggers();
-            var permanentLease = CanExecuteIrreversible
-                                 && (Config.AllowExpSpending || Config.AllowApSpending
-                                     || Config.AllowPerkSpending || Config.AllowQuirkSpending)
-                                 && HasAutopilotLease(MutationClass.PermanentSpend,
-                                     "planner permanent-currency purchases");
-            if (permanentLease && Config.AllowExpSpending)
-            {
-                OpenExpBoxes();
-                if (!BuyGateExpUpgrade() && !BuyAtomicExpUpgrade()
-                    && !BuyStrategicPermanentExpUpgrade() && !BuyMagicSpeedBreakpoint()
-                    && !BuyBestYggPermanent() && !BuyQolExpUpgrade())
-                    BuyBestMarginalExpUpgrade();
-            }
-            if (permanentLease && Config.AllowApSpending)
-                SpendBestApUpgrade();
-            if (Config.ManageCards && HasAutopilotLease(MutationClass.Cards, "planner Card policy"))
-                CardCookingManager.ManageCards(Main.Character, Config, CanExecuteIrreversible);
-            if (Config.ManageCooking && HasAutopilotLease(MutationClass.Cooking, "planner Cooking policy"))
-                CardCookingManager.ManageCooking(Main.Character, CanExecuteIrreversible);
-            if (permanentLease && Config.AllowPerkSpending)
-                SpendBestPerk();
-            if (permanentLease && Config.AllowQuirkSpending)
-                SpendBestQuirk();
-        }
-
-        private static bool HasAutopilotLease(MutationClass mutationClass, string context)
-        {
-            MutationLease lease;
-            string reason;
-            if (ExecutionSafety.TryAcquire(mutationClass, MutationOwner.Autopilot,
-                    out lease, out reason) && lease.IsCurrent)
-                return true;
-            ExecutionSafety.ReportHold("planner-lease:" + mutationClass,
-                context + " held: " + (string.IsNullOrEmpty(reason)
-                    ? "execution lease became stale" : reason));
-            return false;
         }
 
         /*
@@ -1046,6 +994,10 @@ namespace NGUInjector.Autopilot
                        + "  \"activeLocationSha256AtObservation\": \"" + EscapeJson(Main.ActiveLocationSha256AtObservation) + "\",\n"
                        + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
                        + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
+                       + "  \"gameAssemblyMvid\": \"" + typeof(Character).Assembly.ManifestModule.ModuleVersionId + "\",\n"
+                       + "  \"gameEpochFingerprint\": \"" + EscapeJson(Main.CurrentGameEpochFingerprint) + "\",\n"
+                       + "  \"gameEpochPhase\": \"" + GameEpochController.Shared.Phase + "\",\n"
+                       + "  \"gameEpochMutationOpen\": " + GameEpochController.Shared.MutationOpen.ToString().ToLowerInvariant() + ",\n"
                        + "  \"activeImageHashAvailable\": false,\n"
                        + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\",\n"
                        + "  \"decisionSequence\": " + (++_decisionSequence) + ",\n"
@@ -1055,6 +1007,9 @@ namespace NGUInjector.Autopilot
                        + "  \"synced\": false,\n"
                        + "  \"syncState\": \"main-menu\",\n"
                        + "  \"syncDetail\": \"" + escapedDetail + "\",\n"
+                       + "  \"authorityStage\": \"ObserveOnly\",\n"
+                       + "  \"globalScheduler\": " + GlobalSchedulerJson() + ",\n"
+                       + "  \"mutationRoot\": " + MutationRootJson() + ",\n"
                        + "  \"stage\": \"PAUSED / NOT IN ACTIVE GAME\",\n"
                        + "  \"objective\": \"Load a verified save and enter gameplay before automation\",\n"
                        + "  \"rebirthSeconds\": 0,\n"
@@ -1252,6 +1207,10 @@ namespace NGUInjector.Autopilot
                        + "  \"activeLocationSha256AtObservation\": \"" + EscapeJson(Main.ActiveLocationSha256AtObservation) + "\",\n"
                        + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
                        + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
+                       + "  \"gameAssemblyMvid\": \"" + typeof(Character).Assembly.ManifestModule.ModuleVersionId + "\",\n"
+                       + "  \"gameEpochFingerprint\": \"" + EscapeJson(Main.CurrentGameEpochFingerprint) + "\",\n"
+                       + "  \"gameEpochPhase\": \"" + GameEpochController.Shared.Phase + "\",\n"
+                       + "  \"gameEpochMutationOpen\": " + GameEpochController.Shared.MutationOpen.ToString().ToLowerInvariant() + ",\n"
                        + "  \"activeImageHashAvailable\": false,\n"
                        + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\",\n"
                        + "  \"decisionSequence\": " + (++_decisionSequence) + ",\n"
@@ -1264,6 +1223,18 @@ namespace NGUInjector.Autopilot
                        + "  \"decisionPhase\": \"post-automation-transaction\",\n"
                        + "  \"automationTransactionComplete\": " + transactionComplete.ToString().ToLowerInvariant() + ",\n"
                        + "  \"automationTransactionError\": \"" + EscapeJson(transactionError ?? string.Empty) + "\",\n"
+                       + "  \"authorityStage\": \"" + Plan.AuthorityStage + "\",\n"
+                       + "  \"stagedAuthority\": {\"verifiedReversible\":" + (Plan.AuthorityStage == AutopilotAuthorityStage.VerifiedReversible).ToString().ToLowerInvariant()
+                       + ",\"permanentPurchases\":" + Plan.PermanentPurchasesAuthorized.ToString().ToLowerInvariant()
+                       + ",\"moneyPit\":" + Plan.MoneyPitAuthorized.ToString().ToLowerInvariant()
+                       + ",\"challenges\":" + Plan.ChallengesAuthorized.ToString().ToLowerInvariant()
+                       + ",\"difficulty\":" + Plan.DifficultyAuthorized.ToString().ToLowerInvariant()
+                       + ",\"titan1Through12\":" + Plan.TitanOneThroughTwelveAuthorized.ToString().ToLowerInvariant()
+                       + ",\"titan13Through14\":" + Plan.TitanThirteenFourteenAuthorized.ToString().ToLowerInvariant()
+                       + ",\"move69\":" + Plan.Move69Authorized.ToString().ToLowerInvariant()
+                       + ",\"endSequence\":" + Plan.EndSequenceAuthorized.ToString().ToLowerInvariant() + "},\n"
+                       + "  \"globalScheduler\": " + GlobalSchedulerJson() + ",\n"
+                       + "  \"mutationRoot\": " + MutationRootJson() + ",\n"
                        + "  \"stage\": \"" + escapedStage + "\",\n"
                        + "  \"objective\": \"" + escapedObjective + "\",\n"
                        + "  \"rebirthSeconds\": " + Plan.RebirthSeconds + ",\n"
@@ -1545,6 +1516,10 @@ namespace NGUInjector.Autopilot
                        + "  \"activeLocationSha256AtObservation\": \"" + EscapeJson(Main.ActiveLocationSha256AtObservation) + "\",\n"
                        + "  \"diskArtifactSha256\": \"" + EscapeJson(Main.DiskArtifactSha256) + "\",\n"
                        + "  \"gameAssemblySha256\": \"" + EscapeJson(Main.GameAssemblySha256) + "\",\n"
+                       + "  \"gameAssemblyMvid\": \"" + typeof(Character).Assembly.ManifestModule.ModuleVersionId + "\",\n"
+                       + "  \"gameEpochFingerprint\": \"" + EscapeJson(Main.CurrentGameEpochFingerprint) + "\",\n"
+                       + "  \"gameEpochPhase\": \"" + GameEpochController.Shared.Phase + "\",\n"
+                       + "  \"gameEpochMutationOpen\": " + GameEpochController.Shared.MutationOpen.ToString().ToLowerInvariant() + ",\n"
                        + "  \"activeImageHashAvailable\": false,\n"
                        + "  \"activeMatchesDisk\": \"unknown-until-reinjection-build-id-verification\",\n"
                        + "  \"decisionSequence\": " + (++_decisionSequence) + ",\n"
@@ -1552,6 +1527,9 @@ namespace NGUInjector.Autopilot
                        + "  \"enabled\": false,\n"
                        + "  \"mutationsEnabled\": false,\n"
                        + "  \"mode\": \"" + EscapeJson(Config.Mode) + "\",\n"
+                       + "  \"authorityStage\": \"ObserveOnly\",\n"
+                       + "  \"globalScheduler\": " + GlobalSchedulerJson() + ",\n"
+                       + "  \"mutationRoot\": " + MutationRootJson() + ",\n"
                        + "  \"synced\": true,\n"
                        + "  \"stage\": \"AUTOMATION DISABLED\",\n"
                        + "  \"objective\": \"No bot mutations will execute until automation is enabled\",\n"
@@ -1610,6 +1588,45 @@ namespace NGUInjector.Autopilot
             return double.IsNaN(value) || double.IsInfinity(value)
                 ? "0"
                 : value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private string GlobalSchedulerJson()
+        {
+            if (Plan != null && Plan.GlobalSchedule != null)
+            {
+                var trace = PlannerTraceRecord.Capture(Plan.GlobalSchedule).ToJson();
+                var estimate = Plan.GlobalSchedule.TerminalEta;
+                return trace.Substring(0, trace.Length - 1)
+                       + ",\"provenance\":\"" + estimate.Provenance
+                       + "\",\"sampleCount\":" + estimate.SampleCount
+                       + ",\"confidence\":" + JsonNumber(estimate.Confidence) + "}";
+            }
+            var blocker = Plan == null || Plan.GlobalScheduleBlocker == null
+                ? "planner snapshot unavailable" : Plan.GlobalScheduleBlocker.Detail;
+            var blockerKind = Plan == null || Plan.GlobalScheduleBlocker == null
+                ? PlannerBlockerKind.OutsideModel : Plan.GlobalScheduleBlocker.Kind;
+            return "{\"snapshotHash\":\"\",\"modelHash\":\"\",\"objectiveHash\":\"\""
+                   + ",\"authority\":\"ShadowOnly\",\"canExecute\":false"
+                   + ",\"status\":\"Blocked\",\"nextEvent\":\"\""
+                   + ",\"meanSeconds\":null,\"p50Seconds\":null,\"p90Seconds\":null"
+                   + ",\"lowerBoundSeconds\":null,\"upperBoundSeconds\":null"
+                   + ",\"gapSeconds\":null,\"regretSeconds\":null"
+                   + ",\"provenance\":\"Unknown\",\"sampleCount\":0,\"confidence\":0"
+                   + ",\"blocker\":\"" + blockerKind + "\",\"blockerDetail\":\""
+                   + EscapeJson(blocker) + "\"}";
+        }
+
+        private string MutationRootJson()
+        {
+            return "{\"id\":" + (Plan == null ? 0L : Plan.RootTransactionId)
+                   + ",\"state\":\"" + EscapeJson(Plan == null ? "not-planned" : Plan.RootTransactionState)
+                   + "\",\"epochFingerprint\":\""
+                   + EscapeJson(Plan == null ? Main.CurrentGameEpochFingerprint : Plan.RootEpochFingerprint)
+                   + "\",\"committedSteps\":" + (Plan == null ? 0 : Plan.RootCommittedSteps)
+                   + ",\"pendingSteps\":" + (Plan == null ? 0 : Plan.RootPendingSteps)
+                   + ",\"rejectedSteps\":" + (Plan == null ? 0 : Plan.RootRejectedSteps)
+                   + ",\"quarantinedSteps\":" + (Plan == null ? 0 : Plan.RootQuarantinedSteps)
+                   + "}";
         }
 
         private static string SafeTelemetry(Func<string> builder, string fallback)

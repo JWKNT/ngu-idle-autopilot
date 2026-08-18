@@ -37,6 +37,22 @@ internal static class RebirthPolicyGoldenTests
         return field.GetValue(target);
     }
 
+    private static void SetField(object target, string name, object value)
+    {
+        var field = target.GetType().GetField(name,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Assert(field != null, target.GetType().Name + "." + name + " exists");
+        field.SetValue(target, value);
+    }
+
+    private static object Property(object target, string name)
+    {
+        var property = target.GetType().GetProperty(name,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Assert(property != null, target.GetType().Name + "." + name + " exists");
+        return property.GetValue(target, null);
+    }
+
     private static void TestExplicitHoldBaseline()
     {
         Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer", "ResetBeatsHold", -0.57),
@@ -128,6 +144,46 @@ internal static class RebirthPolicyGoldenTests
                 "default.json"), "legacy profile remains watcher-managed");
     }
 
+    private static void TestTask29AuthorityCeilingAndBridge()
+    {
+        var configType = _assembly.GetType("NGUInjector.Autopilot.AutopilotConfig", true);
+        var config = Activator.CreateInstance(configType, true);
+        var held = new[]
+        {
+            "AllowExpSpending", "AllowApSpending", "AllowPerkSpending",
+            "AllowQuirkSpending", "ManageMoneyPit",
+            "AllowGlobalSchedulerExecution", "AllowPermanentPurchaseExecution",
+            "AllowMoneyPitExecution", "AllowDifficultyExecution",
+            "AllowTitanOneThroughTwelveExecution", "AllowTitanThirteenFourteenExecution",
+            "AllowMove69Execution", "AllowEndSequence", "AllowRebirths", "AllowChallenges"
+        };
+        foreach (var name in held) SetField(config, name, true);
+        var ceiling = configType.GetMethod("ApplyDeploymentAuthorityCeiling",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        Assert(ceiling != null, "deployment authority ceiling exists");
+        ceiling.Invoke(null, new[] {config});
+        foreach (var name in held)
+            Assert(!(bool)Field(config, name), name + " remains fail-closed after normalization");
+        Assert((bool)Property(config, "GlobalSchedulerIsShadowOnly"),
+            "global scheduler is hard shadow-only independent of serialized input");
+
+        var planType = _assembly.GetType("NGUInjector.Autopilot.AutopilotPlan", true);
+        var plan = Activator.CreateInstance(planType, true);
+        Assert(!(bool)Property(plan, "GlobalSchedulerCanExecute"),
+            "plan cannot promote the shadow scheduler to execution");
+
+        var managerType = _assembly.GetType("NGUInjector.Autopilot.AutopilotManager", true);
+        Assert(managerType.GetMethod("BeginAutomationRoot",
+                   BindingFlags.Instance | BindingFlags.NonPublic) != null,
+            "Main bridge can open one typed root");
+        Assert(managerType.GetMethod("ExecutePlannedMutations",
+                   BindingFlags.Instance | BindingFlags.NonPublic) != null,
+            "Main bridge can dispatch typed child intents");
+        Assert(managerType.GetMethod("RecordAutomationRoot",
+                   BindingFlags.Instance | BindingFlags.NonPublic) != null,
+            "Main bridge publishes exact root settlement telemetry");
+    }
+
     public static int Main()
     {
         try
@@ -139,6 +195,7 @@ internal static class RebirthPolicyGoldenTests
             TestObservedAllNegativeMutationCase();
             TestLowerNumberPositivePersistentCase();
             TestRecoveryCounterfactuals();
+            TestTask29AuthorityCeilingAndBridge();
             Console.WriteLine("Rebirth policy golden tests passed: " + _assertions + " assertions");
             return 0;
         }

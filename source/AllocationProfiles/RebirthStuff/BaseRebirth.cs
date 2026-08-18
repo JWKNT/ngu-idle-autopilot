@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Windows.Forms;
+using NGUInjector.Autopilot;
 using NGUInjector.Managers;
 
 /*
@@ -47,9 +48,10 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
         internal static BaseRebirth CreateRebirth(double target, string type, string[] challenges)
         {
             type = type.ToUpper();
+            BaseRebirth created;
             if (type == "TIME")
             {
-                return new TimeRebirth
+                created = new TimeRebirth
                 {
                     CharObj = Main.Character,
                     ChallengeTargets = ParseChallenges(challenges),
@@ -57,10 +59,9 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                     RebirthTime = target
                 };
             }
-            
-            if (type == "NUMBER")
+            else if (type == "NUMBER")
             {
-                return new NumberRebirth
+                created = new NumberRebirth
                 {
                     CharObj = Main.Character,
                     ChallengeTargets = ParseChallenges(challenges),
@@ -68,10 +69,9 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                     MultTarget = target
                 };
             }
-
-            if (type == "BOSSES")
+            else if (type == "BOSSES")
             {
-                return new BossNumRebirth
+                created = new BossNumRebirth
                 {
                     CharObj = Main.Character,
                     ChallengeTargets = ParseChallenges(challenges),
@@ -79,8 +79,10 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                     NumBosses = target
                 };
             }
-
-            return new NoRebirth();
+            else
+                created = new NoRebirth();
+            created.BindChallengeIntent(challenges);
+            return created;
         }
 
         private static Dictionary<string, ChallengeType> CMap = new Dictionary<string, ChallengeType>
@@ -99,6 +101,8 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
         };
 
         internal RCTarget[] ChallengeTargets { get; set; }
+        private bool _challengeIntentRequested;
+        private ChallengeIntent _selectedChallengeIntent;
         protected Rebirth RebirthController;
         internal abstract bool RebirthAvailable();
         protected Character CharObj;
@@ -106,6 +110,33 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
         {
             CharObj = Main.Character;
             RebirthController = CharObj.rebirth;
+        }
+
+        private void BindChallengeIntent(string[] rawTargets)
+        {
+            _challengeIntentRequested = rawTargets != null && rawTargets.Length > 0;
+            _selectedChallengeIntent = null;
+            if (!_challengeIntentRequested || ChallengeTargets == null
+                || ChallengeTargets.Length != 1 || CharObj == null) return;
+            try
+            {
+                string evidence;
+                var admissions = ChallengeStrategyPlanner.Recommend(CharObj, out evidence);
+                if (admissions == null || admissions.Count != 1) return;
+                var target = ChallengeTargets[0];
+                var admission = admissions[0];
+                if (admission != null && admission.Intent != null
+                    && admission.Type == target.Challenge
+                    && admission.Completion == target.Index
+                    && string.Equals(admission.ProfileCode,
+                        ChallengeMechanics.Code(target.Challenge) + "-" + target.Index,
+                        StringComparison.OrdinalIgnoreCase))
+                    _selectedChallengeIntent = admission.Intent;
+            }
+            catch
+            {
+                // Missing/unstable task-16 evidence is a hold, never a legacy fallback entry.
+            }
         }
 
         internal static RCTarget[] ParseChallenges(string[] challenges)
@@ -144,78 +175,43 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
         /*
         VERIFIED REBIRTH/CHALLENGE BOUNDARY
 
-        Reflection only proves that a method was requested, not that NGU Idle accepted the reset. Snapshot
-        Number, AP, Blood rebirth power, Boss records, rebirth counter/timer, and every native challenge
-        flag/count before and after the exact zero-argument method, then require an immediate native state
-        delta. Challenge entry additionally requires the intended exact flag. The activity feed gets a
-        concise result; the diagnostic log retains both complete snapshots so a surprising Number loss or
-        wrong challenge can be audited after restart. Callers propagate false so allocation cannot report a
-        reset which never happened.
+        Native adapter return is never accepted as commit evidence. ResetPostconditions requires the exact
+        counter/timer transition, challenge one-hot/type/timer proof, hard-versus-Laser Number transform,
+        Boss/Titan reset, and no unexpected challenge. Every verified reset closes the old run epoch before
+        returning; an exact no-op is rejected, while a partial/wrong poststate quarantines automation.
         */
-        protected bool EngageChalRebirth(string rbType, ChallengeType expectedChallenge)
+        protected bool EngageChalRebirth(ChallengeType expectedChallenge)
         {
-            Main.Log($"Rebirthing into {rbType}");
-            var method = RebirthController.GetType().GetPrivateMethod(rbType);
-            if (method == null)
+            var beforeAudit = RebirthAuditSnapshot.Capture(CharObj);
+            var before = LiveResetSnapshot.Capture(CharObj);
+            var nativeType = LiveResetSnapshot.NativeChallengeTypeToken(CharObj,
+                expectedChallenge);
+            ResetNativeObservation invocation;
+            try
             {
-                Main.LogAction("REJECTED", "Challenge entry method " + rbType
-                                           + " was unavailable; no rebirth was attempted");
-                return false;
+                var registry = NativeBindingRegistry.Create(typeof(Character).Assembly,
+                    Main.GameAssemblySha256);
+                var native = registry.CreateMutationAdapters();
+                invocation = ResetNativeObservation.From(native.EnterChallenge(
+                    RebirthController, NativeChallenge(expectedChallenge)));
             }
-            var before = RebirthAuditSnapshot.Capture(CharObj);
-            var rebirthsBefore = CharObj.stats.rebirthNumber;
-            var timeBefore = CharObj.rebirthTime.totalseconds;
-            var challengeBefore = CharObj.challenges.inChallenge;
-            method.Invoke(RebirthController, null);
-            var after = RebirthAuditSnapshot.Capture(CharObj);
-            var resetConfirmed = CharObj.stats.rebirthNumber > rebirthsBefore
-                                 || CharObj.rebirthTime.totalseconds + 1.0 < timeBefore;
-            var exactChallenge = SpecificChallengeActive(expectedChallenge);
-            var confirmed = resetConfirmed && !challengeBefore && CharObj.challenges.inChallenge
-                            && exactChallenge;
-            Main.LogDiagnostic("Challenge rebirth transaction audit (" + expectedChallenge + "/" + rbType
-                               + "): pre{" + before + "} post{" + after + "}");
-            Main.LogAction(confirmed ? "REBIRTH" : "REJECTED", confirmed
-                ? RebirthAuditSnapshot.ConfirmedSummary(before, after,
-                    "Entered " + expectedChallenge + " challenge through " + rbType)
-                : "Challenge entry rejected: " + rbType + " produced no verified reset into the exact "
-                  + expectedChallenge + " challenge (full snapshot in inject.log)");
-            return confirmed;
-        }
-
-        private bool SpecificChallengeActive(ChallengeType challenge)
-        {
-            var challenges = CharObj.challenges;
-            bool active;
-            switch (challenge)
+            catch (Exception error)
             {
-                case ChallengeType.Basic: active = challenges.basicChallenge.inChallenge; break;
-                case ChallengeType.NoAug: active = challenges.noAugsChallenge.inChallenge; break;
-                case ChallengeType.TwentyFourHour: active = challenges.hour24Challenge.inChallenge; break;
-                case ChallengeType.OneHundredLC: active = challenges.levelChallenge10k.inChallenge; break;
-                case ChallengeType.NoEquip: active = challenges.noEquipmentChallenge.inChallenge; break;
-                case ChallengeType.Troll: active = challenges.trollChallenge.inChallenge; break;
-                case ChallengeType.NoRebirth: active = challenges.noRebirthChallenge.inChallenge; break;
-                case ChallengeType.LaserSword: active = challenges.laserSwordChallenge.inChallenge; break;
-                case ChallengeType.Blind: active = challenges.blindChallenge.inChallenge; break;
-                case ChallengeType.NoNGU: active = challenges.nguChallenge.inChallenge; break;
-                case ChallengeType.NoTimeMachine: active = challenges.timeMachineChallenge.inChallenge; break;
-                default: return false;
+                invocation = new ResetNativeObservation
+                {
+                    InvocationAttempted = true, ReturnedNormally = false,
+                    Reason = error.GetType().Name + ": " + error.Message, Exception = error
+                };
             }
-            if (!active) return false;
-            var activeFlags = 0;
-            if (challenges.basicChallenge.inChallenge) activeFlags++;
-            if (challenges.noAugsChallenge.inChallenge) activeFlags++;
-            if (challenges.hour24Challenge.inChallenge) activeFlags++;
-            if (challenges.levelChallenge10k.inChallenge) activeFlags++;
-            if (challenges.noEquipmentChallenge.inChallenge) activeFlags++;
-            if (challenges.trollChallenge.inChallenge) activeFlags++;
-            if (challenges.noRebirthChallenge.inChallenge) activeFlags++;
-            if (challenges.laserSwordChallenge.inChallenge) activeFlags++;
-            if (challenges.blindChallenge.inChallenge) activeFlags++;
-            if (challenges.nguChallenge.inChallenge) activeFlags++;
-            if (challenges.timeMachineChallenge.inChallenge) activeFlags++;
-            return activeFlags == 1;
+            var after = LiveResetSnapshot.Capture(CharObj);
+            var afterAudit = RebirthAuditSnapshot.Capture(CharObj);
+            var proof = ResetPostconditions.VerifyChallenge(before, after,
+                expectedChallenge, nativeType);
+            Main.LogDiagnostic("Challenge reset audit (" + expectedChallenge + "): pre{"
+                               + beforeAudit + "} post{" + afterAudit + "}; " + proof.Reason
+                               + "; native=" + invocation.Reason);
+            return PublishResetResult(before, after, proof, invocation,
+                "Entered " + expectedChallenge + " challenge");
         }
 
         protected bool BaseRebirthChecks()
@@ -229,27 +225,81 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 
         protected bool EngageRebirth()
         {
-            Main.Log("Normal Rebirth Engaged");
-            var method = RebirthController.GetType().GetMethods(
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .SingleOrDefault(x => x.Name == "engage" && x.GetParameters().Length == 0);
-            if (method == null)
+            var beforeAudit = RebirthAuditSnapshot.Capture(CharObj);
+            var before = LiveResetSnapshot.Capture(CharObj);
+            if (before == null || before.CurrentDifficulty != before.NextDifficulty)
             {
-                Main.LogAction("REJECTED", "Native normal-rebirth method was unavailable; no reset was attempted");
+                Main.LogAction("HOLD", "Ordinary rebirth cannot consume a pending difficulty selector");
                 return false;
             }
-            var before = RebirthAuditSnapshot.Capture(CharObj);
-            var rebirthsBefore = CharObj.stats.rebirthNumber;
-            var timeBefore = CharObj.rebirthTime.totalseconds;
-            method.Invoke(RebirthController, null);
-            var after = RebirthAuditSnapshot.Capture(CharObj);
-            var confirmed = CharObj.stats.rebirthNumber > rebirthsBefore
-                            || CharObj.rebirthTime.totalseconds + 1.0 < timeBefore;
-            Main.LogDiagnostic("Normal rebirth transaction audit: pre{" + before + "} post{" + after + "}");
-            Main.LogAction(confirmed ? "REBIRTH" : "REJECTED", confirmed
-                ? RebirthAuditSnapshot.ConfirmedSummary(before, after, "Normal rebirth confirmed")
-                : "Normal rebirth rejected: no verified native reset transition (full snapshot in inject.log)");
-            return confirmed;
+            ResetNativeObservation invocation;
+            try
+            {
+                var registry = NativeBindingRegistry.Create(typeof(Character).Assembly,
+                    Main.GameAssemblySha256);
+                invocation = ResetNativeObservation.From(registry.CreateMutationAdapters()
+                    .InvokeOrdinaryRebirth(RebirthController));
+            }
+            catch (Exception error)
+            {
+                invocation = new ResetNativeObservation
+                {
+                    InvocationAttempted = true, ReturnedNormally = false,
+                    Reason = error.GetType().Name + ": " + error.Message, Exception = error
+                };
+            }
+            var after = LiveResetSnapshot.Capture(CharObj);
+            var afterAudit = RebirthAuditSnapshot.Capture(CharObj);
+            var proof = ResetPostconditions.VerifyOrdinary(before, after);
+            Main.LogDiagnostic("Ordinary reset audit: pre{" + beforeAudit + "} post{"
+                               + afterAudit + "}; " + proof.Reason + "; native="
+                               + invocation.Reason);
+            return PublishResetResult(before, after, proof, invocation,
+                "Normal rebirth confirmed");
+        }
+
+        private bool PublishResetResult(ResetExecutionSnapshot before,
+            ResetExecutionSnapshot after, ResetProof proof, ResetNativeObservation invocation,
+            string committedSummary)
+        {
+            if (proof != null && proof.Satisfied)
+            {
+                ResetEpochTransition.Close(CharObj, after, committedSummary);
+                Main.LogAction("REBIRTH", committedSummary
+                    + (invocation != null && !invocation.ReturnedNormally
+                        ? " [committed with native exception]" : " [exact postcondition]"));
+                return true;
+            }
+            if (ResetPostconditions.ExactStateMatches(before, after))
+            {
+                Main.LogAction("REJECTED", "Reset produced an exact no-op: "
+                                           + (proof == null ? "missing proof" : proof.Reason));
+                return false;
+            }
+            var reason = "Reset produced a partial or wrong poststate: "
+                         + (proof == null ? "missing proof" : proof.Reason);
+            ResetEpochTransition.Quarantine(reason);
+            Main.LogAction("REJECTED", reason);
+            return false;
+        }
+
+        private static NativeChallengeCall NativeChallenge(ChallengeType challenge)
+        {
+            switch (challenge)
+            {
+                case ChallengeType.Basic: return NativeChallengeCall.Basic;
+                case ChallengeType.NoAug: return NativeChallengeCall.NoAugs;
+                case ChallengeType.TwentyFourHour: return NativeChallengeCall.TwentyFourHour;
+                case ChallengeType.OneHundredLC: return NativeChallengeCall.OneHundredLevel;
+                case ChallengeType.NoEquip: return NativeChallengeCall.NoEquipment;
+                case ChallengeType.Troll: return NativeChallengeCall.Troll;
+                case ChallengeType.NoRebirth: return NativeChallengeCall.NoRebirth;
+                case ChallengeType.LaserSword: return NativeChallengeCall.LaserSword;
+                case ChallengeType.Blind: return NativeChallengeCall.Blind;
+                case ChallengeType.NoNGU: return NativeChallengeCall.NoNgu;
+                case ChallengeType.NoTimeMachine: return NativeChallengeCall.NoTimeMachine;
+                default: throw new ArgumentOutOfRangeException("challenge");
+            }
         }
 
         private sealed class RebirthAuditSnapshot
@@ -386,132 +436,139 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 
         protected bool AnyChallengesValid()
         {
-            if (ChallengeTargets.Length == 0)
-                return false;
-
-            var cc = CharObj.allChallenges;
-            foreach (var rc in ChallengeTargets)
-            {
-                if (!ChallengeUnlocked(cc, rc.Challenge))
-                    continue;
-                var i = rc.Index;
-                switch (rc.Challenge)
-                {
-                    case ChallengeType.Basic:
-                        if (i > cc.basicChallenge.maxCompletions || i != cc.basicChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.NoAug:
-                        if (i > cc.noAugsChallenge.maxCompletions || i != cc.noAugsChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.TwentyFourHour:
-                        if (i > cc.hour24Challenge.maxCompletions || i != cc.hour24Challenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.OneHundredLC:
-                        if (i > cc.level100Challenge.maxCompletions || i != cc.level100Challenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.NoEquip:
-                        if (i > cc.noEquipmentChallenge.maxCompletions || i != cc.noEquipmentChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.Troll:
-                        if (i > cc.trollChallenge.maxCompletions || i != cc.trollChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.NoRebirth:
-                        if (i > cc.noRebirthChallenge.maxCompletions || i != cc.noRebirthChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.LaserSword:
-                        if (i > cc.laserSwordChallenge.maxCompletions || i != cc.laserSwordChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.Blind:
-                        if (i > cc.blindChallenge.maxCompletions || i != cc.blindChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.NoNGU:
-                        if (i > cc.NGUChallenge.maxCompletions || i != cc.NGUChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    case ChallengeType.NoTimeMachine:
-                        if (i > cc.timeMachineChallenge.maxCompletions || i != cc.timeMachineChallenge.currentCompletions() + 1)
-                            continue;
-                        return true;
-                    default:
-                        throw new ArgumentOutOfRangeException();
-                }
-            }
-
-            return false;
+            RCTarget selected;
+            string reason;
+            return TryValidateSelectedChallengeIntent(out selected, out reason);
         }
 
         protected bool TryStartChallenge()
         {
-            if (ChallengeTargets.Length == 0)
-                return false;
-
-            var cc = CharObj.allChallenges;
-            foreach (var rc in ChallengeTargets)
+            RCTarget selected;
+            string reason;
+            if (!TryValidateSelectedChallengeIntent(out selected, out reason))
             {
-                if (!ChallengeUnlocked(cc, rc.Challenge))
-                    continue;
-                var i = rc.Index;
-                switch (rc.Challenge)
-                {
-                    case ChallengeType.Basic:
-                        if (i > cc.basicChallenge.maxCompletions || i != cc.basicChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageBasicChallenge", rc.Challenge);
-                    case ChallengeType.NoAug:
-                        if (i > cc.noAugsChallenge.maxCompletions || i != cc.noAugsChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageNoAugsChallenge", rc.Challenge);
-                    case ChallengeType.TwentyFourHour:
-                        if (i > cc.hour24Challenge.maxCompletions || i != cc.hour24Challenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engage24HourChallenge", rc.Challenge);
-                    case ChallengeType.OneHundredLC:
-                        if (i > cc.level100Challenge.maxCompletions || i != cc.level100Challenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engagelevel100Challenge", rc.Challenge);
-                    case ChallengeType.NoEquip:
-                        if (i > cc.noEquipmentChallenge.maxCompletions || i != cc.noEquipmentChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageNoEquipChallenge", rc.Challenge);
-                    case ChallengeType.Troll:
-                        if (i > cc.trollChallenge.maxCompletions || i != cc.trollChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageTrollChallenge", rc.Challenge);
-                    case ChallengeType.NoRebirth:
-                        if (i > cc.noRebirthChallenge.maxCompletions || i != cc.noRebirthChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageNoRebirthChallenge", rc.Challenge);
-                    case ChallengeType.LaserSword:
-                        if (i > cc.laserSwordChallenge.maxCompletions || i != cc.laserSwordChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageLaserSwordChallenge", rc.Challenge);
-                    case ChallengeType.Blind:
-                        if (i > cc.blindChallenge.maxCompletions || i != cc.blindChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageBlindChallenge", rc.Challenge);
-                    case ChallengeType.NoNGU:
-                        if (i > cc.NGUChallenge.maxCompletions || i != cc.NGUChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageNGUChallenge", rc.Challenge);
-                    case ChallengeType.NoTimeMachine:
-                        if (i > cc.timeMachineChallenge.maxCompletions || i != cc.timeMachineChallenge.currentCompletions() + 1)
-                            continue;
-                        return EngageChalRebirth("engageTimeMachineChallenge", rc.Challenge);
-                    default:
-                        throw new ArgumentOutOfRangeException();
-                }
+                Main.LogAction("HOLD", "Selected challenge intent held: " + reason
+                                           + "; no runner-up or ordinary reset was attempted");
+                return false;
             }
+            return EngageChalRebirth(selected.Challenge);
+        }
 
-            return false;
+        private bool TryValidateSelectedChallengeIntent(out RCTarget selected,
+            out string reason)
+        {
+            selected = null;
+            reason = string.Empty;
+            if (!_challengeIntentRequested)
+            {
+                reason = "no challenge intent was requested";
+                return false;
+            }
+            if (!Main.AutopilotWants(x => x.AllowChallenges))
+            {
+                reason = "challenge authority is feature-disabled";
+                return false;
+            }
+            if (ChallengeTargets == null || ChallengeTargets.Length != 1)
+            {
+                reason = "the installed profile does not contain exactly one challenge target";
+                return false;
+            }
+            selected = ChallengeTargets[0];
+            if (_selectedChallengeIntent == null)
+            {
+                reason = "the task-16 epoch-bound intent is missing";
+                return false;
+            }
+            if (CharObj == null || CharObj.challenges == null || CharObj.allChallenges == null
+                || CharObj.settings == null || CharObj.rebirthTime == null)
+            {
+                reason = "live challenge state is incomplete";
+                return false;
+            }
+            if (!Main.IsAutomationReady || CharObj.challenges.inChallenge
+                || !CharObj.challenges.unlocked || !BaseRebirthChecks())
+            {
+                reason = "final synchronized native entry gates are not all satisfied";
+                return false;
+            }
+            if (LiveResetSnapshot.Difficulty(CharObj.settings.rebirthDifficulty)
+                != LiveResetSnapshot.Difficulty(CharObj.nextRebirthDifficulty))
+            {
+                reason = "a pending difficulty selector cannot be consumed by challenge entry";
+                return false;
+            }
+            var completed = CurrentCompletions(CharObj.allChallenges, selected.Challenge);
+            var maximum = MaximumCompletions(CharObj.allChallenges, selected.Challenge);
+            if (!ChallengeUnlocked(CharObj.allChallenges, selected.Challenge)
+                || selected.Index <= 0 || selected.Index > maximum
+                || selected.Index != completed + 1)
+            {
+                reason = "unlock/count/maximum no longer matches the exact next completion";
+                return false;
+            }
+            var exactTarget = ChallengeMechanics.ExactTarget(selected.Challenge, completed);
+            if (_selectedChallengeIntent.TimingKey == null
+                || _selectedChallengeIntent.TimingKey.CompletedBefore != completed
+                || _selectedChallengeIntent.TimingKey.ExactTarget != exactTarget)
+            {
+                reason = "task-16 timing key is stale";
+                return false;
+            }
+            var difficultyBand = CharObj.settings.rebirthDifficulty == difficulty.normal
+                ? ChallengeDifficultyBand.Normal
+                : CharObj.settings.rebirthDifficulty == difficulty.evil
+                    ? ChallengeDifficultyBand.Evil : ChallengeDifficultyBand.Sadistic;
+            var stateVersion = (Main.GameAssemblySha256 ?? string.Empty) + "|s="
+                               + ExecutionSafety.StateVersion + "|d=" + difficultyBand
+                               + "|t=" + selected.Challenge + "|c=" + completed
+                               + "|target=" + exactTarget + "|boss=" + CharObj.bossID
+                               + "|run=" + Math.Floor(CharObj.rebirthTime.totalseconds);
+            if (!ChallengeIntentSelector.StillValid(_selectedChallengeIntent,
+                    selected.Challenge, selected.Index, stateVersion))
+            {
+                reason = "task-16 intent state version no longer matches live state";
+                return false;
+            }
+            return true;
+        }
+
+        private static int CurrentCompletions(AllChallengesController c, ChallengeType type)
+        {
+            switch (type)
+            {
+                case ChallengeType.Basic: return c.basicChallenge.currentCompletions();
+                case ChallengeType.NoAug: return c.noAugsChallenge.currentCompletions();
+                case ChallengeType.TwentyFourHour: return c.hour24Challenge.currentCompletions();
+                case ChallengeType.OneHundredLC: return c.level100Challenge.currentCompletions();
+                case ChallengeType.NoEquip: return c.noEquipmentChallenge.currentCompletions();
+                case ChallengeType.Troll: return c.trollChallenge.currentCompletions();
+                case ChallengeType.NoRebirth: return c.noRebirthChallenge.currentCompletions();
+                case ChallengeType.LaserSword: return c.laserSwordChallenge.currentCompletions();
+                case ChallengeType.Blind: return c.blindChallenge.currentCompletions();
+                case ChallengeType.NoNGU: return c.NGUChallenge.currentCompletions();
+                case ChallengeType.NoTimeMachine: return c.timeMachineChallenge.currentCompletions();
+                default: throw new ArgumentOutOfRangeException("type");
+            }
+        }
+
+        private static int MaximumCompletions(AllChallengesController c, ChallengeType type)
+        {
+            switch (type)
+            {
+                case ChallengeType.Basic: return c.basicChallenge.maxCompletions;
+                case ChallengeType.NoAug: return c.noAugsChallenge.maxCompletions;
+                case ChallengeType.TwentyFourHour: return c.hour24Challenge.maxCompletions;
+                case ChallengeType.OneHundredLC: return c.level100Challenge.maxCompletions;
+                case ChallengeType.NoEquip: return c.noEquipmentChallenge.maxCompletions;
+                case ChallengeType.Troll: return c.trollChallenge.maxCompletions;
+                case ChallengeType.NoRebirth: return c.noRebirthChallenge.maxCompletions;
+                case ChallengeType.LaserSword: return c.laserSwordChallenge.maxCompletions;
+                case ChallengeType.Blind: return c.blindChallenge.maxCompletions;
+                case ChallengeType.NoNGU: return c.NGUChallenge.maxCompletions;
+                case ChallengeType.NoTimeMachine: return c.timeMachineChallenge.maxCompletions;
+                default: throw new ArgumentOutOfRangeException("type");
+            }
         }
 
         internal static bool ChallengeUnlocked(AllChallengesController cc, ChallengeType challenge)
@@ -543,16 +600,23 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 
         internal bool DoRebirth()
         {
-            if (PreRebirth())
-                return false;
-
-            if (!CharObj.challenges.inChallenge && AnyChallengesValid())
+            if (_challengeIntentRequested)
             {
-                // A rejected challenge entry is an uncertain irreversible boundary.
-                // Never substitute an ordinary rebirth in the same transaction.
+                RCTarget selected;
+                string reason;
+                if (!TryValidateSelectedChallengeIntent(out selected, out reason))
+                {
+                    Main.LogAction("HOLD", "Challenge entry held: " + reason
+                                           + "; no runner-up or ordinary reset was attempted");
+                    return false;
+                }
+                if (PreRebirth()) return false;
+                // Preparation can change a timing/state-version input. Consume the same one intent
+                // again at the native boundary; never recompute a runner-up.
                 return TryStartChallenge();
             }
 
+            if (PreRebirth()) return false;
             return EngageRebirth();
         }
 

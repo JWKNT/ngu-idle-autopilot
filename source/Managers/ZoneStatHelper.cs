@@ -464,6 +464,21 @@ namespace NGUInjector.Managers
                     OPower = 1.12e33,
                     Name = "The Nether Regions"
                 }
+            },
+            {
+                // Installed enemyList zone 43 contains ordinary Pirate enemies at
+                // 1.30e34-1.36e34 attack/defense and bosses at 1.30e34-1.34e34.  Keep the
+                // table conservative enough to require penetration above the strongest ordinary
+                // defense; exact per-candidate combat remains the loadout solver's responsibility.
+                43, new ZoneStats
+                {
+                    MPower = 1.37e34,
+                    MToughness = 1.37e34,
+                    IPower = 1.50e34,
+                    IToughness = 1.50e34,
+                    OPower = 8.50e35,
+                    Name = "The Pirate Ship"
+                }
             }
         };
 

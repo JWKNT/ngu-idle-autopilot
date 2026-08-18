@@ -6,15 +6,14 @@ using NGUInjector.Autopilot;
 /*
 FILE PURPOSE
 
-ZoneHelpers owns native Adventure reachability and all fourteen Titan clock, unlock, version,
-puzzle-item, intended-Beast, and combat-admission facts. It supplies read-only countdown/state
-signatures and side-effect-free candidate-loadout evaluation so LoadoutManager can fail before a
-physical swap. Inputs are live Character/Adventure controllers plus projected candidate stats;
-outputs are route facts and explicit readiness reasons—never controller mutations except the
-separately documented ITOPOD range optimizer. A ready clock is not combat readiness, versioned
-Titans require native autokill evidence where exposed, Beast triples incoming damage, and T13/T14
-require a pre-first-action one-hit proof so their stochastic bespoke AI never executes. Collection strategy,
-gear selection, and irreversible END activation do not belong here.
+ZoneHelpers is the live adapter around the pure TitanMechanics oracle and Adventure reachability.
+It captures exact unlock flags, selected versions/bestiary counts, Walderp phase, usable ordinary
+loot capacity, and candidate stats without equipping anything. Outputs keep reachable, unlocked,
+due, native-autokill, manual-prerequisite, manual-combat, and capacity proofs separate so a caller
+cannot mistake one for another. Candidate T6-T12 autokill uses projected Attack/Defense/HP regen,
+not a predicate reading the current loadout; native Apathy/Glop rules apply only to manual fights.
+T13 is one-shot reward state, while T14 remains recovery-actionable until ordinary item 495 exists.
+No Titan mutation occurs here; the separately documented ITOPOD range optimizer is the only write.
 */
 namespace NGUInjector.Managers
 {
@@ -34,8 +33,20 @@ namespace NGUInjector.Managers
     internal sealed class TitanReadiness
     {
         internal bool Ready;
+        internal bool ActionableNow;
+        internal bool Reachable;
+        internal bool Unlocked;
+        internal bool RewardActionable;
+        internal bool Due;
+        internal bool NativeAutokillReady;
+        internal bool ManualPrerequisitesReady;
+        internal bool ManualCombatReady;
+        internal bool CapacityReady;
+        internal int CapacityRequiredSlots;
+        internal int CapacityFreeSlots;
         internal int TitanIndex = -1;
         internal int Version = -1;
+        internal string CapacityReason = "Titan capacity has not been evaluated";
         internal string Reason = "Titan readiness has not been evaluated";
     }
 
@@ -47,6 +58,12 @@ namespace NGUInjector.Managers
         internal static bool ZoneIsTitan(int zone)
         {
             return TitanZones.Contains(zone);
+        }
+
+        internal static bool IsTitanEnemy(int zone, enemyType type)
+        {
+            var bossId = Array.IndexOf(TitanZones, zone);
+            return bossId >= 0 && TitanMechanics.IsTitanEnemyType(bossId + 1, (int)type);
         }
 
         internal static TitanSpawn TitansSpawningSoon()
@@ -137,55 +154,48 @@ namespace NGUInjector.Managers
             return outgoing > 0 && conservativeHit < c.totalAdvHP() * .95;
         }
 
-        private static bool TitanUnlockedForAttempt(int bossId)
+        internal static bool TitanUnlockedForAttempt(int bossId)
+        {
+            return TitanNativeUnlocked(bossId) && TitanRewardActionable(bossId);
+        }
+
+        private static bool TitanNativeUnlocked(int bossId)
         {
             var c = Main.Character;
             if (bossId < 0 || bossId >= TitanZones.Length || c == null || c.adventure == null)
                 return false;
-            // The Ring of Apathy gates UUG in zone 14 (Titan index 3). The previous
-            // index incorrectly blocked Jake in zone 11.
-            if (bossId == 3 && (c.inventory.itemList.itemMaxxed.Count <= 135
-                                || !c.inventory.itemList.itemMaxxed[135]))
-                return false;
-            // UUG's native AI reads the equipped Ring of Apathy level, not merely
-            // the persistent "ever MAXXED" flag.  Without level 100 equipped it can
-            // become effectively unwinnable while the generic stat model says yes.
-            if (bossId == 3 && (c.inventoryController == null || c.inventoryController.apathyCheck() < 100))
+            var unlockFlags = ReadVersionedTitanUnlockFlags(c);
+            var apathyMaxxed = c.inventory != null && c.inventory.itemList != null
+                               && c.inventory.itemList.itemMaxxed != null
+                               && c.inventory.itemList.itemMaxxed.Count > 135
+                               && c.inventory.itemList.itemMaxxed[135];
+            var titanId = bossId + 1;
+            return TitanMechanics.IsUnlocked(titanId, c.effectiveBossID(),
+                unlockFlags, apathyMaxxed, c.adventure.ratTitanDefeated);
+        }
+
+        private static bool TitanRewardActionable(int bossId)
+        {
+            var c = Main.Character;
+            return bossId >= 0 && bossId < TitanZones.Length && c != null
+                   && c.adventure != null
+                   && TitanMechanics.IsRewardActionable(bossId + 1,
+                c.adventure.ratTitanDefeated, c.adventure.finalTitanDefeated,
+                HasOrdinaryItem(c, MechanicsEndgame.FinalTriggerItemId));
+        }
+
+        private static bool[] ReadVersionedTitanUnlockFlags(Character c)
+        {
+            var result = new bool[7];
+            if (c == null || c.adventure == null) return result;
+            for (var titanId = 6; titanId <= 12; titanId++)
             {
-                // The event loadout may be responsible for equipping the ring. Admit
-                // pre-staging only when an exact level-100 physical copy is owned;
-                // TitanCombatReady re-checks the native equipped predicate afterward.
-                var ownsReadyRing = c.inventory.inventory.Concat(c.inventory.accs)
-                    .Concat(new[] {c.inventory.head, c.inventory.chest, c.inventory.legs,
-                        c.inventory.boots, c.inventory.weapon, c.inventory.weapon2})
-                    .Any(x => x != null && x.id == 135 && x.level >= 100);
-                if (!ownsReadyRing) return false;
+                var field = c.adventure.GetType().GetField("titan" + titanId + "Unlocked",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                result[titanId - 6] = field != null && field.FieldType == typeof(bool)
+                                      && (bool)field.GetValue(c.adventure);
             }
-
-            // IT HUNGERS sets itself invincible when checkAndUseGlop cannot consume
-            // item 372.  Never enter and burn a spawn without the actual inventory
-            // consumable available.
-            if (bossId == 9 && !c.inventory.inventory.Any(x => x != null && x.id == 372))
-                return false;
-
-            // Titans 6+ have explicit quest/unlock flags. Reflecting the source field keeps
-            // this gate valid across the later Titans without treating a ready clock as proof.
-            if (bossId < 5)
-                return true;
-            // The two END Titans are not represented by titan13/14Unlocked fields.
-            // Their native zone/timer UI uses exact Sadistic effective-boss gates;
-            // the Traitor additionally requires the Rat Titan/Tippi completion flag.
-            if (bossId == 12)
-                return c.effectiveBossID() >= 897 || c.adventure.ratTitanDefeated;
-            if (bossId == 13)
-                return c.effectiveBossID() >= 902 && c.adventure.ratTitanDefeated
-                       && !c.adventure.finalTitanDefeated;
-            var field = c.adventure.GetType().GetField("titan" + (bossId + 1) + "Unlocked",
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (field == null)
-                return false;
-            var value = field.GetValue(c.adventure);
-            return value is bool && (bool)value;
+            return result;
         }
 
         internal static bool TitanCombatReady(int bossId)
@@ -195,23 +205,31 @@ namespace NGUInjector.Managers
             var intendedBeast = c.adventureController.hasBeastMode();
             var hasApathy = c.inventoryController != null && c.inventoryController.apathyCheck() >= 100;
             return EvaluateTitanCandidate(bossId, c.totalAdvAttack(), c.totalAdvDefense(),
-                c.totalAdvHP(), intendedBeast, hasApathy, true).Ready;
+                c.totalAdvHP(), c.totalAdvHPRegen(), intendedBeast, hasApathy, true).Ready;
         }
 
         /*
         SIDE-EFFECT-FREE TITAN CANDIDATE ADMISSION
 
-        Candidate totals are projected by LoadoutManager without equipping anything. Normalize
-        attack from the live Beast state into the state the Adventure router will request, and
-        multiply incoming damage by native Beast's exact 3x penalty. T6-T12 bespoke AI additionally
-        requires the controller's per-version autokill predicate; when candidate gear is not live,
-        that predicate is only a necessary current-state proof and the post-swap gate verifies it
-        again before routing. T13/T14 expose no pure autokill API and have bespoke growth/random AI,
-        so they require one regular hit to exceed maximum HP before their delayed first action.
+        Candidate totals are projected without equipping anything. The compatibility overload uses
+        live regen; optimization callers should use the explicit-regen overload so the candidate's
+        own stats are compared against the pure installed-source T6-T12 thresholds. A confirmed
+        native autokill bypasses manual-only Apathy/Glop. Manual paths retain conservative combat
+        admission and exact projected Glop charges. T13/T14 require a one-hit proof, a separately
+        reserved ready attack in CombatManager, and exact usable loot capacity where applicable.
         */
         internal static TitanReadiness EvaluateTitanCandidate(int bossId, double candidateAttack,
             double candidateDefense, double candidateHp, bool intendedBeast, bool candidateHasApathy,
             bool candidateIsCurrentlyEquipped)
+        {
+            var regen = Main.Character == null ? 0.0 : Main.Character.totalAdvHPRegen();
+            return EvaluateTitanCandidate(bossId, candidateAttack, candidateDefense, candidateHp,
+                regen, intendedBeast, candidateHasApathy, candidateIsCurrentlyEquipped);
+        }
+
+        internal static TitanReadiness EvaluateTitanCandidate(int bossId, double candidateAttack,
+            double candidateDefense, double candidateHp, double candidateHpRegen,
+            bool intendedBeast, bool candidateHasApathy, bool candidateIsCurrentlyEquipped)
         {
             var result = new TitanReadiness {TitanIndex = bossId};
             var c = Main.Character;
@@ -220,14 +238,23 @@ namespace NGUInjector.Managers
                 result.Reason = "Titan index or Character controller is unavailable";
                 return result;
             }
-            if (!TitanUnlockedForAttempt(bossId))
+            result.Reachable = TitanMechanics.IsReachable(bossId + 1, GetMaxReachableZone(true));
+            result.Due = CheckTitanSpawnTime(bossId);
+            result.Unlocked = TitanNativeUnlocked(bossId);
+            result.RewardActionable = TitanRewardActionable(bossId);
+            if (!result.Reachable)
             {
-                result.Reason = "native Titan unlock, boss gate, or required consumable is not satisfied";
+                result.Reason = "Titan zone is not reachable";
                 return result;
             }
-            if (bossId == 3 && !candidateHasApathy)
+            if (!result.Unlocked)
             {
-                result.Reason = "UUG requires a level-100 Ring of Apathy in the candidate loadout";
+                result.Reason = "native Titan effective-boss/unlock gate is not satisfied";
+                return result;
+            }
+            if (!result.RewardActionable)
+            {
+                result.Reason = "Titan reward is already complete or no longer actionable";
                 return result;
             }
 
@@ -239,31 +266,11 @@ namespace NGUInjector.Managers
                 return result;
             }
             result.Version = version;
-            var terminalDropId = bossId == 11
-                ? EndgameDependencyModel.TitanVersionItem(version + 1)
-                : bossId == 13 ? MechanicsEndgame.FinalTriggerItemId : -1;
-            if (terminalDropId > 0 && !EndgameDependencyModel.IsOwned(c, terminalDropId)
-                && (c.inventory == null || c.inventory.inventory == null
-                    || !c.inventory.inventory.Any(x => x == null || x.id <= 0)))
+            EvaluateTitanCapacity(bossId, version, result);
+            if (!result.CapacityReady)
             {
-                result.Reason = "terminal Titan drop " + terminalDropId
-                                + " requires an empty ordinary inventory slot";
+                result.Reason = result.CapacityReason;
                 return result;
-            }
-            if (bossId == 11 && version >= 3 && !candidateHasApathy)
-            {
-                result.Reason = "AMALGAMATE v4 requires a level-100 Ring of Apathy in the candidate loadout";
-                return result;
-            }
-            if (bossId >= 5)
-            {
-                string nativeReason;
-                if (bossId <= 11 && !NativeAutokillAchieved(bossId, version, out nativeReason))
-                {
-                    result.Reason = nativeReason + (candidateIsCurrentlyEquipped
-                        ? string.Empty : "; candidate gear was not mutated for speculative evaluation");
-                    return result;
-                }
             }
 
             var liveBeast = Math.Max(1e-9, c.adventureController.beastModeBonus());
@@ -271,6 +278,25 @@ namespace NGUInjector.Managers
                 ? c.inventory.itemList.purpleLiquidComplete ? 1.5 : 1.4
                 : 1.0;
             var normalizedAttack = candidateAttack / liveBeast * targetBeast;
+            TitanNativeAutokillProjection autokill = null;
+            if (bossId >= 5 && bossId <= 11)
+            {
+                autokill = TitanMechanics.EvaluateNativeAutokill(bossId + 1, version,
+                    normalizedAttack, candidateDefense, candidateHpRegen,
+                    SelectedVersionBestiaryKills(enemy));
+                result.NativeAutokillReady = autokill.Achieved;
+                if (autokill.Achieved)
+                {
+                    result.ManualPrerequisitesReady = false;
+                    result.ManualCombatReady = false;
+                    result.Ready = true;
+                    result.ActionableNow = result.Due;
+                    result.Reason = "projected native autokill: " + autokill.Reason
+                                    + "; manual Apathy/Glop prerequisites do not apply";
+                    return result;
+                }
+            }
+
             var outgoing = .8 * Math.Max(0.0, normalizedAttack - enemy.defense / 2.0)
                            * c.regAttackPower();
             if (outgoing <= 0)
@@ -288,7 +314,10 @@ namespace NGUInjector.Managers
                                     + enemy.maxHP.ToString("0.###e+0") + ")";
                     return result;
                 }
+                result.ManualPrerequisitesReady = true;
+                result.ManualCombatReady = true;
                 result.Ready = true;
+                result.ActionableNow = result.Due;
                 result.Reason = "candidate one-hit proof defeats T13/T14 before its first stochastic AI action";
                 return result;
             }
@@ -296,6 +325,30 @@ namespace NGUInjector.Managers
             var enemyAttacks = killSeconds < firstAttack
                 ? 0
                 : 1 + (int)Math.Floor((killSeconds - firstAttack) / Math.Max(.1, enemy.attackRate));
+            var glopCopies = c.inventory == null || c.inventory.inventory == null ? 0
+                : c.inventory.inventory.Count(x => x != null && x.id == 372 && x.removable);
+            var manual = TitanMechanics.EvaluateManualPrerequisites(bossId + 1,
+                Math.Max(0, version), candidateHasApathy, glopCopies, enemyAttacks);
+            result.ManualPrerequisitesReady = manual.Ready;
+            if (!manual.Ready)
+            {
+                result.Reason = manual.Reason;
+                return result;
+            }
+            if (bossId == 4)
+            {
+                result.Reason = "Walderp manual execution requires its exact Says response state machine";
+                return result;
+            }
+            // T6-T12 are admitted here only through exact native autokill. Their bespoke manual
+            // AIs require the execution controller's source-specific state machine.
+            if (bossId >= 5 && bossId <= 11)
+            {
+                result.Reason = autokill == null
+                    ? "versioned Titan autokill projection is unavailable"
+                    : autokill.Reason + "; manual bespoke-AI execution is not proven here";
+                return result;
+            }
             var beastIncoming = intendedBeast ? 3.0 : 1.0;
             var incoming = beastIncoming * 1.2
                            * Math.Max(enemy.attack * .1, enemy.attack - candidateDefense / 2.0);
@@ -313,8 +366,10 @@ namespace NGUInjector.Managers
                                 + candidateHp.ToString("0.###") + " HP";
                 return result;
             }
+            result.ManualCombatReady = true;
             result.Ready = true;
-            result.Reason = "candidate passes native unlock/version requirements and conservative combat projection";
+            result.ActionableNow = result.Due;
+            result.Reason = "candidate passes unlock, manual prerequisite, capacity, and conservative combat proofs";
             return result;
         }
 
@@ -331,11 +386,11 @@ namespace NGUInjector.Managers
                 || c.adventureController.enemyList[zone].Count == 0)
                 return false;
             var enemies = c.adventureController.enemyList[zone];
-            var enemyIndex = bossId >= 5 && bossId <= 9 ? version + 1
-                : bossId >= 10 && bossId <= 11 ? version : 0;
+            var enemyIndex = TitanMechanics.EnemyIndexForVersion(bossId + 1, version);
             if (enemyIndex < 0 || enemyIndex >= enemies.Count) return false;
             enemy = enemies[enemyIndex];
-            return enemy != null;
+            return enemy != null
+                   && TitanMechanics.IsTitanEnemyType(bossId + 1, (int)enemy.enemyType);
         }
 
         private static int GetTitanVersion(int bossId)
@@ -348,29 +403,112 @@ namespace NGUInjector.Managers
             return (int)field.GetValue(Main.Character.adventure);
         }
 
-        private static bool NativeAutokillAchieved(int bossId, int version, out string reason)
+        private static int SelectedVersionBestiaryKills(Enemy enemy)
         {
-            reason = string.Empty;
-            var method = Main.Character.adventureController.GetType().GetMethod(
-                "autokillTitan" + (bossId + 1) + "V" + (version + 1) + "Achieved",
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
-                null, Type.EmptyTypes, null);
-            if (method == null || method.ReturnType != typeof(bool))
+            var c = Main.Character;
+            if (enemy == null || c == null || c.bestiary == null
+                || c.bestiary.enemies == null || enemy.spriteID < 0
+                || enemy.spriteID >= c.bestiary.enemies.Count
+                || c.bestiary.enemies[enemy.spriteID] == null)
+                return 0;
+            return Math.Max(0, c.bestiary.enemies[enemy.spriteID].kills);
+        }
+
+        /*
+        EXACT TITAN LOOT CAPACITY
+
+        Native addLoot scans only after the merge-reserved prefix and never merges on insertion.
+        T12 reserves every possible emission preceding its latest still-missing cumulative END roll;
+        T14 reserves the guaranteed item 495 even after a prior flag-only failed delivery. Other
+        Titans currently expose no unique terminal delivery here and therefore receive a vacuous
+        capacity proof rather than an ad-hoc Count(empty) approximation.
+        */
+        private static void EvaluateTitanCapacity(int bossId, int version, TitanReadiness result)
+        {
+            result.CapacityReady = true;
+            result.CapacityRequiredSlots = 0;
+            result.CapacityFreeSlots = 0;
+            result.CapacityReason = "no unique terminal Titan delivery requires a capacity proof";
+            if (bossId != 11 && bossId != 13) return;
+
+            OrdinaryInventoryTopology topology;
+            string captureReason;
+            if (!TryCaptureOrdinaryTopology(out topology, out captureReason))
             {
-                reason = "native per-version autokill predicate is unavailable";
+                result.CapacityReady = false;
+                result.CapacityReason = captureReason;
+                return;
+            }
+
+            LootCapacityRequirement requirement = null;
+            if (bossId == 11)
+            {
+                var ordinaryIds = new int[topology.SlotCount];
+                for (var i = 0; i < ordinaryIds.Length; i++)
+                    ordinaryIds[i] = topology.SlotAt(i).ItemId;
+                var latest = MechanicsEndgame.LatestMissingTitan12DropForVersion(
+                    version + 1, ordinaryIds);
+                if (latest > 0) requirement = LootCapacity.Titan12EndPiece(latest);
+            }
+            else if (!topology.HasOrdinaryItem(MechanicsEndgame.FinalTriggerItemId))
+                requirement = LootCapacity.Titan14FinalPiece();
+
+            result.CapacityFreeSlots = topology.UsableFreeSlotCount;
+            if (requirement == null)
+            {
+                result.CapacityReason = "all cumulative unique drops covered by this Titan are already ordinary-owned";
+                return;
+            }
+            var proof = LootCapacity.ProveOrdinary(topology, requirement);
+            result.CapacityReady = proof.Admitted;
+            result.CapacityRequiredSlots = proof.RequiredFreeSlots;
+            result.CapacityFreeSlots = proof.UsableFreeSlotCount;
+            result.CapacityReason = proof.Admitted
+                ? "exact Titan loot-capacity proof admitted " + proof.RequiredFreeSlots + " slots"
+                : "Titan held: exact loot needs " + proof.RequiredFreeSlots + " usable slots but only "
+                  + proof.UsableFreeSlotCount + " are free after the merge-reserved prefix";
+        }
+
+        private static bool TryCaptureOrdinaryTopology(out OrdinaryInventoryTopology topology,
+            out string reason)
+        {
+            topology = null;
+            reason = string.Empty;
+            var c = Main.Character;
+            if (c == null || c.inventory == null || c.inventory.inventory == null
+                || c.inventoryController == null)
+            {
+                reason = "ordinary inventory/controller is unavailable for exact Titan capacity";
                 return false;
             }
             try
             {
-                if ((bool)method.Invoke(Main.Character.adventureController, null)) return true;
-                reason = "native per-version autokill predicate is not achieved";
-                return false;
+                var count = c.inventory.inventory.Count;
+                var ids = new int[count];
+                var identities = new object[count];
+                for (var i = 0; i < count; i++)
+                {
+                    var item = c.inventory.inventory[i];
+                    if (item == null || item.id <= 0) continue;
+                    ids[i] = item.id;
+                    identities[i] = item;
+                }
+                topology = PhysicalTopology.CaptureOrdinary(ids, identities,
+                    c.inventoryController.curSpaces(),
+                    c.inventoryController.totalInvMergeSlots());
+                return true;
             }
-            catch (Exception e)
+            catch (Exception error)
             {
-                reason = "native autokill predicate threw " + e.GetType().Name;
+                reason = "ordinary Titan capacity capture failed: " + error.GetType().Name;
                 return false;
             }
+        }
+
+        private static bool HasOrdinaryItem(Character c, int itemId)
+        {
+            return c != null && c.inventory != null && c.inventory.inventory != null
+                   && c.inventory.inventory.Any(x => x != null && x.id == itemId);
         }
 
         private static TitanSpawn GetTitanSpawn(int bossId)
@@ -427,6 +565,7 @@ namespace NGUInjector.Managers
                    && TitanUnlockedForAttempt(bossId)
                    && EvaluateTitanCandidate(bossId, Main.Character.totalAdvAttack(),
                        Main.Character.totalAdvDefense(), Main.Character.totalAdvHP(),
+                       Main.Character.totalAdvHPRegen(),
                        intendedBeast,
                        Main.Character.inventoryController != null
                        && Main.Character.inventoryController.apathyCheck() >= 100, true).Ready;
@@ -484,6 +623,20 @@ namespace NGUInjector.Managers
             }
         }
 
+        internal static bool TitanClockPaused(int bossId)
+        {
+            var c = Main.Character;
+            return bossId == 4 && c != null && c.adventure != null
+                   && TitanMechanics.IsWaldoClockPaused(c.adventure.waldoFinds,
+                       c.adventure.waldoDefeats)
+                   && SecondsUntilTitanSpawn(bossId) > 0.0;
+        }
+
+        internal static double TitanWallClockEtaSeconds(int bossId)
+        {
+            return TitanClockPaused(bossId) ? -1.0 : SecondsUntilTitanSpawn(bossId);
+        }
+
         internal static string TitanStateSignature(int bossId, bool intendedBeast)
         {
             var c = Main.Character;
@@ -497,6 +650,9 @@ namespace NGUInjector.Managers
                    + "|unlock=" + TitanUnlockedForAttempt(bossId)
                    + "|clock=" + SecondsUntilTitanSpawn(bossId).ToString("0.###",
                        System.Globalization.CultureInfo.InvariantCulture)
+                   + "|wallEta=" + TitanWallClockEtaSeconds(bossId).ToString("0.###",
+                       System.Globalization.CultureInfo.InvariantCulture)
+                   + "|paused=" + TitanClockPaused(bossId)
                    + "|atk=" + c.totalAdvAttack().ToString("R",
                        System.Globalization.CultureInfo.InvariantCulture)
                    + "|def=" + c.totalAdvDefense().ToString("R",

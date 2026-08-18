@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using NGUInjector.AllocationProfiles.RebirthStuff;
 using NGUInjector.Managers;
@@ -7,34 +8,31 @@ using NGUInjector.Managers;
 /*
 FILE PURPOSE
 
-Purpose: ChallengeStrategyPlanner is the source-derived, fail-closed admission and active-run
-policy for every NGU Idle 1.260 challenge in Normal, Evil, and Sadistic. It replaces stage tables
-and cross-challenge timing guesses with the native controller's unlock, current-completion, maximum,
-target-Boss/level, and persistent same-type best-time state.
+Purpose: ChallengeStrategyPlanner adapts live NGU Idle 1.260 challenge state to task 16's pure
+challenge mechanics. It admits only comparable bot-owned timing evidence and publishes exactly one
+epoch-bound challenge intent; runner-ups remain diagnostics and can never become fallback entries.
 
-Mechanism: Recommend enumerates all eleven native challenge controllers. An entry is eligible only
-when the native unlock predicate is true, the difficulty-local completion is below the serialized
-maximum, the next target is read from that controller, a same-type clear sample or deliberately
-conservative first-clear proof exists, and an imminent Titan window is not being discarded. Repeats
-use their own best time plus a rising-target margin. ActivePolicy describes the challenge-specific
-reset/allocation contract needed after entry; shared planner code consumes that read-only result.
+Mechanism: Recommend validates the global menu, native unlock/count/max/target facts for all eleven
+controllers, builds the minimum exact timing key, captures the complete valuable Titan clock vector,
+and sends only admission-grade routes to ChallengeIntentSelector. ActivePolicy reports the exact
+offline/deadline/budget/cadence/paired-track contract and accepts future exact route inputs through
+an overload while the current integration remains fail-closed.
 
-Inputs and outputs: Inputs are Character, AllChallengesController, the persistent Challenge records,
-native target methods, current record Bosses, and read-only Titan clocks. Outputs are ordered profile
-codes, pessimistic ETAs, opportunity/recovery cost, exact completion/max state, and telemetry reasons.
-This file never enters, quits, completes, or rebirths a challenge and never writes the save.
+Inputs and outputs: Inputs are Character/controller snapshots, Main's installed assembly hash,
+ExecutionSafety's state version, bot-owned timing samples, an optional Laser route comparison, and
+an optional exact rebirth event. Outputs are zero or one ChallengeAdmission plus telemetry, or an
+ActiveChallengePolicy. This file never enters, quits, completes, or rebirths a challenge.
 
-Invariants and safety: Counts are always difficulty-local. A controller's serialized max is the only
-completion cap. `bestTime` comes from the matching persistent Challenge, never a UI controller or a
-different challenge. A 24-Hour admission must retain six hours of deadline reserve. Laser Sword
-must never rebirth before both native level targets are met; No-Rebirth must never rebirth at all.
-Ready/near-ready Titans preempt challenge entry because challenge entry resets every Titan clock.
+Invariants and safety: Native bestTime is never timing evidence. Live serialized maxima are
+authoritative and native targets must equal the exact installed formula. Ready valuable Titans
+preempt entry; every other valued clock contributes its exact reset-loss vector. A 24-Hour route
+requires positive active-time slack. No-Rebirth is continuous, no probability label is emitted
+without calibrated coverage, and missing route evidence freezes destructive resets.
 
-Extension points and non-goals: Active allocation tokens and Troll confirmation-box servicing belong
-in AutopilotPlanner/Manager. This model publishes the exact required contract for those owners. A
-first clear deliberately requires excessive historical headroom plus an observed Basic clear; it is
-not a promise that historical Boss record alone predicts a challenge clear. Future replay fixtures
-may safely tighten those first-clear envelopes.
+Extension points and non-goals: Task 28 records formula-simulation/observed samples and supplies
+exact reset/Laser comparisons; tasks 17/29 validate the intent epoch and own entry/allocation
+transactions. Persistence, terminal reward valuation, live mutation, modal service, and allocation
+quota enforcement are deliberately outside this read-only adapter.
 */
 namespace NGUInjector.Autopilot
 {
@@ -45,16 +43,19 @@ namespace NGUInjector.Autopilot
         internal int Completion;
         internal int CompletedBefore;
         internal int MaxCompletions;
-        internal int TargetBoss;
-        internal int TargetLevel;
+        internal int TargetBoss = -1;
+        internal int TargetLevel = -1;
         internal double PessimisticClearSeconds;
         internal double RecoverySeconds;
         internal double TitanOpportunitySeconds;
-        internal double BenefitWeight;
         internal string Constraints = string.Empty;
         internal string Reward = string.Empty;
         internal string Evidence = string.Empty;
         internal double Score;
+        internal ChallengeIntent Intent;
+        internal ChallengeTimingEstimate Timing;
+        internal TitanVectorCost TitanCost;
+        internal ChallengeDeadlineProjection Deadline;
 
         internal string ProfileCode { get { return Code + "-" + Completion; } }
 
@@ -62,10 +63,17 @@ namespace NGUInjector.Autopilot
         {
             get
             {
-                var seconds = (int)Math.Ceiling(PessimisticClearSeconds);
+                if (!Finite(PessimisticClearSeconds)) return "unknown";
+                var seconds = (int)Math.Min(int.MaxValue,
+                    Math.Ceiling(PessimisticClearSeconds));
                 if (seconds < 3600) return Math.Max(1, seconds / 60) + "m";
-                return (seconds / 3600.0).ToString("0.0") + "h";
+                return (seconds / 3600.0).ToString("0.0", CultureInfo.InvariantCulture) + "h";
             }
+        }
+
+        private static bool Finite(double value)
+        {
+            return value >= 0.0 && !double.IsNaN(value) && !double.IsInfinity(value);
         }
     }
 
@@ -73,299 +81,549 @@ namespace NGUInjector.Autopilot
     {
         internal ChallengeType Type;
         internal string Code = string.Empty;
+        internal int CompletedBefore;
+        internal int MaxCompletions;
         internal int TargetBoss = -1;
         internal int TargetLevel = -1;
-        internal int RebirthSeconds = 900;
-        internal bool ForbidRebirth;
+        internal int RebirthSeconds = -1;
+        internal bool ForbidRebirth = true;
         internal bool RequiresLaserSwordAllocation;
         internal bool RequiresTrollDialogService;
+        internal bool RequiresHundredLevelBudget;
+        internal int HundredLevelSpent;
+        internal int HundredLevelRemaining;
         internal int EtaSeconds = -1;
-        internal double PessimisticTotalSeconds;
+        internal double PessimisticTotalSeconds = -1.0;
         internal string Objective = string.Empty;
         internal string EtaReason = string.Empty;
+        internal ChallengeOfflineTransformKind OfflineMode;
+        internal TrollCadenceProjection NextTrollEvent;
+        internal LaserPhaseDecision LaserPhase;
+        internal ChallengeDeadlineProjection Deadline;
+        internal ChallengeTimingEstimate Timing;
     }
 
     internal static class ChallengeStrategyPlanner
     {
-        private const double TitanEntryGuardSeconds = 300.0;
-        private const double FirstClearBoundSeconds = 64800.0;
+        private const double DeadlineSafetyMarginSeconds = 1.0;
+        private static readonly object TimingGate = new object();
+        private static readonly ChallengeTimingLedger TimingLedger =
+            new ChallengeTimingLedger();
 
-        internal static IList<ChallengeAdmission> Recommend(Character c, out string evidenceSummary)
+        private sealed class LiveCandidate
         {
-            evidenceSummary = "Challenge admission unavailable";
-            var result = new List<ChallengeAdmission>();
-            if (c == null || c.challenges == null || c.challenges.inChallenge
-                || c.allChallenges == null || c.settings == null)
-                return result;
+            internal ChallengeType Type;
+            internal int Complete;
+            internal int Maximum;
+            internal int NativeTarget;
+            internal bool LevelTarget;
+            internal string Constraints = string.Empty;
+            internal string Reward = string.Empty;
+        }
 
-            var nearestTitan = NearestTitanSeconds();
-            if (nearestTitan >= 0.0 && nearestTitan <= TitanEntryGuardSeconds)
+        internal static void RecordTimingSample(ChallengeTimingSample sample)
+        {
+            lock (TimingGate) TimingLedger.Record(sample);
+        }
+
+        internal static bool TryTimingEstimate(ChallengeTimingKey key,
+            out ChallengeTimingEstimate estimate)
+        {
+            lock (TimingGate) return TimingLedger.TryEstimate(key, out estimate);
+        }
+
+        internal static IList<ChallengeAdmission> Recommend(Character c,
+            out string evidenceSummary)
+        {
+            evidenceSummary = "Challenge HOLD: live state unavailable";
+            var empty = new List<ChallengeAdmission>();
+            if (c == null || c.challenges == null || c.allChallenges == null
+                || c.settings == null || c.rebirth == null || c.rebirthTime == null)
+                return empty;
+            if (c.challenges.inChallenge)
             {
-                evidenceSummary = "Challenge HOLD: native Titan clock is due in "
-                                  + Math.Ceiling(nearestTitan) + "s; entry would reset every Titan clock";
-                return result;
+                evidenceSummary = "Challenge HOLD: a challenge is already active";
+                return empty;
+            }
+            if (!c.challenges.unlocked)
+            {
+                evidenceSummary = "Challenge HOLD: the global challenge menu is not unlocked";
+                return empty;
+            }
+            if (c.bossID <= 0 || c.rebirthTime.totalseconds + 1e-12
+                                 < c.rebirth.minRebirthTime())
+            {
+                evidenceSummary = "Challenge HOLD: native entry requires Boss progress and the minimum rebirth time";
+                return empty;
             }
 
-            var all = c.allChallenges;
-            var highest = ActiveHighestBoss(c);
-            var basicBest = ValidBestTime(c.challenges.basicChallenge.bestTime);
+            TitanVectorCost titanCost;
+            string titanEvidence;
+            if (!TryCaptureTitanVector(c, out titanCost, out titanEvidence))
+            {
+                evidenceSummary = "Challenge HOLD: " + titanEvidence;
+                return empty;
+            }
+            if (titanCost.AnyReady)
+            {
+                evidenceSummary = "Challenge HOLD: consume the ready valuable Titan vector before an entry reset; "
+                                  + titanEvidence;
+                return empty;
+            }
 
-            Add(c, result, ChallengeType.Basic, "BASIC",
-                all.basicChallenge.currentCompletions(), all.basicChallenge.maxCompletions,
-                all.basicChallenge.targetBoss(), -1, c.challenges.basicChallenge.bestTime,
-                highest, basicBest, 68, 300.0,
-                "ordinary challenge reset; short Number-banking climb",
-                NativeReward(all.basicChallenge.expectedEXP(), all.basicChallenge.expectedAPReward(),
-                    all.basicChallenge.specialRewards()));
-            Add(c, result, ChallengeType.NoAug, "NOAUG",
-                all.noAugsChallenge.currentCompletions(), all.noAugsChallenge.maxCompletions,
-                all.noAugsChallenge.targetBoss(), -1, c.challenges.noAugsChallenge.bestTime,
-                highest, basicBest, 100, 260.0,
-                "Augments and Upgrades are disabled for the entire run",
-                NativeReward(all.noAugsChallenge.expectedEXP(), all.noAugsChallenge.expectedAPReward(),
-                    all.noAugsChallenge.specialRewards()));
-            Add(c, result, ChallengeType.TwentyFourHour, "24HR",
-                all.hour24Challenge.currentCompletions(), all.hour24Challenge.maxCompletions,
-                all.hour24Challenge.targetBoss(), -1, c.challenges.hour24Challenge.bestTime,
-                highest, basicBest, 180, 190.0,
-                "native hard 24-hour deadline; zero completion reward after expiry",
-                NativeReward(all.hour24Challenge.expectedEXP(), all.hour24Challenge.expectedAPReward(),
-                    all.hour24Challenge.specialRewards()));
-            Add(c, result, ChallengeType.OneHundredLC, "100LC",
-                all.level100Challenge.currentCompletions(), all.level100Challenge.maxCompletions,
-                all.level100Challenge.targetBoss(), -1, c.challenges.levelChallenge10k.bestTime,
-                highest, basicBest, 140, 230.0,
-                "every Augment and Upgrade is capped at 100 levels; use short Number cycles",
-                NativeReward(all.level100Challenge.expectedEXP(), all.level100Challenge.expectedAPReward(),
-                    all.level100Challenge.specialRewards()));
-            Add(c, result, ChallengeType.NoEquip, "NOEC",
-                all.noEquipmentChallenge.currentCompletions(), all.noEquipmentChallenge.maxCompletions,
-                all.noEquipmentChallenge.targetBoss(), -1, c.challenges.noEquipmentChallenge.bestTime,
-                highest, basicBest, 220, 290.0,
-                "all equipment stats and specials are disabled; inventory remains intact",
-                NativeReward(all.noEquipmentChallenge.expectedEXP(), all.noEquipmentChallenge.expectedAPReward(),
-                    all.noEquipmentChallenge.specialRewards()));
-            Add(c, result, ChallengeType.Troll, "TC",
-                all.trollChallenge.currentCompletions(), all.trollChallenge.maxCompletions,
-                all.trollChallenge.targetBoss(), -1, c.challenges.trollChallenge.bestTime,
-                highest, basicBest, 240, 420.0,
-                "small trolls arrive at the native tier interval; every fifth is a big troll",
-                NativeReward(all.trollChallenge.expectedEXP(), all.trollChallenge.expectedAPReward(),
-                    all.trollChallenge.specialRewards()));
-            Add(c, result, ChallengeType.NoRebirth, "NORB",
-                all.noRebirthChallenge.currentCompletions(), all.noRebirthChallenge.maxCompletions,
-                all.noRebirthChallenge.targetBoss(), -1, c.challenges.noRebirthChallenge.bestTime,
-                highest, basicBest, 130, RemainingTitanClockBenefit(c),
-                "ordinary rebirth is forbidden; solve one continuously compounded run",
-                NativeReward(all.noRebirthChallenge.expectedEXP(), all.noRebirthChallenge.expectedAPReward(),
-                    all.noRebirthChallenge.specialRewards()));
-            Add(c, result, ChallengeType.LaserSword, "LSC",
-                all.laserSwordChallenge.currentCompletions(), all.laserSwordChallenge.maxCompletions,
-                -1, all.laserSwordChallenge.laserSwordTarget(), c.challenges.laserSwordChallenge.bestTime,
-                highest, basicBest, 180, 280.0,
-                "raise both Laser Sword Augment and Upgrade to the exact native target in one run",
-                NativeReward(all.laserSwordChallenge.expectedEXP(), all.laserSwordChallenge.expectedAPReward(),
-                    all.laserSwordChallenge.specialRewards()));
-            Add(c, result, ChallengeType.Blind, "BLIND",
-                all.blindChallenge.currentCompletions(), all.blindChallenge.maxCompletions,
-                all.blindChallenge.targetBoss(), -1, c.challenges.blindChallenge.bestTime,
-                highest, basicBest, 100, 210.0,
-                "UI values are hidden; automation must use native state, not rendered text",
-                NativeReward(all.blindChallenge.expectedEXP(), all.blindChallenge.expectedAPReward(),
-                    all.blindChallenge.specialRewards()));
-            Add(c, result, ChallengeType.NoNGU, "NONGU",
-                all.NGUChallenge.currentCompletions(), all.NGUChallenge.maxCompletions,
-                all.NGUChallenge.targetBoss(), -1, c.challenges.nguChallenge.bestTime,
-                highest, basicBest, 160, 250.0,
-                "all NGU effects and in-run NGU progress are disabled",
-                NativeReward(all.NGUChallenge.expectedEXP(), all.NGUChallenge.expectedAPReward(),
-                    all.NGUChallenge.specialRewards()));
-            Add(c, result, ChallengeType.NoTimeMachine, "NOTM",
-                all.timeMachineChallenge.currentCompletions(), all.timeMachineChallenge.maxCompletions,
-                all.timeMachineChallenge.targetBoss(), -1, c.challenges.timeMachineChallenge.bestTime,
-                highest, basicBest, 140, 245.0,
-                "Time Machine levels, GPS, Gold support, and its Number term are unavailable",
-                NativeReward(all.timeMachineChallenge.expectedEXP(), all.timeMachineChallenge.expectedAPReward(),
-                    all.timeMachineChallenge.specialRewards()));
-
-            var ordered = result.OrderByDescending(x => x.Score)
-                .ThenBy(x => x.PessimisticClearSeconds).ThenBy(x => x.Code).ToList();
-            var ledger = ChallengeLedger(c);
-            evidenceSummary = ordered.Count == 0
-                ? RemainingStateSummary(c, highest, basicBest) + " | " + ledger
-                : string.Join(" | ", ordered.Select(AdmissionSummary).ToArray()) + " | " + ledger;
-            return ordered;
+            var difficulty = DifficultyOf(c.settings.rebirthDifficulty);
+            var intents = new List<ChallengeIntent>();
+            var admissions = new Dictionary<string, ChallengeAdmission>(StringComparer.Ordinal);
+            var rejected = new List<string>();
+            foreach (var live in LiveCandidates(c))
+            {
+                if (live.Maximum <= 0 || live.Complete < 0 || live.Complete >= live.Maximum
+                    || !BaseRebirth.ChallengeUnlocked(c.allChallenges, live.Type)) continue;
+                var exactTarget = ChallengeMechanics.ExactTarget(live.Type, live.Complete);
+                if (live.NativeTarget != exactTarget)
+                {
+                    rejected.Add(ChallengeMechanics.Code(live.Type) + " target mismatch native="
+                                 + live.NativeTarget + " exact=" + exactTarget);
+                    continue;
+                }
+                var key = CreateTimingKey(live.Type, difficulty, live.Complete, exactTarget);
+                ChallengeTimingEstimate timing;
+                if (!TryTimingEstimate(key, out timing) || !timing.AdmissionGrade
+                    || !Finite(timing.UpperClearSeconds) || !Finite(timing.RecoverySeconds))
+                {
+                    rejected.Add(ChallengeMechanics.Code(live.Type)
+                                 + " lacks comparable admission-grade timing");
+                    continue;
+                }
+                ChallengeDeadlineProjection deadline = null;
+                if (live.Type == ChallengeType.TwentyFourHour)
+                {
+                    deadline = ChallengeMechanics.EvaluateTwentyFourHourDeadline(0.0,
+                        timing.UpperClearSeconds, DeadlineSafetyMarginSeconds);
+                    if (deadline.DeadlineSlackSeconds <= 0.0)
+                    {
+                        rejected.Add("24HR has non-positive deadline slack "
+                                     + FormatSeconds(deadline.DeadlineSlackSeconds));
+                        continue;
+                    }
+                }
+                var code = ChallengeMechanics.Code(live.Type);
+                var intent = new ChallengeIntent
+                {
+                    Type = live.Type,
+                    Completion = live.Complete + 1,
+                    ProfileCode = code + "-" + (live.Complete + 1),
+                    ExpectedStateVersion = ExpectedStateVersion(c, live.Type,
+                        difficulty, live.Complete, exactTarget),
+                    TimingKey = key,
+                    TotalRouteSeconds = timing.UpperClearSeconds + timing.RecoverySeconds
+                                        + titanCost.TotalCycleDelaySeconds,
+                    Evidence = timing.EvidenceLabel
+                };
+                var evidence = timing.EvidenceLabel + " key=" + key + ", n="
+                               + timing.SampleCount;
+                if (timing.P90LabelAllowed)
+                    evidence += ", " + timing.QuantileLabel + " calibrated coverage="
+                                + timing.EmpiricalCoverage.ToString("0.000",
+                                    CultureInfo.InvariantCulture);
+                var admission = new ChallengeAdmission
+                {
+                    Type = live.Type, Code = code, Completion = live.Complete + 1,
+                    CompletedBefore = live.Complete, MaxCompletions = live.Maximum,
+                    TargetBoss = live.LevelTarget ? -1 : exactTarget,
+                    TargetLevel = live.LevelTarget ? exactTarget : -1,
+                    PessimisticClearSeconds = timing.UpperClearSeconds,
+                    RecoverySeconds = timing.RecoverySeconds,
+                    TitanOpportunitySeconds = titanCost.TotalCycleDelaySeconds,
+                    Constraints = live.Constraints, Reward = live.Reward,
+                    Evidence = evidence, Score = -intent.TotalRouteSeconds,
+                    Intent = intent, Timing = timing, TitanCost = titanCost,
+                    Deadline = deadline
+                };
+                intents.Add(intent);
+                admissions[intent.ProfileCode] = admission;
+            }
+            var selection = ChallengeIntentSelector.SelectOne(intents);
+            if (selection.Selected == null)
+            {
+                evidenceSummary = "Challenge HOLD: no admission-grade exact-key route; "
+                                  + titanEvidence + RejectionSuffix(rejected);
+                return empty;
+            }
+            var selected = admissions[selection.Selected.ProfileCode];
+            var alternatives = selection.Alternatives.Length == 0 ? "none"
+                : string.Join(", ", selection.Alternatives.Select(x => x.ProfileCode
+                    + "=" + FormatSeconds(x.TotalRouteSeconds)).ToArray());
+            evidenceSummary = AdmissionSummary(selected) + " | diagnostic alternatives: "
+                              + alternatives + " | " + titanEvidence;
+            return new List<ChallengeAdmission> {selected};
         }
 
         internal static ActiveChallengePolicy ActivePolicy(Character c)
         {
-            if (c == null || c.challenges == null || !c.challenges.inChallenge
-                || c.allChallenges == null)
-                return null;
-            var p = new ActiveChallengePolicy();
-            if (c.challenges.noRebirthChallenge.inChallenge)
+            return ActivePolicy(c, null, -1);
+        }
+
+        internal static ActiveChallengePolicy ActivePolicy(Character c,
+            LaserPhaseInput laserInput, int exactRebirthSeconds)
+        {
+            if (c == null || c.challenges == null || c.allChallenges == null
+                || c.settings == null || !c.challenges.inChallenge) return null;
+            ChallengeType type;
+            if (!TryOneActiveType(c, out type)) return null;
+            var difficulty = DifficultyOf(c.settings.rebirthDifficulty);
+            var complete = CurrentCompletions(c, type);
+            var maximum = Maximum(c, type);
+            var exactTarget = ChallengeMechanics.ExactTarget(type, complete);
+            var nativeTarget = NativeTarget(c, type);
+            var p = new ActiveChallengePolicy
             {
-                p.Type = ChallengeType.NoRebirth; p.Code = "NORB";
-                p.TargetBoss = c.allChallenges.noRebirthChallenge.targetBoss();
-                p.ForbidRebirth = true;
-                p.Objective = "compound one run to Boss " + (p.TargetBoss + 1) + "; native No-Rebirth forbids resets";
+                Type = type, Code = ChallengeMechanics.Code(type),
+                CompletedBefore = complete, MaxCompletions = maximum,
+                TargetBoss = type == ChallengeType.LaserSword ? -1 : exactTarget,
+                TargetLevel = type == ChallengeType.LaserSword ? exactTarget : -1,
+                OfflineMode = ChallengeMechanics.OfflineKind(type),
+                ForbidRebirth = true, RebirthSeconds = -1
+            };
+            if (nativeTarget != exactTarget)
+            {
+                p.Objective = "hold: native target does not match the installed exact formula";
+                p.EtaReason = p.Objective + " (native " + nativeTarget
+                              + ", exact " + exactTarget + ")";
+                return p;
             }
-            else if (c.challenges.laserSwordChallenge.inChallenge)
+
+            if (type == ChallengeType.LaserSword)
             {
-                p.Type = ChallengeType.LaserSword; p.Code = "LSC";
-                p.TargetLevel = c.allChallenges.laserSwordChallenge.laserSwordTarget();
-                p.ForbidRebirth = true;
                 p.RequiresLaserSwordAllocation = true;
                 var aug = c.augments.augs[6];
-                p.Objective = "Laser Sword Augment " + aug.augLevel + "/" + p.TargetLevel
-                              + " and Upgrade " + aug.upgradeLevel + "/" + p.TargetLevel
-                              + "; rebirth would erase both";
+                var input = laserInput ?? new LaserPhaseInput
+                {
+                    AugmentLevel = aug.augLevel, UpgradeLevel = aug.upgradeLevel
+                };
+                p.LaserPhase = LaserChallengeMechanics.Evaluate(input);
+                p.ForbidRebirth = p.LaserPhase.ForbidRebirth
+                                  || !ValidExactRebirthEvent(c, exactRebirthSeconds);
+                if (!p.ForbidRebirth) p.RebirthSeconds = exactRebirthSeconds;
+                p.Objective = "raise both Laser tracks to " + exactTarget + "; "
+                              + p.LaserPhase.Reason;
             }
-            else if (c.challenges.trollChallenge.inChallenge)
+            else if (type == ChallengeType.NoRebirth)
             {
-                p.Type = ChallengeType.Troll; p.Code = "TC";
-                p.TargetBoss = c.allChallenges.trollChallenge.targetBoss();
-                p.RebirthSeconds = c.bossID < 30 ? 180 : 600;
+                p.ForbidRebirth = true;
+                p.Objective = "continuous no-reset path to Boss " + (exactTarget + 1);
+            }
+            else if (type == ChallengeType.Troll)
+            {
                 p.RequiresTrollDialogService = true;
-                p.Objective = "reach Boss " + (p.TargetBoss + 1) + " while servicing native troll dialogs; counter "
-                              + c.challenges.trollCounter + "/" + c.allChallenges.trollChallenge.trollFactor();
-            }
-            else if (c.challenges.levelChallenge10k.inChallenge)
-            {
-                p.Type = ChallengeType.OneHundredLC; p.Code = "100LC";
-                p.TargetBoss = c.allChallenges.level100Challenge.targetBoss();
-                p.RebirthSeconds = 180;
-                p.Objective = "reach Boss " + (p.TargetBoss + 1)
-                              + " with native 100-level caps; bank Number every three minutes";
+                p.NextTrollEvent = TrollChallengeMechanics.NextEvent(
+                    c.challenges.trollCounter, complete);
+                if (ValidExactRebirthEvent(c, exactRebirthSeconds))
+                {
+                    var untilReset = Math.Max(0, exactRebirthSeconds
+                        - (int)Math.Floor(c.rebirthTime.totalseconds));
+                    var reset = TrollChallengeMechanics.EvaluatePlannedReset(
+                        c.challenges.trollCounter, complete, untilReset, 0, false);
+                    p.ForbidRebirth = !reset.Allowed;
+                    if (!p.ForbidRebirth) p.RebirthSeconds = exactRebirthSeconds;
+                }
+                p.Objective = "reach Boss " + (exactTarget + 1) + "; Troll counter "
+                              + c.challenges.trollCounter + ", factor "
+                              + p.NextTrollEvent.FactorSeconds + ", next "
+                              + p.NextTrollEvent.Kind + " in "
+                              + p.NextTrollEvent.SecondsUntilEvent + "s";
             }
             else
             {
-                AssignBossChallenge(c, p);
-                p.RebirthSeconds = c.bossID < 30 ? 180 : 900;
-                p.Objective = "reach Boss " + (p.TargetBoss + 1)
-                              + " using short challenge Number cycles under " + p.Code + " restrictions";
+                if (ValidExactRebirthEvent(c, exactRebirthSeconds))
+                {
+                    p.ForbidRebirth = false;
+                    p.RebirthSeconds = exactRebirthSeconds;
+                }
+                p.Objective = "reach Boss " + (exactTarget + 1)
+                              + " under " + p.Code + " restrictions";
             }
-            var remaining = p.TargetBoss >= 0 ? Math.Max(0, p.TargetBoss + 1 - c.bossID) : 0;
-            ApplyActiveEta(c, p, remaining);
+
+            if (type == ChallengeType.OneHundredLC)
+            {
+                p.RequiresHundredLevelBudget = true;
+                p.HundredLevelSpent = (int)Math.Min(int.MaxValue,
+                    Math.Max(0L, c.settings.rebirthLevels));
+                p.HundredLevelRemaining = HundredLevelBudget.TrueRemaining(
+                    p.HundredLevelSpent);
+                p.Objective += "; shared 100-Level budget " + p.HundredLevelSpent
+                               + "/100, exact remaining " + p.HundredLevelRemaining;
+            }
+            ApplyActiveTiming(c, p, difficulty, exactTarget);
+            if (p.ForbidRebirth && type != ChallengeType.NoRebirth
+                && (p.LaserPhase == null
+                    || p.LaserPhase.Phase != LaserChallengePhase.Commit))
+                p.EtaReason += "; destructive reset frozen until an exact successor route is supplied";
             return p;
         }
 
-        private static void ApplyActiveEta(Character c, ActiveChallengePolicy p, int remainingBosses)
+        private static void ApplyActiveTiming(Character c, ActiveChallengePolicy p,
+            ChallengeDifficultyBand difficulty, int exactTarget)
         {
             var elapsed = ActiveElapsedSeconds(c, p.Type);
-            var sample = ValidBestTime(ActiveBestTime(c, p.Type));
-            var observedProjection = 0.0;
-            if (p.TargetLevel >= 0)
+            var key = CreateTimingKey(p.Type, difficulty, p.CompletedBefore, exactTarget);
+            ChallengeTimingEstimate timing;
+            if (!TryTimingEstimate(key, out timing) || !timing.AdmissionGrade
+                || !Finite(timing.UpperClearSeconds))
             {
-                var progress = Math.Min(c.augments.augs[6].augLevel,
-                    c.augments.augs[6].upgradeLevel);
-                if (progress > 0)
-                    observedProjection = elapsed * Math.Pow(p.TargetLevel / (double)progress, 2.0) * 1.50;
+                p.EtaSeconds = -1;
+                p.PessimisticTotalSeconds = -1.0;
+                p.EtaReason = "ETA unknown: no admission-grade exact-key route; " + p.Objective;
+                if (p.Type == ChallengeType.TwentyFourHour)
+                {
+                    var reserve = ChallengeMechanics.TwentyFourHourDeadlineSeconds - elapsed;
+                    p.Deadline = new ChallengeDeadlineProjection
+                    {
+                        ActiveSeconds = elapsed,
+                        RemainingUpperSeconds = -1.0,
+                        DeadlineSlackSeconds = reserve,
+                        Missed = reserve <= 0.0,
+                        AtRisk = true,
+                        Evidence = reserve <= 0.0
+                            ? "MISSED: native active-time deadline reached"
+                            : "AT RISK: remaining upper bound unavailable; raw time reserve only"
+                    };
+                    p.EtaReason += "; deadline reserve " + FormatSeconds(reserve)
+                                   + " but route slack is unknown";
+                }
+                return;
             }
-            else if (c.bossID > 0 && p.TargetBoss >= 0)
-            {
-                observedProjection = elapsed * (p.TargetBoss + 1.0) / c.bossID * 3.0;
-            }
-            var sampleProjection = sample > 0 ? sample * 1.50 : 0.0;
-            var evidenceProjection = Math.Max(observedProjection, sampleProjection);
-            if (evidenceProjection <= 0.0) evidenceProjection = FirstClearBoundSeconds;
-            var total = Math.Max(elapsed + 60.0, evidenceProjection);
+            p.Timing = timing;
+            p.PessimisticTotalSeconds = timing.UpperClearSeconds;
+            var remaining = Math.Max(0.0, timing.UpperClearSeconds - elapsed);
+            p.EtaSeconds = (int)Math.Min(int.MaxValue, Math.Ceiling(remaining));
+            p.EtaReason = p.EtaSeconds + "s remaining from " + timing.EvidenceLabel
+                          + " exact key; " + p.Objective;
+            if (timing.P90LabelAllowed)
+                p.EtaReason += "; " + timing.QuantileLabel + " coverage "
+                               + timing.EmpiricalCoverage.ToString("0.000",
+                                   CultureInfo.InvariantCulture);
             if (p.Type == ChallengeType.TwentyFourHour)
-                total = Math.Min(86400.0, total);
-            p.PessimisticTotalSeconds = total;
-            p.EtaSeconds = (int)Math.Max(0.0, Math.Ceiling(total - elapsed));
-            p.EtaReason = p.TargetLevel >= 0
-                ? p.EtaSeconds + "s p90 remaining from quadratic native level-cost progress; " + p.Objective
-                : remainingBosses == 0
-                    ? "native completion predicate is due on the controller Update"
-                    : p.EtaSeconds + "s p90 remaining; " + remainingBosses
-                      + " Bosses remain and ETA recalibrates after each Boss/rebirth transition";
+            {
+                p.Deadline = ChallengeMechanics.EvaluateTwentyFourHourDeadline(
+                    elapsed, remaining, DeadlineSafetyMarginSeconds);
+                p.EtaReason += "; deadline slack "
+                               + FormatSeconds(p.Deadline.DeadlineSlackSeconds)
+                               + " " + p.Deadline.Evidence;
+            }
         }
 
-        private static void Add(Character c, ICollection<ChallengeAdmission> result,
-            ChallengeType type, string code, int complete, int maxCompletions, int targetBoss,
-            int targetLevel, int rawBestTime, int highestBoss, double basicBest,
-            int firstClearHeadroom, double benefitWeight, string constraints, string reward)
+        private static List<LiveCandidate> LiveCandidates(Character c)
         {
-            if (maxCompletions <= 0 || complete < 0 || complete >= maxCompletions
-                || !BaseRebirth.ChallengeUnlocked(c.allChallenges, type))
-                return;
-
-            var sameTypeBest = ValidBestTime(rawBestTime);
-            double pessimistic;
-            string evidence;
-            if (sameTypeBest > 0.0
-                && (c.settings.rebirthDifficulty == difficulty.normal || complete > 0))
+            var a = c.allChallenges;
+            return new List<LiveCandidate>
             {
-                var targetGrowth = targetBoss < 0 ? Math.Max(0, targetLevel - 2)
-                    : Math.Max(0, targetBoss - BaseTarget(type));
-                pessimistic = sameTypeBest * 1.50 * (1.0 + .05 * targetGrowth);
-                if (c.settings.rebirthDifficulty != difficulty.normal)
-                    pessimistic = Math.Max(28800.0, pessimistic);
-                evidence = "global same-type native best " + FormatDuration(sameTypeBest)
-                           + ", 50% tail + " + targetGrowth + " exact target steps";
-                if (targetBoss >= 0 && highestBoss < targetBoss + 10) return;
-            }
-            else if (type == ChallengeType.Basic && c.settings.rebirthDifficulty == difficulty.normal
-                     && complete == 0 && highestBoss >= targetBoss + firstClearHeadroom)
-            {
-                pessimistic = 28800.0;
-                evidence = "first Normal Basic: historical record exceeds target by "
-                           + (highestBoss - targetBoss) + " Bosses; conservative 8h envelope";
-            }
-            else if (type == ChallengeType.Basic && complete == 0
-                     && c.settings.rebirthDifficulty != difficulty.normal
-                     && highestBoss >= targetBoss + 25)
-            {
-                pessimistic = 28800.0;
-                evidence = "first " + c.settings.rebirthDifficulty
-                           + " Basic is attached to a post-transition fresh climb with 25+ Boss headroom";
-            }
-            else
-            {
-                if (basicBest <= 0.0 || targetBoss >= 0 && highestBoss < targetBoss + firstClearHeadroom)
-                    return;
-                if (targetLevel >= 0 && highestBoss < 57 + firstClearHeadroom)
-                    return;
-                pessimistic = FirstClearBoundSeconds;
-                evidence = "first-clear proof: native Basic clear " + FormatDuration(basicBest)
-                           + ", difficulty record headroom "
-                           + (targetBoss >= 0 ? highestBoss - targetBoss : highestBoss - 57)
-                           + ", fail-closed 18h envelope";
-            }
-
-            if (type == ChallengeType.TwentyFourHour && pessimistic > FirstClearBoundSeconds)
-                return;
-            var recovery = RecoverySeconds(c, type, complete);
-            var titanCost = EstimatedTitanOpportunitySeconds(pessimistic);
-            var score = benefitWeight / Math.Max(.25, (pessimistic + recovery + titanCost) / 3600.0);
-            result.Add(new ChallengeAdmission
-            {
-                Type = type, Code = code, Completion = complete + 1,
-                CompletedBefore = complete, MaxCompletions = maxCompletions,
-                TargetBoss = targetBoss, TargetLevel = targetLevel,
-                PessimisticClearSeconds = pessimistic, RecoverySeconds = recovery,
-                TitanOpportunitySeconds = titanCost, BenefitWeight = benefitWeight,
-                Constraints = constraints, Reward = reward, Evidence = evidence, Score = score
-            });
+                C(ChallengeType.Basic, a.basicChallenge.currentCompletions(),
+                    a.basicChallenge.maxCompletions, a.basicChallenge.targetBoss(), false,
+                    "hard entry", NativeReward(a.basicChallenge.expectedEXP(),
+                        a.basicChallenge.expectedAPReward(), a.basicChallenge.specialRewards())),
+                C(ChallengeType.NoAug, a.noAugsChallenge.currentCompletions(),
+                    a.noAugsChallenge.maxCompletions, a.noAugsChallenge.targetBoss(), false,
+                    "hard entry; Augments and Upgrades disabled",
+                    NativeReward(a.noAugsChallenge.expectedEXP(),
+                        a.noAugsChallenge.expectedAPReward(), a.noAugsChallenge.specialRewards())),
+                C(ChallengeType.TwentyFourHour, a.hour24Challenge.currentCompletions(),
+                    a.hour24Challenge.maxCompletions, a.hour24Challenge.targetBoss(), false,
+                    "hard entry; active-time deadline; offline frozen",
+                    NativeReward(a.hour24Challenge.expectedEXP(),
+                        a.hour24Challenge.expectedAPReward(), a.hour24Challenge.specialRewards())),
+                C(ChallengeType.OneHundredLC, a.level100Challenge.currentCompletions(),
+                    a.level100Challenge.maxCompletions, a.level100Challenge.targetBoss(), false,
+                    "hard entry; one shared 100-completed-level budget per rebirth",
+                    NativeReward(a.level100Challenge.expectedEXP(),
+                        a.level100Challenge.expectedAPReward(), a.level100Challenge.specialRewards())),
+                C(ChallengeType.NoEquip, a.noEquipmentChallenge.currentCompletions(),
+                    a.noEquipmentChallenge.maxCompletions, a.noEquipmentChallenge.targetBoss(), false,
+                    "hard entry; equipment effects disabled",
+                    NativeReward(a.noEquipmentChallenge.expectedEXP(),
+                        a.noEquipmentChallenge.expectedAPReward(), a.noEquipmentChallenge.specialRewards())),
+                C(ChallengeType.Troll, a.trollChallenge.currentCompletions(),
+                    a.trollChallenge.maxCompletions, a.trollChallenge.targetBoss(), false,
+                    "hard entry; exact persistent-counter Troll cadence; offline frozen",
+                    NativeReward(a.trollChallenge.expectedEXP(),
+                        a.trollChallenge.expectedAPReward(), a.trollChallenge.specialRewards())),
+                C(ChallengeType.NoRebirth, a.noRebirthChallenge.currentCompletions(),
+                    a.noRebirthChallenge.maxCompletions, a.noRebirthChallenge.targetBoss(), false,
+                    "hard entry; one continuous no-reset path",
+                    NativeReward(a.noRebirthChallenge.expectedEXP(),
+                        a.noRebirthChallenge.expectedAPReward(), a.noRebirthChallenge.specialRewards())),
+                C(ChallengeType.LaserSword, a.laserSwordChallenge.currentCompletions(),
+                    a.laserSwordChallenge.maxCompletions,
+                    a.laserSwordChallenge.laserSwordTarget(), true,
+                    "soft entry; both pair tracks; build then commit",
+                    NativeReward(a.laserSwordChallenge.expectedEXP(),
+                        a.laserSwordChallenge.expectedAPReward(), a.laserSwordChallenge.specialRewards())),
+                C(ChallengeType.Blind, a.blindChallenge.currentCompletions(),
+                    a.blindChallenge.maxCompletions, a.blindChallenge.targetBoss(), false,
+                    "hard entry; offline progress without challenge-timer advance",
+                    NativeReward(a.blindChallenge.expectedEXP(),
+                        a.blindChallenge.expectedAPReward(), a.blindChallenge.specialRewards())),
+                C(ChallengeType.NoNGU, a.NGUChallenge.currentCompletions(),
+                    a.NGUChallenge.maxCompletions, a.NGUChallenge.targetBoss(), false,
+                    "hard entry; NGU effects and progress disabled",
+                    NativeReward(a.NGUChallenge.expectedEXP(),
+                        a.NGUChallenge.expectedAPReward(), a.NGUChallenge.specialRewards())),
+                C(ChallengeType.NoTimeMachine, a.timeMachineChallenge.currentCompletions(),
+                    a.timeMachineChallenge.maxCompletions, a.timeMachineChallenge.targetBoss(), false,
+                    "hard entry; Time Machine unavailable",
+                    NativeReward(a.timeMachineChallenge.expectedEXP(),
+                        a.timeMachineChallenge.expectedAPReward(), a.timeMachineChallenge.specialRewards()))
+            };
         }
 
-        private static void AssignBossChallenge(Character c, ActiveChallengePolicy p)
+        private static LiveCandidate C(ChallengeType type, int complete, int maximum,
+            int target, bool level, string constraints, string reward)
         {
-            if (c.challenges.basicChallenge.inChallenge)
-            { p.Type = ChallengeType.Basic; p.Code = "BASIC"; p.TargetBoss = c.allChallenges.basicChallenge.targetBoss(); }
-            else if (c.challenges.noAugsChallenge.inChallenge)
-            { p.Type = ChallengeType.NoAug; p.Code = "NOAUG"; p.TargetBoss = c.allChallenges.noAugsChallenge.targetBoss(); }
-            else if (c.challenges.hour24Challenge.inChallenge)
-            { p.Type = ChallengeType.TwentyFourHour; p.Code = "24HR"; p.TargetBoss = c.allChallenges.hour24Challenge.targetBoss(); }
-            else if (c.challenges.noEquipmentChallenge.inChallenge)
-            { p.Type = ChallengeType.NoEquip; p.Code = "NOEC"; p.TargetBoss = c.allChallenges.noEquipmentChallenge.targetBoss(); }
-            else if (c.challenges.blindChallenge.inChallenge)
-            { p.Type = ChallengeType.Blind; p.Code = "BLIND"; p.TargetBoss = c.allChallenges.blindChallenge.targetBoss(); }
-            else if (c.challenges.nguChallenge.inChallenge)
-            { p.Type = ChallengeType.NoNGU; p.Code = "NONGU"; p.TargetBoss = c.allChallenges.NGUChallenge.targetBoss(); }
-            else if (c.challenges.timeMachineChallenge.inChallenge)
-            { p.Type = ChallengeType.NoTimeMachine; p.Code = "NOTM"; p.TargetBoss = c.allChallenges.timeMachineChallenge.targetBoss(); }
+            return new LiveCandidate
+            {
+                Type = type, Complete = complete, Maximum = maximum,
+                NativeTarget = target, LevelTarget = level,
+                Constraints = constraints, Reward = reward
+            };
+        }
+
+        private static bool TryCaptureTitanVector(Character c, out TitanVectorCost cost,
+            out string evidence)
+        {
+            cost = null;
+            evidence = "Titan vector unavailable";
+            if (c.adventure == null || c.allChallenges == null) return false;
+            var elapsed = new double[14];
+            var valued = new bool[14];
+            var futureKills = new int[14];
+            var reachable = ZoneHelpers.GetMaxReachableZone(true);
+            var normal = c.allChallenges.noRebirthChallenge.completions();
+            var evil = c.allChallenges.noRebirthChallenge.evilCompletions();
+            var sadistic = c.allChallenges.noRebirthChallenge.sadisticCompletions();
+            for (var titanId = 1; titanId <= 14; titanId++)
+            {
+                if (TitanMechanics.Describe(titanId).Zone > reachable
+                    || !ZoneHelpers.TitanUnlockedForAttempt(titanId - 1)) continue;
+                var remaining = ZoneHelpers.SecondsUntilTitanSpawn(titanId - 1);
+                if (!Finite(remaining))
+                {
+                    evidence = "valuable Titan " + titanId + " clock could not be read";
+                    return false;
+                }
+                var due = TitanMechanics.SpawnSeconds(titanId, normal, evil, sadistic);
+                elapsed[titanId - 1] = Math.Max(0.0, due - Math.Min(due, remaining));
+                valued[titanId - 1] = true;
+                futureKills[titanId - 1] = 1;
+            }
+            cost = ChallengeMechanics.EvaluateTitanClockLoss(
+                new TitanClockSnapshot(elapsed), valued, futureKills,
+                normal, evil, sadistic);
+            evidence = "Titan reset vector cost=" + cost.TotalCycleDelaySeconds
+                       + "s, valued=" + cost.Items.Length + ", ready=" + cost.AnyReady;
+            return true;
+        }
+
+        internal static ChallengeTimingKey CreateTimingKey(ChallengeType type,
+            ChallengeDifficultyBand difficulty, int completedBefore, int target)
+        {
+            return new ChallengeTimingKey
+            {
+                AssemblySha256 = Main.GameAssemblySha256 ?? string.Empty,
+                Type = type, Difficulty = difficulty,
+                CompletedBefore = completedBefore, ExactTarget = target,
+                ResetPolicySignature = ResetPolicySignature(type)
+            };
+        }
+
+        internal static string ResetPolicySignature(ChallengeType type)
+        {
+            return "challenge-route-v1|entry=" + ChallengeMechanics.EntryKind(type)
+                   + "|offline=" + ChallengeMechanics.OfflineKind(type)
+                   + "|rebirth=task15-exact|allocation=task18-exact|gold=task19-ledger";
+        }
+
+        private static string ExpectedStateVersion(Character c, ChallengeType type,
+            ChallengeDifficultyBand difficulty, int completedBefore, int target)
+        {
+            return (Main.GameAssemblySha256 ?? string.Empty) + "|s="
+                   + ExecutionSafety.StateVersion + "|d=" + difficulty + "|t=" + type
+                   + "|c=" + completedBefore + "|target=" + target + "|boss=" + c.bossID
+                   + "|run=" + Math.Floor(c.rebirthTime.totalseconds);
+        }
+
+        private static bool TryOneActiveType(Character c, out ChallengeType type)
+        {
+            var active = new List<ChallengeType>();
+            if (c.challenges.basicChallenge.inChallenge) active.Add(ChallengeType.Basic);
+            if (c.challenges.noAugsChallenge.inChallenge) active.Add(ChallengeType.NoAug);
+            if (c.challenges.hour24Challenge.inChallenge) active.Add(ChallengeType.TwentyFourHour);
+            if (c.challenges.levelChallenge10k.inChallenge) active.Add(ChallengeType.OneHundredLC);
+            if (c.challenges.noEquipmentChallenge.inChallenge) active.Add(ChallengeType.NoEquip);
+            if (c.challenges.trollChallenge.inChallenge) active.Add(ChallengeType.Troll);
+            if (c.challenges.noRebirthChallenge.inChallenge) active.Add(ChallengeType.NoRebirth);
+            if (c.challenges.laserSwordChallenge.inChallenge) active.Add(ChallengeType.LaserSword);
+            if (c.challenges.blindChallenge.inChallenge) active.Add(ChallengeType.Blind);
+            if (c.challenges.nguChallenge.inChallenge) active.Add(ChallengeType.NoNGU);
+            if (c.challenges.timeMachineChallenge.inChallenge) active.Add(ChallengeType.NoTimeMachine);
+            type = active.Count == 1 ? active[0] : ChallengeType.Basic;
+            return active.Count == 1;
+        }
+
+        private static int CurrentCompletions(Character c, ChallengeType type)
+        {
+            switch (type)
+            {
+                case ChallengeType.Basic: return c.allChallenges.basicChallenge.currentCompletions();
+                case ChallengeType.NoAug: return c.allChallenges.noAugsChallenge.currentCompletions();
+                case ChallengeType.TwentyFourHour: return c.allChallenges.hour24Challenge.currentCompletions();
+                case ChallengeType.OneHundredLC: return c.allChallenges.level100Challenge.currentCompletions();
+                case ChallengeType.NoEquip: return c.allChallenges.noEquipmentChallenge.currentCompletions();
+                case ChallengeType.Troll: return c.allChallenges.trollChallenge.currentCompletions();
+                case ChallengeType.NoRebirth: return c.allChallenges.noRebirthChallenge.currentCompletions();
+                case ChallengeType.LaserSword: return c.allChallenges.laserSwordChallenge.currentCompletions();
+                case ChallengeType.Blind: return c.allChallenges.blindChallenge.currentCompletions();
+                case ChallengeType.NoNGU: return c.allChallenges.NGUChallenge.currentCompletions();
+                case ChallengeType.NoTimeMachine: return c.allChallenges.timeMachineChallenge.currentCompletions();
+                default: throw new ArgumentOutOfRangeException("type");
+            }
+        }
+
+        private static int Maximum(Character c, ChallengeType type)
+        {
+            switch (type)
+            {
+                case ChallengeType.Basic: return c.allChallenges.basicChallenge.maxCompletions;
+                case ChallengeType.NoAug: return c.allChallenges.noAugsChallenge.maxCompletions;
+                case ChallengeType.TwentyFourHour: return c.allChallenges.hour24Challenge.maxCompletions;
+                case ChallengeType.OneHundredLC: return c.allChallenges.level100Challenge.maxCompletions;
+                case ChallengeType.NoEquip: return c.allChallenges.noEquipmentChallenge.maxCompletions;
+                case ChallengeType.Troll: return c.allChallenges.trollChallenge.maxCompletions;
+                case ChallengeType.NoRebirth: return c.allChallenges.noRebirthChallenge.maxCompletions;
+                case ChallengeType.LaserSword: return c.allChallenges.laserSwordChallenge.maxCompletions;
+                case ChallengeType.Blind: return c.allChallenges.blindChallenge.maxCompletions;
+                case ChallengeType.NoNGU: return c.allChallenges.NGUChallenge.maxCompletions;
+                case ChallengeType.NoTimeMachine: return c.allChallenges.timeMachineChallenge.maxCompletions;
+                default: throw new ArgumentOutOfRangeException("type");
+            }
+        }
+
+        private static int NativeTarget(Character c, ChallengeType type)
+        {
+            switch (type)
+            {
+                case ChallengeType.Basic: return c.allChallenges.basicChallenge.targetBoss();
+                case ChallengeType.NoAug: return c.allChallenges.noAugsChallenge.targetBoss();
+                case ChallengeType.TwentyFourHour: return c.allChallenges.hour24Challenge.targetBoss();
+                case ChallengeType.OneHundredLC: return c.allChallenges.level100Challenge.targetBoss();
+                case ChallengeType.NoEquip: return c.allChallenges.noEquipmentChallenge.targetBoss();
+                case ChallengeType.Troll: return c.allChallenges.trollChallenge.targetBoss();
+                case ChallengeType.NoRebirth: return c.allChallenges.noRebirthChallenge.targetBoss();
+                case ChallengeType.LaserSword: return c.allChallenges.laserSwordChallenge.laserSwordTarget();
+                case ChallengeType.Blind: return c.allChallenges.blindChallenge.targetBoss();
+                case ChallengeType.NoNGU: return c.allChallenges.NGUChallenge.targetBoss();
+                case ChallengeType.NoTimeMachine: return c.allChallenges.timeMachineChallenge.targetBoss();
+                default: throw new ArgumentOutOfRangeException("type");
+            }
         }
 
         private static double ActiveElapsedSeconds(Character c, ChallengeType type)
@@ -383,134 +641,47 @@ namespace NGUInjector.Autopilot
                 case ChallengeType.Blind: return c.challenges.blindChallenge.challengeTime.totalseconds;
                 case ChallengeType.NoNGU: return c.challenges.nguChallenge.challengeTime.totalseconds;
                 case ChallengeType.NoTimeMachine: return c.challenges.timeMachineChallenge.challengeTime.totalseconds;
-                default: return 0.0;
+                default: throw new ArgumentOutOfRangeException("type");
             }
         }
 
-        private static int ActiveBestTime(Character c, ChallengeType type)
+        private static ChallengeDifficultyBand DifficultyOf(difficulty value)
         {
-            switch (type)
-            {
-                case ChallengeType.Basic: return c.challenges.basicChallenge.bestTime;
-                case ChallengeType.NoAug: return c.challenges.noAugsChallenge.bestTime;
-                case ChallengeType.TwentyFourHour: return c.challenges.hour24Challenge.bestTime;
-                case ChallengeType.OneHundredLC: return c.challenges.levelChallenge10k.bestTime;
-                case ChallengeType.NoEquip: return c.challenges.noEquipmentChallenge.bestTime;
-                case ChallengeType.Troll: return c.challenges.trollChallenge.bestTime;
-                case ChallengeType.NoRebirth: return c.challenges.noRebirthChallenge.bestTime;
-                case ChallengeType.LaserSword: return c.challenges.laserSwordChallenge.bestTime;
-                case ChallengeType.Blind: return c.challenges.blindChallenge.bestTime;
-                case ChallengeType.NoNGU: return c.challenges.nguChallenge.bestTime;
-                case ChallengeType.NoTimeMachine: return c.challenges.timeMachineChallenge.bestTime;
-                default: return int.MaxValue;
-            }
+            return value == difficulty.normal ? ChallengeDifficultyBand.Normal
+                : value == difficulty.evil ? ChallengeDifficultyBand.Evil
+                : ChallengeDifficultyBand.Sadistic;
         }
 
-        private static int BaseTarget(ChallengeType type)
+        private static bool ValidExactRebirthEvent(Character c, int targetSeconds)
         {
-            if (type == ChallengeType.NoRebirth) return 39;
-            if (type == ChallengeType.NoEquip) return 65;
-            if (type == ChallengeType.Troll) return 68;
-            return 57;
-        }
-
-        private static int ActiveHighestBoss(Character c)
-        {
-            return c.settings.rebirthDifficulty == difficulty.normal ? c.highestBoss
-                : c.settings.rebirthDifficulty == difficulty.evil ? c.highestHardBoss
-                : c.highestSadisticBoss;
-        }
-
-        private static double ValidBestTime(int raw)
-        {
-            return raw > 0 && raw < int.MaxValue ? raw : -1.0;
-        }
-
-        private static double RecoverySeconds(Character c, ChallengeType type, int complete)
-        {
-            if (type == ChallengeType.Basic && complete == 0
-                && c.settings.rebirthDifficulty != difficulty.normal)
-                return 600.0;
-            return c.settings.rebirthDifficulty == difficulty.normal ? 3600.0 : 7200.0;
-        }
-
-        private static double NearestTitanSeconds()
-        {
-            var nearest = double.PositiveInfinity;
-            var reachable = ZoneHelpers.GetMaxReachableZone(true);
-            for (var i = 0; i < 14; i++)
-            {
-                if (ZoneHelpers.TitanZones[i] > reachable
-                    || !ZoneHelpers.TitanStateSignature(i, false).Contains("|unlock=True|"))
-                    continue;
-                var seconds = ZoneHelpers.SecondsUntilTitanSpawn(i);
-                if (seconds >= 0.0) nearest = Math.Min(nearest, seconds);
-            }
-            return double.IsPositiveInfinity(nearest) ? -1.0 : nearest;
-        }
-
-        private static double EstimatedTitanOpportunitySeconds(double clearSeconds)
-        {
-            return Math.Min(TitanMechanics.BaseSeconds(12), Math.Max(3600.0, clearSeconds * .20));
-        }
-
-        private static double RemainingTitanClockBenefit(Character c)
-        {
-            var remaining = 0;
-            if (!c.adventure.titan7Unlocked) remaining++;
-            if (!c.adventure.titan8Unlocked) remaining++;
-            if (!c.adventure.titan9Unlocked) remaining++;
-            if (!c.adventure.titan10Unlocked) remaining++;
-            if (!c.adventure.titan11Unlocked) remaining++;
-            if (!c.adventure.titan12Unlocked) remaining++;
-            return 300.0 + 90.0 * remaining;
+            if (c == null || c.rebirth == null || c.rebirthTime == null
+                || targetSeconds < 0) return false;
+            var minimum = Math.Ceiling((double)c.rebirth.minRebirthTime());
+            return targetSeconds + 1e-12 >= minimum
+                   && targetSeconds + 1e-12 >= c.rebirthTime.totalseconds;
         }
 
         private static string AdmissionSummary(ChallengeAdmission x)
         {
-            var target = x.TargetLevel >= 0 ? "levels " + x.TargetLevel + "/" + x.TargetLevel
+            var target = x.TargetLevel >= 0 ? "both levels " + x.TargetLevel
                 : "Boss " + (x.TargetBoss + 1);
-            return x.ProfileCode + " [" + x.CompletedBefore + "/" + x.MaxCompletions
-                   + " -> " + x.Completion + ", " + target + ", p90 " + x.EtaText
-                   + ", recovery " + FormatDuration(x.RecoverySeconds) + "]: " + x.Evidence
-                   + "; " + x.Reward;
+            return x.ProfileCode + " selected [" + x.CompletedBefore + "/"
+                   + x.MaxCompletions + ", " + target + ", upper " + x.EtaText
+                   + ", recovery " + FormatSeconds(x.RecoverySeconds)
+                   + ", Titan-vector " + FormatSeconds(x.TitanOpportunitySeconds)
+                   + "]: " + x.Evidence + "; " + x.Reward;
         }
 
-        private static string RemainingStateSummary(Character c, int highest, double basicBest)
+        private static string RejectionSuffix(ICollection<string> rejected)
         {
-            return "No safe challenge entry now: difficulty " + c.settings.rebirthDifficulty
-                   + ", record Boss " + (highest + 1) + ", Basic sample "
-                   + (basicBest > 0 ? FormatDuration(basicBest) : "none")
-                   + "; locked/maxed entries or first clears lack conservative headroom";
+            return rejected == null || rejected.Count == 0 ? string.Empty
+                : " | " + string.Join("; ", rejected.Take(11).ToArray());
         }
 
-        private static string ChallengeLedger(Character c)
+        private static string FormatSeconds(double seconds)
         {
-            var a = c.allChallenges;
-            return "ledger " + c.settings.rebirthDifficulty + ": "
-                   + LedgerEntry(c, ChallengeType.Basic, "B", a.basicChallenge.currentCompletions(), a.basicChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.NoAug, "A", a.noAugsChallenge.currentCompletions(), a.noAugsChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.TwentyFourHour, "24", a.hour24Challenge.currentCompletions(), a.hour24Challenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.OneHundredLC, "100", a.level100Challenge.currentCompletions(), a.level100Challenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.NoEquip, "E", a.noEquipmentChallenge.currentCompletions(), a.noEquipmentChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.Troll, "T", a.trollChallenge.currentCompletions(), a.trollChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.NoRebirth, "R", a.noRebirthChallenge.currentCompletions(), a.noRebirthChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.LaserSword, "L", a.laserSwordChallenge.currentCompletions(), a.laserSwordChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.Blind, "D", a.blindChallenge.currentCompletions(), a.blindChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.NoNGU, "N", a.NGUChallenge.currentCompletions(), a.NGUChallenge.maxCompletions)
-                   + LedgerEntry(c, ChallengeType.NoTimeMachine, "M", a.timeMachineChallenge.currentCompletions(), a.timeMachineChallenge.maxCompletions);
-        }
-
-        private static string LedgerEntry(Character c, ChallengeType type, string code, int complete, int max)
-        {
-            return code + "=" + complete + "/" + max
-                   + (BaseRebirth.ChallengeUnlocked(c.allChallenges, type) ? "U" : "L") + ",";
-        }
-
-        private static string FormatDuration(double seconds)
-        {
-            if (seconds < 3600.0) return Math.Ceiling(seconds / 60.0) + "m";
-            return (seconds / 3600.0).ToString("0.0") + "h";
+            if (double.IsNaN(seconds) || double.IsInfinity(seconds)) return "unknown";
+            return seconds.ToString("0.###", CultureInfo.InvariantCulture) + "s";
         }
 
         private static string NativeReward(long expectedExp, string expectedAp, string special)
@@ -523,6 +694,11 @@ namespace NGUInjector.Autopilot
         {
             return string.IsNullOrEmpty(value) ? "none"
                 : value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        }
+
+        private static bool Finite(double value)
+        {
+            return value >= 0.0 && !double.IsNaN(value) && !double.IsInfinity(value);
         }
     }
 }

@@ -41,7 +41,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             var bestPair = -1;
             var bestIsUpgrade = false;
             var bestScore = 0d;
-            var available = (long)MaxAllocation;
+            var available = MaxAllocation;
             if (available <= 0)
                 return;
             var horizon = RemainingRebirthHorizon();
@@ -137,7 +137,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                     + Math.Ceiling(horizon) + "s");
                 return;
             }
-            SetInput(allocation);
+            if (!SetInput(allocation))
+                return;
             if (bestIsUpgrade)
             {
                 selected.addEnergyUpgrade();
@@ -179,7 +180,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Type == ResourceType.Energy;
         }
 
-        internal float CalculateAugCap(int index, float allocation)
+        internal long CalculateAugCap(int index, long allocation)
         {
             var calcA = CalculateAugCapCalc(500, index, allocation);
             if (calcA.PPT < 1)
@@ -191,7 +192,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return calcA.Num;
         }
 
-        internal CapCalc CalculateAugCapCalc(int offset, int index, float allocation)
+        internal CapCalc CalculateAugCapCalc(int offset, int index, long allocation)
         {
             int augIndex;
             var ret = new CapCalc
@@ -279,13 +280,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             if (formula >= Character.hardCap())
                 formula = Character.hardCap();
             var num4 = formula <= 1.0 ? 1L : (long)formula;
-            var num = (long)(num4 / (long)Math.Ceiling(num4 / (double)allocation) * 1.00000202655792);
-            if (num + 1L <= long.MaxValue)
-                ++num;
-            if (num > Character.idleEnergy)
-                num = Character.idleEnergy;
-            if (num < 0L)
-                num = 0L;
+            var num = Autopilot.ExactResourceAllocator.CapAtTickBoundary(num4, allocation,
+                Character.idleEnergy);
             var ppt = (double)num / num4;
             ret.Num = num;
             ret.PPT = ppt;

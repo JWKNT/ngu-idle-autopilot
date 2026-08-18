@@ -11,12 +11,15 @@ FILE PURPOSE
 LoadoutManager serializes transient physical-gear objectives and performs leased native slot swaps
 without violating Titan, Yggdrasil, Gold, or Money Pit locks. It resolves exact Equipment object
 references, preflights Titan combat against the intended Beast/version/loadout state before the
-first slot mutation, snapshots rollback identity, and verifies every native postcondition. Inputs
-are live inventory/controllers, config loadout IDs, Titan clocks, and execution leases; outputs are
-confirmed gear transitions or throttled HOLD telemetry. Direct Equipment assignment, partial
-transactions, topology mutation while locked, dry-run mutation, and repeated infeasible Titan
-equip/rollback loops are forbidden. Strategy chooses contexts elsewhere; this file owns physical
-transactions, feasibility admission, backoff, and exact restoration only.
+first slot mutation, snapshots rollback identity, and verifies every native postcondition. The
+task-13 stage/capture/restore hooks let the event-driven Titan coordinator hold one exact common
+physical loadout across an adjacent-frame native-autokill chain without treating manual puzzle
+items as autokill prerequisites. Inputs are live inventory/controllers, config loadout IDs, Titan
+clocks, and execution leases; outputs are confirmed gear transitions or throttled HOLD telemetry.
+Direct Equipment assignment, partial transactions, topology mutation while locked, dry-run
+mutation, and repeated infeasible Titan equip/rollback loops are forbidden. Strategy chooses
+contexts elsewhere; this file owns physical transactions, feasibility admission, backoff, and
+exact restoration only.
 */
 namespace NGUInjector.Managers
 {
@@ -33,6 +36,9 @@ namespace NGUInjector.Managers
         private static int[] _savedLoadout;
         private static int[] _tempLoadout;
         private static ExactLoadout _savedExactLoadout;
+        private static ExactLoadout _activeTitanExecutionExactLoadout;
+        private static string _activeTitanExecutionStageId = string.Empty;
+        private static string _activeTitanExecutionPhysicalFingerprint = string.Empty;
         internal static int PendingTitanMoneyTarget { get; private set; } = -1;
         private static int _pendingTitanKillsBefore = -1;
         internal static LockType CurrentLock { get; set; }
@@ -106,7 +112,13 @@ namespace NGUInjector.Managers
                 Main.LogAction(restored ? "GEAR" : "REJECTED", restored
                     ? "Restored the exact pre-event physical loadout [confirmed by reference identity]"
                     : "Could not verify restoration of the exact pre-event physical loadout");
-                if (restored) _savedExactLoadout = null;
+                if (restored)
+                {
+                    _savedExactLoadout = null;
+                    _activeTitanExecutionExactLoadout = null;
+                    _activeTitanExecutionStageId = string.Empty;
+                    _activeTitanExecutionPhysicalFingerprint = string.Empty;
+                }
                 return restored;
             }
             ExecutionSafety.ReportHold("loadout-restoration-no-snapshot",
@@ -340,13 +352,13 @@ namespace NGUInjector.Managers
         }
 
         private static ExactLoadout ResolveExactLoadout(int[] configuredIds, string context,
-            int titanTarget, out string reason)
+            int titanTarget, out string reason, bool nativeAutokill = false)
         {
             reason = string.Empty;
             var desired = configuredIds != null && configuredIds.Length > 0
                 ? BuildConfiguredExactLoadout(configuredIds, context)
                 : BuildDynamicExactLoadout(context);
-            desired = EnforceTitanRequirements(desired, titanTarget);
+            desired = EnforceTitanRequirements(desired, titanTarget, nativeAutokill);
             if (desired != null && ValidateExactLoadout(desired)) return desired;
             reason = "no complete, legal exact-reference " + context
                      + " loadout (including required Titan puzzle items) could be resolved";
@@ -369,6 +381,123 @@ namespace NGUInjector.Managers
                 return false;
             }
             return TryContextSwap(lockType, desired, context, owner);
+        }
+
+        /*
+        EVENT-DRIVEN TITAN PHYSICAL STAGE
+
+        The execution controller has already disabled native autokill and selected every target
+        version before calling this hook.  Resolution and candidate feasibility finish before the
+        existing exact-reference transaction captures rollback state.  A stage ID is idempotent,
+        but a second coordinator can never inherit or replace another Titan lock.
+        */
+        internal static TitanLoadoutStageResult StageTitanExecutionLoadout(
+            TitanLoadoutStageRequest request)
+        {
+            if (request == null) throw new ArgumentNullException("request");
+            if (CurrentLock == LockType.Titan)
+            {
+                var sameStage = string.Equals(_activeTitanExecutionStageId, request.StageId,
+                    StringComparison.Ordinal) && _savedExactLoadout != null
+                    && _activeTitanExecutionExactLoadout != null
+                    && MatchesExactLoadout(_activeTitanExecutionExactLoadout)
+                    && !string.IsNullOrEmpty(_activeTitanExecutionPhysicalFingerprint);
+                return new TitanLoadoutStageResult(sameStage,
+                    _activeTitanExecutionStageId,
+                    _activeTitanExecutionPhysicalFingerprint,
+                    sameStage
+                        ? "exact Titan execution loadout is already staged"
+                        : "another Titan physical transaction owns the lock");
+            }
+            if (!CanAcquireOrHasLock(LockType.Titan))
+                return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
+                    "another physical loadout objective owns the lock");
+            if (!HasMutationLease(MutationClass.TitanLoadout, MutationOwner.Autopilot,
+                    "Titan execution prestage"))
+                return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
+                    "Titan execution mutation lease is unavailable");
+
+            var ids = request.TitanIds();
+            var configured = request.ConfiguredItemIds();
+            var target = ids[ids.Length - 1] - 1;
+            var context = request.ValuesGold
+                ? configured.Length == 0 ? "gold-titan" : "gold"
+                : "titan";
+            string resolveReason;
+            var desired = ResolveExactLoadout(configured, context, target,
+                out resolveReason, true);
+            if (desired == null)
+                return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
+                    resolveReason);
+            string preflightReason;
+            if (!TitanCandidatePreflight(target, desired, MutationOwner.Autopilot,
+                    out preflightReason))
+                return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
+                    preflightReason);
+            if (!TryContextSwap(LockType.Titan, desired,
+                    "Titan execution prestage", MutationOwner.Autopilot))
+                return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
+                    "exact Titan execution physical transaction was rejected");
+
+            _activeTitanExecutionStageId = request.StageId;
+            _activeTitanExecutionExactLoadout = desired;
+            _activeTitanExecutionPhysicalFingerprint = CandidateSignature(desired);
+            return new TitanLoadoutStageResult(true,
+                _activeTitanExecutionStageId,
+                _activeTitanExecutionPhysicalFingerprint,
+                "exact Titan execution loadout staged and verified by reference identity");
+        }
+
+        internal static TitanLoadoutStageResult CaptureTitanExecutionLoadout(string stageId)
+        {
+            if (string.IsNullOrEmpty(stageId))
+                return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
+                    "stage ID is required");
+            var satisfied = CurrentLock == LockType.Titan && _savedExactLoadout != null
+                            && _activeTitanExecutionExactLoadout != null
+                            && MatchesExactLoadout(_activeTitanExecutionExactLoadout)
+                            && string.Equals(stageId, _activeTitanExecutionStageId,
+                                StringComparison.Ordinal)
+                            && !string.IsNullOrEmpty(
+                                _activeTitanExecutionPhysicalFingerprint);
+            return new TitanLoadoutStageResult(satisfied,
+                _activeTitanExecutionStageId,
+                _activeTitanExecutionPhysicalFingerprint,
+                satisfied
+                    ? "exact Titan execution stage is still physically owned"
+                    : "requested Titan execution stage is not physically owned");
+        }
+
+        internal static TitanLoadoutStageResult RestoreTitanExecutionLoadout(string stageId)
+        {
+            var captured = CaptureTitanExecutionLoadout(stageId);
+            if (!captured.Satisfied) return captured;
+            if (!HasMutationLease(MutationClass.TitanLoadout,
+                    MutationOwner.Autopilot, "Titan execution restoration"))
+                return new TitanLoadoutStageResult(false, stageId,
+                    captured.PhysicalFingerprint,
+                    "Titan execution restoration mutation lease is unavailable");
+            if (!Main.HasExecutableAllocationOwner)
+                return new TitanLoadoutStageResult(false, stageId,
+                    captured.PhysicalFingerprint,
+                    "no exclusive allocation profile can restore reclaimed resources");
+            var restored = ApplyExactLoadout(_savedExactLoadout,
+                MutationClass.TitanLoadout, MutationOwner.Autopilot);
+            Main.LogAction(restored ? "GEAR" : "REJECTED", restored
+                ? "Restored the exact pre-Titan execution physical loadout [confirmed by reference identity]"
+                : "Could not verify restoration of the exact pre-Titan execution physical loadout");
+            if (!restored)
+                return new TitanLoadoutStageResult(false, stageId,
+                    captured.PhysicalFingerprint,
+                    "exact pre-Titan physical loadout could not be verified after restoration");
+            _savedExactLoadout = null;
+            _activeTitanExecutionExactLoadout = null;
+            _activeTitanExecutionStageId = string.Empty;
+            _activeTitanExecutionPhysicalFingerprint = string.Empty;
+            ReleaseLock();
+            return new TitanLoadoutStageResult(true, stageId,
+                captured.PhysicalFingerprint,
+                "exact pre-Titan physical loadout restored; Titan lock released");
         }
 
         /*
@@ -511,9 +640,13 @@ namespace NGUInjector.Managers
                  / currentHpNumerator;
         }
 
-        private static ExactLoadout EnforceTitanRequirements(ExactLoadout desired, int titanTarget)
+        private static ExactLoadout EnforceTitanRequirements(ExactLoadout desired,
+            int titanTarget, bool nativeAutokill)
         {
             if (desired == null || titanTarget < 0) return desired;
+            // Apathy and Glop are bespoke manual-AI prerequisites. Native autokill bypasses
+            // those state machines and must not burn a physical slot on either item.
+            if (nativeAutokill) return desired;
             var needsApathy = titanTarget == 3;
             if (titanTarget == 11)
             {

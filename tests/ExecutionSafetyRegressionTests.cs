@@ -39,6 +39,14 @@ namespace NGUInjector.Autopilot
         internal bool AllowRebirths = true;
         internal bool AllowChallenges = true;
         internal bool AllowEndSequence = true;
+        internal bool AllowVerifiedReversibleActions = true;
+        internal bool AllowGlobalSchedulerExecution;
+        internal bool AllowPermanentPurchaseExecution;
+        internal bool AllowMoneyPitExecution;
+        internal bool AllowDifficultyExecution;
+        internal bool AllowTitanOneThroughTwelveExecution;
+        internal bool AllowTitanThirteenFourteenExecution;
+        internal bool AllowMove69Execution;
 
         internal bool IsDryRun { get { return Mode != "assist" && Mode != "full"; } }
         internal bool IsAssist { get { return Mode == "assist"; } }
@@ -47,7 +55,12 @@ namespace NGUInjector.Autopilot
         internal string ExecutionFingerprint()
         {
             return Enabled + "|" + Mode + "|" + ManageAllocations + "|" + ManageDiggers
-                   + "|" + ManageInventory + "|" + AllowRebirths + "|" + AllowEndSequence;
+                   + "|" + ManageInventory + "|" + AllowRebirths + "|" + AllowEndSequence
+                   + "|" + AllowVerifiedReversibleActions + "|"
+                   + AllowGlobalSchedulerExecution + "|" + AllowPermanentPurchaseExecution
+                   + "|" + AllowMoneyPitExecution + "|" + AllowDifficultyExecution + "|"
+                   + AllowTitanOneThroughTwelveExecution + "|"
+                   + AllowTitanThirteenFourteenExecution + "|" + AllowMove69Execution;
         }
     }
 
@@ -101,6 +114,7 @@ namespace NGUInjector
             TestAssistMatrix();
             TestExclusiveOwnerHandoff();
             TestStaleLeaseInvalidation();
+            TestStagedAuthorityInvalidation();
             Console.WriteLine("PASS: " + _assertions + " execution-safety assertions");
             return 0;
         }
@@ -183,6 +197,22 @@ namespace NGUInjector
                 MutationLease second;
                 Assert(!Acquire(MutationClass.Combat, MutationOwner.Autopilot, out second),
                     "the invalidated cycle must not issue another lease");
+            }
+        }
+
+        private static void TestStagedAuthorityInvalidation()
+        {
+            var config = new AutopilotConfig {Mode = "full"};
+            NGUInjector.Main.Autopilot.Config = config;
+            using (ExecutionSafety.BeginCycle("staged-authority", config))
+            {
+                MutationLease lease;
+                Assert(Acquire(MutationClass.Combat, MutationOwner.Autopilot, out lease),
+                    "verified reversible stage initially acquires its lease");
+                config.AllowDifficultyExecution = true;
+                ExecutionSafety.ObserveConfig(config);
+                Assert(!lease.IsCurrent,
+                    "changing a staged authority bit invalidates all issued leases");
             }
         }
     }

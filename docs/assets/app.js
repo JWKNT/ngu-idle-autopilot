@@ -3,9 +3,10 @@ FILE PURPOSE
 
 This dependency-free client discovers and polls the laptop's current read-only public tunnel,
 validates its telemetry envelope, and renders the full confirmed NGU state into a hierarchy that
-keeps rebirth/challenge decisions, deployment identity, and action errors ahead of large reference
+keeps the deployment/decision epoch, root transaction, staged authority, shadow scheduler,
+rebirth/challenge/difficulty/END decisions, capacity, and action errors ahead of large reference
 tables. Missing optional fields stay visibly unavailable rather than becoming false zero values or
-ETAs. Local copies use their own origin. The client sends no commands, persists no game data, and
+ETAs. Held, Pending, and Quarantined are separate states. Local copies use their own origin. The client sends no commands, persists no game data, and
 exposes no mutation endpoint.
 */
 (() => {
@@ -87,6 +88,27 @@ exposes no mutation endpoint.
     return /[.!?]$/.test(result) ? result : `${result}.`;
   }
 
+  function stateToken(value) {
+    const normalized = text(value, "unavailable").toLowerCase();
+    if (normalized.includes("quarant")) return "quarantined";
+    if (normalized.includes("error") || normalized.includes("abort")) return "error";
+    if (normalized.includes("commit") || normalized.includes("complete")) return "committed";
+    if (normalized.includes("available") && !normalized.includes("unavailable")) return "available";
+    if (normalized.includes("pending") || normalized.includes("open") || normalized.includes("plan")
+      || normalized.includes("reset") || normalized.includes("active") || normalized.includes("admitted")) return "pending";
+    return "held";
+  }
+
+  function shortIdentity(value) {
+    const normalized = text(value, "");
+    return normalized ? normalized.slice(0, 12) : "Unavailable";
+  }
+
+  function confidence(value) {
+    const amount = optionalNumber(value);
+    return amount === null || amount < 0 || amount > 1 ? "Unavailable" : `${compactDecimal(amount * 100, 1)}%`;
+  }
+
   async function discoverEndpoint() {
     if (!publicFeed) return endpoint;
     if (endpoint) return endpoint;
@@ -157,6 +179,45 @@ exposes no mutation endpoint.
     const challengeActive = String(s.stage || "").toLowerCase().includes("active challenge");
     const challengeTargetBoss = optionalNumber(s.challengeTargetBoss);
     const challengeTargetLevel = optionalNumber(s.challengeTargetLevel);
+    const root = s.mutationRoot && typeof s.mutationRoot === "object" ? s.mutationRoot : {};
+    const rootId = optionalNumber(root.id);
+    const rootEpoch = text(root.epochFingerprint, "");
+    const decisionEpoch = text(s.gameEpochFingerprint, "");
+    const rootEpochMatch = rootEpoch && decisionEpoch ? rootEpoch === decisionEpoch : null;
+    const quarantined = number(root.quarantinedSteps) > 0 || String(root.state || "").toLowerCase().includes("quarant") || rootEpochMatch === false;
+    const pending = number(root.pendingSteps) > 0 || ["open", "pending"].includes(String(root.state || "").toLowerCase());
+    const transactionStatus = quarantined ? "Quarantined" : s.automationTransactionError ? "Error"
+      : pending ? "Pending" : !rootId ? "Held" : s.automationTransactionComplete ? "Committed" : "Pending";
+    const schedulerSource = s.globalScheduler && typeof s.globalScheduler === "object" ? s.globalScheduler : {};
+    const nonnegative = (value) => { const parsed = optionalNumber(value); return parsed !== null && parsed >= 0 ? parsed : null; };
+    const schedulerProvenance = text(schedulerSource.provenance, "");
+    const schedulerSamples = nonnegative(schedulerSource.sampleCount);
+    const schedulerConfidence = schedulerProvenance && schedulerProvenance.toLowerCase() !== "unknown"
+      ? nonnegative(schedulerSource.confidence) : null;
+    const routes = {};
+    const staged = s.stagedAuthority && typeof s.stagedAuthority === "object" ? s.stagedAuthority : {};
+    ["verifiedReversible", "permanentPurchases", "moneyPit", "challenges", "difficulty", "titan1Through12", "titan13Through14", "move69", "endSequence"].forEach((key) => {
+      routes[key] = staged[key] === true ? "Enabled" : staged[key] === false ? "Held" : "Unavailable";
+    });
+    const inventoryTotal = nonnegative(s.inventoryTotalSlots);
+    const inventoryFree = nonnegative(s.inventoryFreeSlots);
+    const inventoryReserve = nonnegative(s.collectionRequiredFreeReserve);
+    const capacityMargin = inventoryFree !== null && inventoryReserve !== null ? inventoryFree - inventoryReserve : null;
+    const scheduler = {
+      status: text(schedulerSource.status, "Unavailable"), authority: schedulerSource.authority || null,
+      canExecute: typeof schedulerSource.canExecute === "boolean" ? schedulerSource.canExecute : null,
+      snapshotHash: schedulerSource.snapshotHash || null, modelHash: schedulerSource.modelHash || null,
+      objectiveHash: schedulerSource.objectiveHash || null, action: schedulerSource.action || null,
+      actionId: schedulerSource.actionId || null, nextEvent: schedulerSource.nextEvent || null,
+      eventId: schedulerSource.eventId || null, meanSeconds: nonnegative(schedulerSource.meanSeconds),
+      p50Seconds: nonnegative(schedulerSource.p50Seconds), p90Seconds: nonnegative(schedulerSource.p90Seconds),
+      lowerBoundSeconds: nonnegative(schedulerSource.lowerBoundSeconds), upperBoundSeconds: nonnegative(schedulerSource.upperBoundSeconds),
+      gapSeconds: nonnegative(schedulerSource.gapSeconds), regretSeconds: nonnegative(schedulerSource.regretSeconds),
+      blocker: schedulerSource.blocker || null, blockerDetail: schedulerSource.blockerDetail || null,
+      provenance: schedulerProvenance && schedulerProvenance.toLowerCase() !== "unknown" ? schedulerProvenance : null,
+      sampleCount: schedulerProvenance && schedulerProvenance.toLowerCase() !== "unknown" ? schedulerSamples : null,
+      confidence: schedulerConfidence,
+    };
     return {
       rebirth: {
         action,
@@ -182,6 +243,9 @@ exposes no mutation endpoint.
         previewDefenseRatio: optionalNumber(s.rebirthProjectedDefenseMultiplier),
         previewWorstRatio: previewRatios.length ? Math.min(...previewRatios) : null,
         selectedCheckpointWorstRatio: optionalNumber(s.rebirthMinimumNumberRatio),
+        model: s.rebirthOptimizerModel || null,
+        provenance: s.rebirthEtaProvenance || null,
+        confidence: nonnegative(s.rebirthEtaConfidence),
       },
       challenge: {
         status: challengeActive ? "active" : "none-admitted",
@@ -189,26 +253,72 @@ exposes no mutation endpoint.
         admitted: false,
         active: challengeActive,
         entryEtaSeconds: null,
-        clearEtaSeconds: optionalNumber(s.nextChallengeEtaSeconds || s.challengeEtaSeconds),
+        clearEtaSeconds: optionalNumber(s.nextChallengeEtaSeconds ?? s.challengeEtaSeconds),
         recoveryEtaSeconds: optionalNumber(s.challengeRecoveryEtaSeconds),
         targetBoss: challengeTargetBoss !== null && challengeTargetBoss >= 0 ? challengeTargetBoss : null,
         targetLevel: challengeTargetLevel !== null && challengeTargetLevel >= 0 ? challengeTargetLevel : null,
         reason: s.challengeEvidenceSummary || "The producer emitted no challenge-admission evidence.",
+        provenance: s.challengeEtaProvenance || null,
+        confidence: nonnegative(s.challengeEtaConfidence),
+      },
+      difficulty: {
+        status: routes.difficulty === "Enabled" && (s.difficultyTarget || s.nextDifficulty || s.difficultyTransitionTarget)
+          ? "Pending" : routes.difficulty === "Held" ? "Held" : "Unavailable",
+        current: ["Normal", "Evil", "Sadistic"][number(s.difficulty, -1)] || null,
+        target: s.difficultyTarget || s.nextDifficulty || s.difficultyTransitionTarget || null,
+        etaSeconds: nonnegative(s.difficultyEtaSeconds ?? s.difficultyTransitionEtaSeconds),
+        blocker: s.difficultyBlocker || s.difficultyTransitionReason || null,
+        provenance: s.difficultyEtaProvenance || null,
+        confidence: nonnegative(s.difficultyEtaConfidence),
+      },
+      end: {
+        status: s.endgameReadyToTrigger === true && s.endgameExecutionAuthorized === true ? "Pending"
+          : s.endgameExecutionAuthorized === false || s.endgameReadyToTrigger === false ? "Held" : "Unavailable",
+        objective: s.endgameObjective || null, missing: s.endgameMissingSummary || null,
+        titan12VersionTarget: nonnegative(s.endgameTitan12VersionTarget),
+        ready: typeof s.endgameReadyToTrigger === "boolean" ? s.endgameReadyToTrigger : null,
+        authorized: typeof s.endgameExecutionAuthorized === "boolean" ? s.endgameExecutionAuthorized : null,
+        meanSeconds: scheduler.meanSeconds, p50Seconds: scheduler.p50Seconds,
+        p90Seconds: scheduler.p90Seconds, lowerBoundSeconds: scheduler.lowerBoundSeconds,
+        provenance: scheduler.provenance, confidence: scheduler.confidence,
       },
       identity: {
-        verifiedEnvelope: Boolean(s.buildId && s.producerSessionId && number(s.producerPid) > 0),
+        verifiedEnvelope: false,
+        decisionEnvelopeComplete: Boolean(s.buildId && s.producerSessionId && number(s.producerPid) > 0 && decisionEpoch),
+        joinStatus: "Pending",
+        deploymentDecisionMatch: false,
+        rootEpochMatchesDecision: rootEpochMatch,
         buildId: s.buildId || null,
         producerPid: optionalNumber(s.producerPid),
         producerSessionId: s.producerSessionId || null,
         diskArtifactSha256: s.diskArtifactSha256 || null,
         gameAssemblySha256: s.gameAssemblySha256 || null,
         activeMatchesDisk: s.activeMatchesDisk || "unknown",
+        decisionEpochFingerprint: decisionEpoch || null,
+        deploymentEpochFingerprint: null,
+        rootEpochFingerprint: rootEpoch || null,
       },
       transaction: {
-        status: s.automationTransactionError ? "error" : s.automationTransactionComplete ? "complete" : "partial",
+        status: transactionStatus,
         complete: Boolean(s.automationTransactionComplete),
         error: s.automationTransactionError || null,
+        rootId: rootId && rootId > 0 ? rootId : null,
+        rootState: root.state || "Unavailable",
+        rootEpochFingerprint: rootEpoch || null,
+        committedSteps: nonnegative(root.committedSteps), pendingSteps: nonnegative(root.pendingSteps),
+        rejectedSteps: nonnegative(root.rejectedSteps), quarantinedSteps: nonnegative(root.quarantinedSteps),
       },
+      authority: { stage: s.authorityStage || "Unavailable", routes },
+      capacity: {
+        status: inventoryTotal === null || inventoryFree === null ? "Unavailable" : capacityMargin !== null && capacityMargin < 0 ? "Held" : "Available",
+        totalSlots: inventoryTotal, usedSlots: nonnegative(s.inventoryUsedSlots), freeSlots: inventoryFree,
+        requiredReserve: inventoryReserve, projectedNewSlots: nonnegative(s.collectionProjectedNewSlots),
+        marginSlots: capacityMargin, pressure: s.inventoryPressure || null,
+        provenance: inventoryTotal !== null && inventoryFree !== null ? "LiveCounters" : null,
+        confidence: inventoryTotal !== null && inventoryFree !== null ? 1 : null,
+        exactDeliveryProof: typeof s.capacityProofExact === "boolean" ? s.capacityProofExact : null,
+      },
+      scheduler,
     };
   }
 
@@ -258,6 +368,128 @@ exposes no mutation endpoint.
     setText("fact-producer", identity.producerPid && identity.producerSessionId
       ? `${identity.producerPid.toLocaleString()} · ${identity.producerSessionId.slice(0, 12)}` : "unverified");
     setText("fact-identity", `${identity.verifiedEnvelope ? "epoch verified" : "epoch incomplete"} · ${text(identity.activeMatchesDisk, "disk match unknown").replaceAll("-", " ")}`);
+  }
+
+  function renderExecution(envelope, observability) {
+    const identity = observability.identity;
+    const transaction = observability.transaction;
+    const scheduler = observability.scheduler;
+    const capacity = observability.capacity;
+    const authority = observability.authority;
+    const actionTail = envelope.actionTail && typeof envelope.actionTail === "object" ? envelope.actionTail : {};
+    const transactionToken = stateToken(transaction.status);
+    const transactionCard = byId("transaction-card");
+    if (transactionCard) transactionCard.dataset.state = transactionToken;
+    setText("transaction-state", transaction.status, "Unavailable");
+    setText("transaction-root-id", transaction.rootId === null || transaction.rootId === undefined ? "Unavailable" : `#${Number(transaction.rootId).toLocaleString()}`);
+    setText("transaction-root-state", transaction.rootState, "Unavailable");
+    const stepParts = [
+      ["committed", transaction.committedSteps], ["pending", transaction.pendingSteps],
+      ["rejected", transaction.rejectedSteps], ["quarantined", transaction.quarantinedSteps],
+    ].filter(([, value]) => optionalNumber(value) !== null).map(([label, value]) => `${label} ${Number(value).toLocaleString()}`);
+    setText("transaction-counts", stepParts.length ? stepParts.join(" · ") : "Unavailable");
+    setText("decision-epoch", shortIdentity(identity.decisionEpochFingerprint));
+    setText("root-epoch", identity.rootEpochFingerprint
+      ? `${shortIdentity(identity.rootEpochFingerprint)} · ${identity.rootEpochMatchesDecision === true ? "matched" : identity.rootEpochMatchesDecision === false ? "mismatch" : "unverified"}`
+      : "Unavailable");
+    setText("action-tail-state", actionTail.status
+      ? `${text(actionTail.status)}${actionTail.producerSessionId ? ` · ${shortIdentity(actionTail.producerSessionId)}` : ""}`
+      : "Unavailable");
+    const capacityParts = capacity.freeSlots === null || capacity.freeSlots === undefined
+      ? [] : [`${Number(capacity.freeSlots).toLocaleString()} free`];
+    if (capacity.requiredReserve !== null && capacity.requiredReserve !== undefined) capacityParts.push(`reserve ${Number(capacity.requiredReserve).toLocaleString()}`);
+    if (capacity.marginSlots !== null && capacity.marginSlots !== undefined) capacityParts.push(`margin ${Number(capacity.marginSlots).toLocaleString()}`);
+    if (capacity.provenance) capacityParts.push(capacity.provenance);
+    if (capacity.confidence !== null && capacity.confidence !== undefined) capacityParts.push(`${confidence(capacity.confidence)} observed-state confidence`);
+    capacityParts.push(capacity.exactDeliveryProof === true ? "exact delivery proof" : capacity.exactDeliveryProof === false ? "delivery proof rejected" : "delivery proof unavailable");
+    setText("capacity-state", `${text(capacity.status, "Unavailable")}${capacityParts.length ? ` · ${capacityParts.join(" · ")}` : ""}`);
+
+    setText("execution-summary", `${text(identity.joinStatus, "Pending")} deployment/decision join · ${text(transaction.status, "Unavailable")} root`);
+    const schedulerCard = byId("scheduler-card");
+    if (schedulerCard) schedulerCard.dataset.state = scheduler.authority === "ShadowOnly" ? "held" : stateToken(scheduler.status);
+    setText("scheduler-status", scheduler.status, "Unavailable");
+    setText("scheduler-authority", `${text(scheduler.authority, "Unavailable")}${scheduler.canExecute === false ? " · cannot execute" : scheduler.canExecute === true ? " · executable" : ""}`);
+    setText("scheduler-action", scheduler.action ? `${scheduler.action}${scheduler.actionId ? ` · ${scheduler.actionId}` : ""}` : "Unavailable");
+    setText("scheduler-event", scheduler.nextEvent ? `${scheduler.nextEvent}${scheduler.eventId ? ` · ${scheduler.eventId}` : ""}` : "Unavailable");
+    const provenanceParts = [];
+    if (scheduler.provenance) provenanceParts.push(scheduler.provenance);
+    if (scheduler.sampleCount !== null && scheduler.sampleCount !== undefined) provenanceParts.push(`${Number(scheduler.sampleCount).toLocaleString()} samples`);
+    if (scheduler.confidence !== null && scheduler.confidence !== undefined) provenanceParts.push(`${confidence(scheduler.confidence)} confidence`);
+    setText("scheduler-provenance", provenanceParts.length ? provenanceParts.join(" · ") : "Unavailable");
+    const hashes = [scheduler.snapshotHash, scheduler.modelHash, scheduler.objectiveHash];
+    setText("scheduler-hashes", hashes.some(Boolean) ? hashes.map(shortIdentity).join(" / ") : "Unavailable");
+    setText("scheduler-mean", optionalDuration(scheduler.meanSeconds));
+    setText("scheduler-p50", optionalDuration(scheduler.p50Seconds));
+    setText("scheduler-p90", optionalDuration(scheduler.p90Seconds));
+    setText("scheduler-lower", optionalDuration(scheduler.lowerBoundSeconds));
+    setText("scheduler-gap", optionalDuration(scheduler.gapSeconds));
+    setText("scheduler-regret", optionalDuration(scheduler.regretSeconds));
+    setText("scheduler-blocker", scheduler.blocker
+      ? `${scheduler.blocker}${scheduler.blockerDetail ? ` — ${scheduler.blockerDetail}` : ""}`
+      : "No named scheduler blocker was emitted.");
+
+    setText("authority-stage", authority.stage, "Unavailable");
+    const labels = {
+      verifiedReversible: "Verified reversible", permanentPurchases: "Permanent purchases",
+      moneyPit: "Money Pit", challenges: "Challenges", difficulty: "Difficulty",
+      titan1Through12: "Titans 1–12", titan13Through14: "Titans 13–14",
+      move69: "MOVE69", endSequence: "END sequence",
+    };
+    const authorityList = byId("authority-list");
+    const routes = authority.routes && typeof authority.routes === "object" ? authority.routes : {};
+    authorityList?.replaceChildren(...Object.entries(labels).map(([key, label]) => {
+      const item = document.createElement("li");
+      const routeState = text(routes[key], "Unavailable");
+      item.dataset.state = routeState.toLowerCase();
+      const name = document.createElement("strong"); name.textContent = label;
+      const state = document.createElement("span"); state.textContent = routeState;
+      item.append(name, state);
+      return item;
+    }));
+
+    const branches = [
+      {
+        key: "rebirth", state: observability.rebirth.actionLabel,
+        status: observability.rebirth.action,
+        eta: observability.rebirth.resetEtaSeconds,
+        detail: observability.rebirth.model || observability.rebirth.provenance,
+        confidence: observability.rebirth.confidence,
+      },
+      {
+        key: "challenge", state: observability.challenge.label,
+        status: observability.challenge.status,
+        eta: observability.challenge.clearEtaSeconds,
+        detail: observability.challenge.provenance,
+        confidence: observability.challenge.confidence,
+      },
+      {
+        key: "difficulty", state: observability.difficulty.target
+          ? `${text(observability.difficulty.current, "Unavailable")} → ${observability.difficulty.target}`
+          : `${text(observability.difficulty.current, "Unavailable")} · ${text(observability.difficulty.status, "Unavailable")}`,
+        status: observability.difficulty.status,
+        eta: observability.difficulty.etaSeconds,
+        detail: observability.difficulty.blocker || observability.difficulty.provenance,
+        confidence: observability.difficulty.confidence,
+      },
+      {
+        key: "end", state: observability.end.status,
+        status: observability.end.status,
+        eta: observability.end.p90Seconds,
+        detail: observability.end.missing || observability.end.provenance,
+        confidence: observability.end.confidence,
+      },
+    ];
+    for (const branch of branches) {
+      const article = byId(`branch-${branch.key}`);
+      if (article) article.dataset.state = stateToken(branch.status);
+      setText(`branch-${branch.key}-state`, branch.state, "Unavailable");
+      const etaLabel = branch.key === "end" ? "p90" : branch.key === "challenge" ? "clear" : "ETA";
+      setText(`branch-${branch.key}-eta`, `${etaLabel} ${optionalDuration(branch.eta)}`);
+      const proof = [];
+      if (branch.detail) proof.push(branch.detail);
+      if (branch.confidence !== null && branch.confidence !== undefined) proof.push(`${confidence(branch.confidence)} confidence`);
+      setText(`branch-${branch.key}-proof`, proof.length ? proof.join(" · ") : "Provenance unavailable");
+    }
   }
 
   function renderResources(s) {
@@ -625,20 +857,27 @@ exposes no mutation endpoint.
       challenge: { ...fallback.challenge, ...(incoming.challenge || {}) },
       identity: { ...fallback.identity, ...(incoming.identity || {}) },
       transaction: { ...fallback.transaction, ...(incoming.transaction || {}) },
+      difficulty: { ...fallback.difficulty, ...(incoming.difficulty || {}) },
+      end: { ...fallback.end, ...(incoming.end || {}) },
+      authority: { ...fallback.authority, ...(incoming.authority || {}), routes: { ...fallback.authority.routes, ...(incoming.authority?.routes || {}) } },
+      capacity: { ...fallback.capacity, ...(incoming.capacity || {}) },
+      scheduler: { ...fallback.scheduler, ...(incoming.scheduler || {}) },
     };
     const age = Math.max(0, number(envelope.stateAgeSeconds, 9999));
-    const live = s.synced && s.automationTransactionComplete && age <= 5;
+    const live = s.synced && observability.transaction.complete && observability.identity.verifiedEnvelope && age <= 5;
     setConnection(live ? "live" : "stale", live
       ? `Snapshot #${number(s.decisionSequence).toLocaleString()} · ${age.toFixed(1)}s old · ${publicFeed ? "read-only laptop feed" : "local client"}`
-      : `Latest snapshot is ${duration(age)} old or has not completed a synchronized transaction.`);
+      : `Latest snapshot is ${duration(age)} old, not transaction-complete, or outside the deployment/decision epoch.`);
     byId("stale-banner").hidden = live;
     byId("stale-banner").textContent = live ? "" : `The latest ${publicFeed ? "laptop" : "local"} snapshot is stale or partial. Values below are retained for diagnosis and are not proof of current actions.`;
     const errorBanner = byId("action-error-banner");
-    errorBanner.hidden = observability.transaction.status !== "error";
-    errorBanner.textContent = observability.transaction.status === "error"
-      ? `Latest automation transaction error: ${text(observability.transaction.error, "unspecified failure")}` : "";
+    const transactionAlert = ["error", "quarantined"].includes(stateToken(observability.transaction.status));
+    errorBanner.hidden = !transactionAlert;
+    errorBanner.textContent = transactionAlert
+      ? `Latest automation transaction ${text(observability.transaction.status, "failure")}: ${text(observability.transaction.error, "inspect root epoch and quarantined-step counts")}` : "";
     renderHeadline(s, observability);
     renderRoute(s, observability);
+    renderExecution(envelope, observability);
     renderResources(s);
     renderCombatInventory(s);
     renderRebirth(s, observability);

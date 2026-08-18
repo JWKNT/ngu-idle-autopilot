@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Reflection;
 using NGUInjector.Autopilot;
 using NGUInjector.Managers;
 
@@ -17,14 +16,6 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 {
     internal class TimeRebirth : BaseRebirth
     {
-        private static long _bloodPreviewRun = -1;
-        private static double _bloodPreviewPower = double.NaN;
-        private static double _bloodPreviewAttack = double.NaN;
-        private static double _bloodPreviewDefense = double.NaN;
-        private static double _bloodAwaitAttack = double.NaN;
-        private static double _bloodAwaitDefense = double.NaN;
-        private static bool _bloodAwaitingReflection;
-
         internal double RebirthTime { get; set; }
 
         internal override bool RebirthAvailable()
@@ -39,8 +30,13 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                 return false;
 
             var time = CharObj.rebirthTime.totalseconds;
-            var previewReady = ObserveFinalBloodPreview(time >= RebirthTime);
             if (time < RebirthTime)
+                return false;
+
+            // This is the final derived-state publication boundary. Native engage does not call
+            // either calculator, and TimerUp/Rebirth Update order is not constrained. Always call
+            // the build-pinned native methods in native order immediately before policy reads.
+            if (!SynchronizeFinalPreview())
                 return false;
 
             /*
@@ -61,8 +57,7 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                 || double.IsInfinity((double)CharObj.nextAttackMulti)
                 || double.IsNaN((double)CharObj.nextDefenseMulti)
                 || double.IsInfinity((double)CharObj.nextDefenseMulti)
-                || CharObj.nextAttackMulti <= 0 || CharObj.nextDefenseMulti <= 0
-                || !previewReady)
+                || CharObj.nextAttackMulti <= 0 || CharObj.nextDefenseMulti <= 0)
                 return false;
 
             if (!challengeReset)
@@ -123,9 +118,9 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                     if (imminentEta >= 0 && imminentEta <= 2) return false;
                 }
             }
-            // A challenge start is itself a hard rebirth.  It must obey the same
-            // optimized checkpoint as an ordinary rebirth so it cannot preempt a
-            // Titan spawn, puzzle window, or long-cycle permanent-growth harvest.
+            // Every challenge start performs the common rebirth reset and must obey the same
+            // checkpoint/Titan boundary. Ten challenge wrappers hard-reset Number; Laser Sword
+            // alone uses the ordinary soft transition and banks this synchronized preview.
             // Adventure Titans are also discrete persistent progression events.
             // Never reset between their ready spawn and controller dispatch, or
             // during the fight itself.
@@ -145,79 +140,77 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
         }
 
         /*
-        BLOOD-ADJUSTED NATIVE PREVIEW
+        SYNCHRONIZED NATIVE PREVIEW
 
-        RebirthPowerSpell.castRebirthSpell changes bloodMagic.rebirthPower but does not call
-        Rebirth.calculateNextMultis; the private calculation normally runs from Unity Update. The
-        automation sweep can cast Blood NUMBER and reach this method in the same frame, leaving
-        nextAttackMulti/nextDefenseMulti stale. Observe every pre-checkpoint pass, invoke that exact
-        native calculator when a power delta is seen, and require a verified preview delta. If the
-        method is unavailable or the delta is not reflected, hold for a later Unity frame.
+        calculateTimeMulti and calculateNextMultis are derived-state writes, not the reset itself.
+        Both are nevertheless build-pinned because accepting a name-only overload at this boundary
+        could bank stale Number. Capture every formula input which the callback pair must not change,
+        invoke in exact native order, verify the time branch and stable snapshot, then allow the
+        caller to inspect preview. Unknown build, missing binding, throw, non-finite output, or an
+        input change fails closed without falling back to ordinary reflection.
         */
-        private bool ObserveFinalBloodPreview(bool due)
+        private bool SynchronizeFinalPreview()
         {
+            if (CharObj == null || CharObj.rebirth == null || CharObj.rebirthTime == null
+                || CharObj.training == null || CharObj.bloodMagic == null)
+                return false;
+
             var run = CharObj.stats == null ? -1L : CharObj.stats.rebirthNumber;
-            var power = CharObj.bloodMagic == null ? 0.0 : CharObj.bloodMagic.rebirthPower;
-            var attack = (double)CharObj.nextAttackMulti;
-            var defense = (double)CharObj.nextDefenseMulti;
-            if (_bloodPreviewRun != run || double.IsNaN(_bloodPreviewPower))
+            var time = CharObj.rebirthTime.totalseconds;
+            var bloodPower = CharObj.bloodMagic.rebirthPower;
+            var bossMulti = (double)CharObj.bossMulti;
+            var oldBossMulti = (double)CharObj.oldBossMulti;
+            var oldTimeMulti = (double)CharObj.oldTimeMulti;
+            var attackLevels = CharObj.training.totalAttackLevels;
+            try
             {
-                _bloodPreviewRun = run;
-                _bloodPreviewPower = power;
-                _bloodPreviewAttack = attack;
-                _bloodPreviewDefense = defense;
-                _bloodAwaitingReflection = due && power > 0.0;
-                _bloodAwaitAttack = attack;
-                _bloodAwaitDefense = defense;
-                return !_bloodAwaitingReflection;
+                var registry = NativeBindingRegistry.Create(typeof(Character).Assembly,
+                    Main.GameAssemblySha256);
+                var native = registry.CreateMutationAdapters();
+                var timeResult = native.RefreshRebirthTimeMultiplier(CharObj.rebirth);
+                if (!timeResult.ReturnedNormally) return false;
+                var previewResult = native.RefreshRebirthPreview(CharObj.rebirth);
+                if (!previewResult.ReturnedNormally) return false;
+            }
+            catch
+            {
+                return false;
             }
 
-            if (_bloodAwaitingReflection
-                && (MeaningfullyDifferent(attack, _bloodAwaitAttack)
-                    || MeaningfullyDifferent(defense, _bloodAwaitDefense)))
-                _bloodAwaitingReflection = false;
-
-            var powerChanged = MeaningfullyDifferent(power, _bloodPreviewPower);
-            if (powerChanged)
-            {
-                _bloodAwaitAttack = _bloodPreviewAttack;
-                _bloodAwaitDefense = _bloodPreviewDefense;
-                try
-                {
-                    var calculate = CharObj.rebirth.GetType().GetMethod("calculateNextMultis",
-                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                        null, Type.EmptyTypes, null);
-                    if (calculate != null) calculate.Invoke(CharObj.rebirth, null);
-                }
-                catch
-                {
-                    // Unity Update may still publish the preview next frame; the awaiting latch
-                    // below keeps the irreversible boundary closed until that is observable.
-                }
-                attack = (double)CharObj.nextAttackMulti;
-                defense = (double)CharObj.nextDefenseMulti;
-                _bloodAwaitingReflection = !MeaningfullyDifferent(attack, _bloodAwaitAttack)
-                                           && !MeaningfullyDifferent(defense, _bloodAwaitDefense);
-            }
-
-            _bloodPreviewPower = power;
-            _bloodPreviewAttack = attack;
-            _bloodPreviewDefense = defense;
+            var expectedTimeMulti = RebirthTransitionKernel.ExactTimeMultiplier(time);
+            if (!NearlyEqual((double)CharObj.timeMulti, expectedTimeMulti)
+                || !Stable(time, CharObj.rebirthTime.totalseconds)
+                || run != (CharObj.stats == null ? -1L : CharObj.stats.rebirthNumber)
+                || !Stable(bloodPower, CharObj.bloodMagic.rebirthPower)
+                || !Stable(bossMulti, (double)CharObj.bossMulti)
+                || !Stable(oldBossMulti, (double)CharObj.oldBossMulti)
+                || !Stable(oldTimeMulti, (double)CharObj.oldTimeMulti)
+                || attackLevels != CharObj.training.totalAttackLevels
+                || !RebirthTransitionKernel.FinitePositive((double)CharObj.nextAttackMulti)
+                || !RebirthTransitionKernel.FinitePositive((double)CharObj.nextDefenseMulti))
+                return false;
 
             // Full autopilot reserves the entire remaining pool for Blood NUMBER at the selected
             // checkpoint. A non-empty pool means that cast/verification has not completed yet.
-            if (due && Main.AutopilotWants(x => x.ManageBloodMagic)
+            if (Main.AutopilotWants(x => x.ManageBloodMagic)
                 && CharObj.bloodMagic != null && CharObj.bloodMagic.bloodPoints > 0.0)
                 return false;
-            return !_bloodAwaitingReflection;
+            return true;
         }
 
-        private static bool MeaningfullyDifferent(double left, double right)
+        private static bool Stable(double left, double right)
         {
-            if (double.IsNaN(left) || double.IsNaN(right)) return false;
-            if (double.IsInfinity(left) || double.IsInfinity(right)) return left != right;
-            return Math.Abs(left - right) > Math.Max(1e-12,
-                Math.Max(Math.Abs(left), Math.Abs(right)) * 1e-12);
+            return !double.IsNaN(left) && !double.IsNaN(right)
+                   && !double.IsInfinity(left) && !double.IsInfinity(right)
+                   && left == right;
+        }
+
+        private static bool NearlyEqual(double left, double right)
+        {
+            if (double.IsNaN(left) || double.IsNaN(right)
+                || double.IsInfinity(left) || double.IsInfinity(right)) return false;
+            return Math.Abs(left - right) <= Math.Max(1e-12,
+                Math.Max(Math.Abs(left), Math.Abs(right)) * 2e-7);
         }
     }
 }

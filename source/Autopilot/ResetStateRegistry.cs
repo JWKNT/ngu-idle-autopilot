@@ -188,91 +188,102 @@ namespace NGUInjector.Autopilot
                 D(ResetStateKey.ExperiencePurchases, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "Purchased EXP power/cap/bars survive ordinary resets."),
                 D(ResetStateKey.AdventurePoints, ResetStateClass.PersistentStock,
-                    ResetEffectKind.AwardPersistentReward, preserve, challenge, preserve, preserve,
+                    ResetEffectKind.AwardPersistentReward, preserve, challenge,
+                    ResetEffectKind.AwardPersistentReward, preserve,
                     "AP persists and ordinary rebirth adds source-derived time/all-active awards."),
                 D(ResetStateKey.PerkPoints, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "PP and purchased perks persist."),
                 D(ResetStateKey.QuestPoints, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "QP and quirks persist."),
                 D(ResetStateKey.CurrentNumber, ResetStateClass.ResetLocalStock, ResetEffectKind.ReplaceWithResolvedValue,
-                    challenge, challenge, challenge, preserve,
+                    challenge, challenge, ResetEffectKind.ReplaceWithResolvedValue, preserve,
                     "Ordinary rebirth assigns native preview Number; non-regression is not a native gate."),
-                D(ResetStateKey.FightBossProgress, ResetStateClass.ResetLocalStock, clear, clear, challenge, challenge, preserve,
+                D(ResetStateKey.FightBossProgress, ResetStateClass.ResetLocalStock, clear, clear, challenge, clear, preserve,
                     "Current Boss climb resets and must be replayed."),
                 D(ResetStateKey.BasicTrainingCaps, ResetStateClass.ResetTimeConversion,
-                    ResetEffectKind.ConvertToPersistentBeforeClear, challenge, preserve, challenge, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, challenge, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, preserve,
                     "Each track applies the exact cap compression before run Training is cleared."),
-                D(ResetStateKey.BasicTrainingRunLevels, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge, preserve,
+                D(ResetStateKey.BasicTrainingRunLevels, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear, preserve,
                     "Attack and Defense run levels clear."),
                 D(ResetStateKey.BasicTrainingAllocations, ResetStateClass.ActivationAllocationState,
-                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve, challenge, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, preserve,
                     "Allocated Energy clears with run Training."),
-                D(ResetStateKey.AugmentRunState, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge, preserve,
+                D(ResetStateKey.AugmentRunState, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear, preserve,
                     "Augment/upgrade run levels and progress are horizon-limited."),
-                D(ResetStateKey.TimeMachineRunState, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge, preserve,
+                D(ResetStateKey.TimeMachineRunState, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear, preserve,
                     "TM run levels/progress and current-run Gold basis reset."),
-                D(ResetStateKey.CurrentGold, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge, preserve,
+                D(ResetStateKey.CurrentGold, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear, preserve,
                     "Gold shared by TM/Aug/Blood/Diggers/Pit is reset-local."),
-                D(ResetStateKey.CurrentBlood, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge, preserve,
+                D(ResetStateKey.CurrentBlood, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear, preserve,
                     "Blood and ritual run work must earn a named spell payoff before reset."),
-                D(ResetStateKey.WandoosRunState, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge, preserve,
+                D(ResetStateKey.WandoosRunState, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear, preserve,
                     "Energy/Magic allocation, progress, and run levels clear; installed OS fields are outside this key."),
-                D(ResetStateKey.CurrentResourceFills, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge, preserve,
+                D(ResetStateKey.CurrentResourceFills, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear, preserve,
                     "Current Energy/Magic/R3 fills are replaced by post-reset generation."),
                 D(ResetStateKey.TitanClocks, ResetStateClass.ClockState, ResetEffectKind.ResetAllClocks,
-                    ResetEffectKind.ResetAllClocks, preserve, challenge, ResetEffectKind.ResetTargetClock,
+                    ResetEffectKind.ResetAllClocks, preserve, ResetEffectKind.ResetAllClocks,
+                    ResetEffectKind.ResetTargetClock,
                     "Use TitanMechanics for array transforms."),
-                D(ResetStateKey.TitanRunKillCounters, ResetStateClass.ResetLocalStock, clear, clear, preserve, challenge,
+                D(ResetStateKey.TitanRunKillCounters, ResetStateClass.ResetLocalStock, clear, clear, preserve, clear,
                     ResetEffectKind.ReplaceWithResolvedValue,
                     "Ordinary reset clears run counters; Titan reward changes only its applicable counter."),
                 D(ResetStateKey.AdvancedTrainingTemporary, ResetStateClass.BankedTemporaryStock,
-                    ResetEffectKind.BankThenClear, clear, preserve, challenge, preserve,
+                    ResetEffectKind.BankThenClear, clear, preserve, clear, preserve,
                     "Native banking can seed the next run; challenge reset clears the temporary bank path."),
                 D(ResetStateKey.AdvancedTrainingBank, ResetStateClass.ResetTimeConversion,
-                    ResetEffectKind.ConvertToPersistentBeforeClear, clear, preserve, challenge, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, clear, preserve, clear, preserve,
                     "Resolve eligible bank capture from the native perk/challenge state."),
                 D(ResetStateKey.NguLevels, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "NGU levels persist."),
                 D(ResetStateKey.NguProgress, ResetStateClass.PersistentPartialProgress, preserve, preserve, preserve, preserve, preserve,
                     "Partial NGU progress persists."),
                 D(ResetStateKey.NguAllocations, ResetStateClass.ActivationAllocationState,
-                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve, challenge, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, preserve,
                     "Energy/Magic assignment clears without discarding levels/progress."),
                 D(ResetStateKey.BeardPermanentTrimmings, ResetStateClass.ResetTimeConversion,
-                    ResetEffectKind.ConvertToPersistentBeforeClear, preserve, preserve, preserve, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, preserve, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, preserve,
                     "Permanent trimmings are converted before ordinary Beard reset."),
                 D(ResetStateKey.BeardTemporary, ResetStateClass.BankedTemporaryStock,
-                    ResetEffectKind.BankThenClear, clear, preserve, challenge, preserve,
+                    ResetEffectKind.BankThenClear, clear, preserve, clear, preserve,
                     "Temporary Beard levels/progress clear after conversion; eligible bank seeds need resolution."),
                 D(ResetStateKey.BeardBank, ResetStateClass.ResetTimeConversion,
-                    ResetEffectKind.ConvertToPersistentBeforeClear, clear, preserve, challenge, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, clear, preserve, clear, preserve,
                     "Challenge reset clears eligible temporary Beard bank state."),
                 D(ResetStateKey.DiggerMaximumLevels, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "Purchased maximum levels persist."),
                 D(ResetStateKey.DiggerActivations, ResetStateClass.ActivationAllocationState,
-                    ResetEffectKind.ResetActivationPreserveMaximum, clear, preserve, challenge, preserve,
+                    ResetEffectKind.ResetActivationPreserveMaximum, clear, preserve,
+                    ResetEffectKind.ResetActivationPreserveMaximum, preserve,
                     "All active Diggers turn off; the selected set must be re-equipped."),
                 D(ResetStateKey.HackLevels, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "Hack levels persist."),
                 D(ResetStateKey.HackProgress, ResetStateClass.PersistentPartialProgress, preserve, preserve, preserve, preserve, preserve,
                     "Partial Hack progress persists."),
                 D(ResetStateKey.HackAllocations, ResetStateClass.ActivationAllocationState,
-                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve, challenge, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, preserve,
                     "R3 assignment clears while level/progress remains."),
                 D(ResetStateKey.WishLevels, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "Wish levels persist."),
                 D(ResetStateKey.WishProgress, ResetStateClass.PersistentPartialProgress, preserve, preserve, preserve, preserve, preserve,
                     "Partial Wish progress persists and is preemptible sunk state."),
                 D(ResetStateKey.WishAllocations, ResetStateClass.ActivationAllocationState,
-                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve, challenge, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, clear, preserve,
+                    ResetEffectKind.ClearAllocationPreserveProgress, preserve,
                     "Wish Energy/Magic/R3 allocations clear."),
                 D(ResetStateKey.YggdrasilTiersAndSeeds, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "Fruit tiers, seeds, and permanent effects persist."),
                 D(ResetStateKey.YggdrasilFruitTimers, ResetStateClass.ClockState,
-                    ResetEffectKind.TransformByNativeFactor, challenge, preserve, challenge, preserve,
+                    ResetEffectKind.TransformByNativeFactor, challenge, preserve,
+                    ResetEffectKind.TransformByNativeFactor, preserve,
                     "Resolve the native reset-factor transformation; do not zero timers generically."),
                 D(ResetStateKey.MacGuffinLevels, ResetStateClass.ResetTimeConversion,
-                    ResetEffectKind.ConvertToPersistentBeforeClear, challenge, preserve, preserve, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, challenge, preserve,
+                    ResetEffectKind.ConvertToPersistentBeforeClear, preserve,
                     "Rebirth time factor converts into persistent MacGuffin growth."),
                 D(ResetStateKey.CardsAndMayo, ResetStateClass.PersistentStock, preserve, preserve, preserve, preserve, preserve,
                     "Deck and six mayo currencies persist."),
@@ -305,6 +316,258 @@ namespace NGUInjector.Autopilot
         {
             return new ResetStateDescriptor(key, stateClass, ordinary, challengeEntry,
                 challengeCompletion, difficulty, titanKill, note);
+        }
+    }
+
+    internal enum ResetDifficulty
+    {
+        Unknown = -1,
+        Normal = 0,
+        Evil = 1,
+        Sadistic = 2
+    }
+
+    internal sealed class ResetNumberSnapshot
+    {
+        internal double CurrentAttack = 1.0;
+        internal double CurrentDefense = 1.0;
+        internal double NextAttack = 1.0;
+        internal double NextDefense = 1.0;
+        internal double BossMultiplier = 1.0;
+        internal double TimeMultiplier = 1.0;
+        internal double OldBossMultiplier = 1.0;
+        internal double OldTimeMultiplier = 1.0;
+
+        internal ResetNumberSnapshot Clone()
+        {
+            return (ResetNumberSnapshot)MemberwiseClone();
+        }
+
+        internal bool AllExactlyOne
+        {
+            get
+            {
+                return CurrentAttack == 1.0 && CurrentDefense == 1.0
+                       && NextAttack == 1.0 && NextDefense == 1.0
+                       && BossMultiplier == 1.0 && TimeMultiplier == 1.0
+                       && OldBossMultiplier == 1.0 && OldTimeMultiplier == 1.0;
+            }
+        }
+    }
+
+    /*
+    TYPED HARD-DIFFICULTY TRANSITION
+
+    The native start wrappers install the target before the common reset.  This snapshot keeps the
+    state families whose ordering or persistence differs from an ordinary soft rebirth.  Values
+    produced by native conversion formulas are explicit resolution inputs: this registry never
+    guesses a Basic Training cap, Beard trimming, MacGuffin delta, AP award, or Ygg timer factor.
+    */
+    internal sealed class DifficultyResetSnapshot
+    {
+        internal ResetDifficulty CurrentDifficulty;
+        internal ResetDifficulty NextDifficulty;
+        internal ResetDifficulty NguLevelTrack;
+        internal ResetDifficulty DifficultyObservedDuringConversions;
+        internal ResetNumberSnapshot Number = new ResetNumberSnapshot();
+        internal int BossId;
+        internal int CurrentHighestBoss;
+        internal int HighestBoss;
+        internal int HighestHardBoss;
+        internal int HighestSadisticBoss;
+        internal double RebirthSeconds;
+        internal long RebirthNumber;
+        internal bool Achievement152;
+        internal bool InChallenge;
+        internal bool[] ChallengeFlags = new bool[11];
+        internal double[] TitanClocks = new double[14];
+        internal int[] TitanRunKillCounters = new int[14];
+        internal long[] BasicTrainingCaps = new long[0];
+        internal long[] BasicTrainingRunLevels = new long[0];
+        internal long[] BasicTrainingAllocations = new long[0];
+        internal double AdvancedTrainingTemporary;
+        internal double AdvancedTrainingBank;
+        internal double BeardPermanentTrimmings;
+        internal double BeardTemporary;
+        internal double BeardBank;
+        internal double TimeMachineBank;
+        internal double MacGuffinPersistentValue;
+        internal double AdventurePoints;
+        internal double CurrentGold;
+        internal double CurrentBlood;
+        internal double CurrentEnergy;
+        internal double CurrentMagic;
+        internal double CurrentResource3;
+        internal double[] NguLevels = new double[0];
+        internal double[] NguProgress = new double[0];
+        internal double[] NguAllocations = new double[0];
+        internal double[] HackLevels = new double[0];
+        internal double[] HackProgress = new double[0];
+        internal double[] HackAllocations = new double[0];
+        internal double[] WishLevels = new double[0];
+        internal double[] WishProgress = new double[0];
+        internal double[] WishAllocations = new double[0];
+        internal double[] YggdrasilFruitTimers = new double[0];
+        internal string InventoryIdentity = string.Empty;
+        internal string PersistentUnlockIdentity = string.Empty;
+        internal string[] TransitionOrder = new string[0];
+
+        internal DifficultyResetSnapshot Clone()
+        {
+            var copy = (DifficultyResetSnapshot)MemberwiseClone();
+            copy.Number = Number == null ? null : Number.Clone();
+            copy.ChallengeFlags = Clone(ChallengeFlags);
+            copy.TitanClocks = Clone(TitanClocks);
+            copy.TitanRunKillCounters = Clone(TitanRunKillCounters);
+            copy.BasicTrainingCaps = Clone(BasicTrainingCaps);
+            copy.BasicTrainingRunLevels = Clone(BasicTrainingRunLevels);
+            copy.BasicTrainingAllocations = Clone(BasicTrainingAllocations);
+            copy.NguLevels = Clone(NguLevels);
+            copy.NguProgress = Clone(NguProgress);
+            copy.NguAllocations = Clone(NguAllocations);
+            copy.HackLevels = Clone(HackLevels);
+            copy.HackProgress = Clone(HackProgress);
+            copy.HackAllocations = Clone(HackAllocations);
+            copy.WishLevels = Clone(WishLevels);
+            copy.WishProgress = Clone(WishProgress);
+            copy.WishAllocations = Clone(WishAllocations);
+            copy.YggdrasilFruitTimers = Clone(YggdrasilFruitTimers);
+            copy.TransitionOrder = Clone(TransitionOrder);
+            return copy;
+        }
+
+        private static T[] Clone<T>(T[] value)
+        {
+            return value == null ? new T[0] : (T[])value.Clone();
+        }
+    }
+
+    internal sealed class DifficultyResetResolution
+    {
+        internal long[] BasicTrainingCapsAfterCompression = new long[0];
+        internal double BeardPermanentAfterConversion;
+        internal double MacGuffinPersistentAfterConversion;
+        internal double AdventurePointsAfterAward;
+        internal double[] YggdrasilFruitTimersAfterFactor = new double[0];
+    }
+
+    internal static class DifficultyResetTransform
+    {
+        internal static DifficultyResetSnapshot Apply(DifficultyResetSnapshot source,
+            ResetDifficulty target, DifficultyResetResolution resolved)
+        {
+            if (source == null || source.Number == null)
+                throw new ArgumentNullException("source");
+            if (resolved == null) throw new ArgumentNullException("resolved");
+            if (!LegalForwardTransition(source.CurrentDifficulty, target))
+                throw new InvalidOperationException("Only Normal-to-Evil and Evil-to-Sadistic are legal forward transitions.");
+            if (source.RebirthNumber == long.MaxValue)
+                throw new InvalidOperationException("The exact rebirth increment would overflow.");
+            RequireFourteen(source.TitanClocks, "TitanClocks");
+            RequireFourteen(source.TitanRunKillCounters, "TitanRunKillCounters");
+            RequireSameLength(source.BasicTrainingCaps,
+                resolved.BasicTrainingCapsAfterCompression, "BasicTrainingCapsAfterCompression");
+            RequireSameLength(source.YggdrasilFruitTimers,
+                resolved.YggdrasilFruitTimersAfterFactor, "YggdrasilFruitTimersAfterFactor");
+            RequireFiniteNonNegative(resolved.BeardPermanentAfterConversion,
+                "BeardPermanentAfterConversion");
+            RequireFiniteNonNegative(resolved.MacGuffinPersistentAfterConversion,
+                "MacGuffinPersistentAfterConversion");
+            RequireFiniteNonNegative(resolved.AdventurePointsAfterAward,
+                "AdventurePointsAfterAward");
+
+            var result = source.Clone();
+            // Target first: every following source-sensitive conversion observes this value.
+            result.CurrentDifficulty = target;
+            result.NextDifficulty = target;
+            result.DifficultyObservedDuringConversions = result.CurrentDifficulty;
+            result.TransitionOrder = new[]
+            {
+                "install-target-difficulty", "award-time-ap", "compress-basic-training-caps",
+                "convert-beards", "convert-macguffins", "clear-common-run-state",
+                "hard-reset-number-and-banks", "increment-rebirth"
+            };
+
+            result.AdventurePoints = resolved.AdventurePointsAfterAward;
+            result.BasicTrainingCaps = Clone(resolved.BasicTrainingCapsAfterCompression);
+            result.BeardPermanentTrimmings = resolved.BeardPermanentAfterConversion;
+            result.MacGuffinPersistentValue = resolved.MacGuffinPersistentAfterConversion;
+            result.YggdrasilFruitTimers = Clone(resolved.YggdrasilFruitTimersAfterFactor);
+
+            result.BossId = 0;
+            result.CurrentHighestBoss = 0;
+            result.RebirthSeconds = 0.0;
+            result.TitanClocks = new double[14];
+            result.TitanRunKillCounters = new int[14];
+            result.BasicTrainingRunLevels = new long[source.BasicTrainingRunLevels == null
+                ? 0 : source.BasicTrainingRunLevels.Length];
+            result.BasicTrainingAllocations = new long[source.BasicTrainingAllocations == null
+                ? 0 : source.BasicTrainingAllocations.Length];
+            result.CurrentGold = 0.0;
+            result.CurrentBlood = 0.0;
+            result.CurrentEnergy = 0.0;
+            result.CurrentMagic = 0.0;
+            result.CurrentResource3 = 0.0;
+            result.NguAllocations = Zeros(source.NguAllocations);
+            result.HackAllocations = Zeros(source.HackAllocations);
+            result.WishAllocations = Zeros(source.WishAllocations);
+            result.AdvancedTrainingTemporary = 0.0;
+            result.AdvancedTrainingBank = 0.0;
+            result.BeardTemporary = 0.0;
+            result.BeardBank = 0.0;
+            result.TimeMachineBank = 0.0;
+            result.Number = ExactlyOneNumber();
+            result.InChallenge = false;
+            result.ChallengeFlags = new bool[11];
+            result.RebirthNumber = source.RebirthNumber + 1L;
+            if (target == ResetDifficulty.Evil)
+            {
+                if (result.NguLevelTrack > ResetDifficulty.Evil)
+                    result.NguLevelTrack = ResetDifficulty.Evil;
+                result.Achievement152 = true;
+            }
+            // Sadistic leaves the existing NGU track and achievement vector unchanged.
+            return result;
+        }
+
+        internal static bool LegalForwardTransition(ResetDifficulty source,
+            ResetDifficulty target)
+        {
+            return source == ResetDifficulty.Normal && target == ResetDifficulty.Evil
+                   || source == ResetDifficulty.Evil && target == ResetDifficulty.Sadistic;
+        }
+
+        private static ResetNumberSnapshot ExactlyOneNumber()
+        {
+            return new ResetNumberSnapshot();
+        }
+
+        private static double[] Zeros(double[] source)
+        {
+            return new double[source == null ? 0 : source.Length];
+        }
+
+        private static T[] Clone<T>(T[] source)
+        {
+            return source == null ? new T[0] : (T[])source.Clone();
+        }
+
+        private static void RequireFourteen(Array values, string name)
+        {
+            if (values == null || values.Length != 14)
+                throw new ArgumentException(name + " must contain exactly fourteen values.", name);
+        }
+
+        private static void RequireSameLength(Array before, Array after, string name)
+        {
+            if (before == null || after == null || before.Length != after.Length)
+                throw new ArgumentException(name + " must resolve every source element.", name);
+        }
+
+        private static void RequireFiniteNonNegative(double value, string name)
+        {
+            if (value < 0.0 || double.IsNaN(value) || double.IsInfinity(value))
+                throw new ArgumentOutOfRangeException(name);
         }
     }
 

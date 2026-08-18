@@ -19,22 +19,25 @@ NGUAutopilot.Loader.Init
   creates one Unity GameObject host
               |
               v
-Main.cs synchronization + scheduler
-  refuses mutations outside verified gameplay
+Main.cs synchronization + epoch provider
+  one nonzero RootTransaction per tick
+  refuses mutations outside verified gameplay/epoch
               |
               +---------------------------+
               |                           |
               v                           v
-Autopilot planner                  Native action managers
-snapshot -> plan -> ETAs           combat / inventory / zones /
--> generated allocation profile   purchases / rebirth / etc.
+Autopilot planner                  Typed action managers
+snapshot -> terminal DAG           current live bridge:
+-> bounded scheduler (shadow)      Card/Cooking/Ygg/Quest only
+-> staged authority               every other route held
               |
               v
-runtime telemetry (JSON + append-only action log)
+runtime deployment + decision epoch
++ append-only, session-marked action log
               |
               v
-macOS Action Monitor
-read-only presentation; no game-control authority
+macOS Action Monitor + loopback dashboard
+exact-session read-only presentation; no game-control authority
 ```
 
 ## Source layers
@@ -47,6 +50,11 @@ Notable components:
 
 - `AutopilotPlanner.cs`: stage-specific Normal/Evil/Sadistic planning.
 - `AutopilotManager.cs`: live snapshot, action coordination, and decision telemetry.
+- `MutationCoordinator.cs`: one exclusive nonzero root, typed child intents, postconditions,
+  compensation/quarantine, and epoch fencing. A normal native return is not proof of commit.
+- `ProgressionGoalEngine.cs` / `ProgressionDependencyGraph.cs`: immutable typed terminal DAG.
+- `GlobalEventScheduler.cs` / `PlannerTrace.cs`: bounded global search and archived trace surface;
+  authority is hard `ShadowOnly` in this deployment.
 - `RebirthOptimizer.cs`: exact piecewise time-multiplier candidates, projected boss/training events, AP breakpoints, and sticky near-tie selection.
 - `ProgressionGoalEngine.cs`: source-backed progression gates shown in the monitor.
 - `MajorUnlockPlanner.cs`: one-time Adventure/Titan mechanic pushes with recovery and contextual gear constraints.
@@ -62,11 +70,26 @@ Notable components:
 
 ### Unity host
 
-`source/AutopilotLoader.cs` is the public injected entry point. `source/Main.cs` owns the Unity lifecycle and schedules work at the appropriate cadence. The synchronization gate checks the game's `MainMenuController`; log text alone never authorizes mutations.
+`source/AutopilotLoader.cs` is the public injected entry point. `source/Main.cs` owns the Unity lifecycle, binds the shared game-epoch provider, opens at most one root per automation tick, executes typed child intents, and closes/aborts that root before publishing telemetry. The synchronization gate checks the game's `MainMenuController`; log text, a requested configuration flag, or a shadow schedule never authorizes mutations.
 
 ### Monitor
 
-`monitor/ActionMonitor.swift` has no reference to the game process and no input mechanism. It verifies telemetry schema/build/process/sequence fields and presents three read-only views: the complete color-coded Live Actions stream, a semantically grouped Strategy & Goals page, and a sparse Key Events history filtered from durable confirmed action records.
+`monitor/ActionMonitor.swift` has no game handle and no input mechanism. It requires `deployment.json` and `decision.json` to agree on producer PID, session, active build, bot artifact hash, and game-assembly hash. It then admits Live Actions and Key Events only from the exact matching durable session block; an absent/mismatched marker yields an empty tail. Its Strategy & Goals page exposes the decision/root epoch join, root ID/state/counts, capacity, staged authority, scheduler shadow hashes/statistics/evidence, and rebirth/challenge/difficulty/END horizons.
+
+`monitor/dashboard_server.py` applies the same join for `/api/state`. It returns raw producer state plus a normalized read-only `observability` object and session-tail status. Legacy `-1`, empty hash, and unknown/zero-evidence scheduler sentinels become JSON `null`; the UI renders them as `Unavailable`. It never turns a held route into a countdown or combines `Held`, `Pending`, and `Quarantined`.
+
+### Telemetry and session contract
+
+- `runtime/deployment.json` identifies the injected process/session/build and disk/game artifacts.
+- `runtime/decision.json` identifies the same deployment plus the current `gameEpochFingerprint`,
+  staged authority, `mutationRoot`, and `globalScheduler` shadow record.
+- `mutationRoot.epochFingerprint` must equal the decision epoch for a committed presentation.
+- `runtime/logs/actions.log` is append-only. Every injection starts an exact
+  `=== SESSION <UTC> id <session> build <MVID> pid <PID> ===` block.
+- Monitor/dashboard consumers fail closed: no matching deployment/session marker means no action
+  tail, even when older lines are syntactically valid.
+- Optional forecast values remain unavailable unless the producer supplied a finite non-negative
+  number. Provenance, sample count, and confidence travel together; `Unknown/0/0` is not evidence.
 
 ## What is not source
 

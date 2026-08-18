@@ -1,18 +1,33 @@
-﻿using System;
+/*
+FILE PURPOSE
+
+Purpose: DiggerManager owns current Digger-set transactions and one-at-a-time permanent max-level
+purchase execution for progression, Titan, Yggdrasil, and Money Pit contexts.
+
+Mechanism: Current-set changes snapshot exact levels/membership, solve under available gross GPS,
+apply through native controllers, verify set/levels/slots/drain, and roll back on mismatch. Permanent
+upgrades are emitted as GoldSpendBundle records. ResourceHorizonModel and the actor call the same
+SelectUpgradeBundle function, and the actor buys at most one confirmed bundle before replanning.
+
+Inputs and outputs: Inputs are live Digger levels/caps/drains, gross GPS, objective weights, locks,
+the shared chronological Gold ledger, and an AutopilotPlan. Outputs are selected IDs/levels, exact
+bundle action IDs, confirmed mutations, rollback evidence, and action telemetry.
+
+Invariants and safety: Active drain never exceeds available gross GPS. Clearing is always protected
+by an exact snapshot and rollback. A max-level purchase credits direct cap value only when that new
+level is attainable with current GPS/slot capacity; its global total-level bonus remains valuable.
+Ledger and actor cannot choose different IDs, equality at a native affordability gate is accepted,
+and no loop spends again from a stale reserve or stale ROI.
+
+Extension points and non-goals: The global scheduler may replace textual objective weights and rank
+the typed bundle by seconds-to-terminal. This manager does not price Money Pit rewards, reserve an
+optional competing branch, or perform multiple permanent purchases without a fresh plan.
+*/
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using NGUInjector.Autopilot;
 
-/*
-FILE PURPOSE
-
-DiggerManager selects, upgrades, and temporarily locks Gold Diggers for progression, Titan gold,
-and Money Pit contexts. Selection and recapping share one native-drain optimizer. Every multi-Digger
-change snapshots exact levels and active membership, applies the complete target set, validates slot
-and gross-GPS constraints, and restores the snapshot on any mismatch. It coordinates with
-LoadoutManager so transient objectives take precedence over generic optimization; permanent upgrade
-spend consults the joint Gold horizon rather than an independent static reserve.
-*/
 namespace NGUInjector.Managers
 {
     internal static class DiggerManager
@@ -67,7 +82,7 @@ namespace NGUInjector.Managers
 
         internal static bool TryYggSwap()
         {
-            if (!CanAcquireOrHasLock(LockType.Yggdrasil)) 
+            if (!CanAcquireOrHasLock(LockType.Yggdrasil))
                 return false;
 
             if (CurrentLock == LockType.Yggdrasil)
@@ -449,21 +464,52 @@ namespace NGUInjector.Managers
         internal static void UpdateCheapestDigger()
         {
             if (!Main.Settings.UpgradeDiggers && !Main.AutopilotWants(x => x.ManageDiggers)) return;
-            _cheapestDigger = -1;
-            for (var i = 0; i < Main.Character.diggers.diggers.Count; i++)
-            {
-                if (Main.Character.diggers.diggers[i].maxLevel >= Main.Character.allDiggers.hardCapLevel(i))
-                    continue;
-                if (_cheapestDigger == -1 || DiggerUpgradeRoi(i) > DiggerUpgradeRoi(_cheapestDigger))
-                    _cheapestDigger = i;
-            }
+            var bundle = SelectUpgradeBundle(Main.Character, double.MaxValue);
+            _cheapestDigger = bundle == null ? -1 : bundle.ActorId;
         }
 
-        private static double DiggerUpgradeRoi(int id)
+        /*
+        PERMANENT UPGRADE EVENT BUNDLE
+
+        Purchase selection and execution must share one immutable action ID. A cap increase has an
+        immediate direct term only if the extra level can fit current non-Digger drain, Digger GPS,
+        slots, and the new native cap. The total-max-level multiplier applies independently to every
+        active valued Digger, so it remains in the bundle even when direct cap use is impossible.
+        */
+        internal static GoldSpendBundle SelectUpgradeBundle(Character c, double reachableGold)
         {
-            var c = Main.Character;
-            var cost = c.allDiggers.upgradeCost(id);
-            if (cost <= 0) return double.NegativeInfinity;
+            if (c == null || c.allDiggers == null || c.diggers == null
+                || c.diggers.diggers == null)
+                return null;
+            var candidates = new List<GoldSpendBundle>();
+            for (var id = 0; id < c.diggers.diggers.Count; id++)
+            {
+                if (c.diggers.diggers[id].maxLevel >= c.allDiggers.hardCapLevel(id)) continue;
+                var cost = c.allDiggers.upgradeCost(id);
+                if (cost <= 0.0 || double.IsNaN(cost) || double.IsInfinity(cost)) continue;
+                double value;
+                bool directAttainable;
+                DiggerUpgradeValue(c, id, out value, out directAttainable);
+                candidates.Add(new GoldSpendBundle
+                {
+                    Kind = GoldClaimKind.DiggerPermanentUpgrade,
+                    ActionId = "digger-max-" + id,
+                    ActorId = id,
+                    Label = "Digger " + id + " max-level upgrade"
+                            + (directAttainable ? " (new cap attainable)"
+                                : " (global max-level bonus only at current GPS)"),
+                    AtSeconds = 0.0,
+                    RequiredLiquidity = cost,
+                    Debit = cost,
+                    ValueScore = cost <= 0.0 ? double.NegativeInfinity : value / cost
+                });
+            }
+            return GoldEventLedger.SelectBestBundle(candidates, reachableGold);
+        }
+
+        private static void DiggerUpgradeValue(Character c, int id, out double value,
+            out bool directAttainable)
+        {
             var currentTotal = Math.Max(1e-9, c.allDiggers.totalLevelBonus());
             var sum = c.diggers.diggers.Sum(x => x.maxLevel);
             var nextTotal = ProjectedTotalLevelBonus(c, sum + 1);
@@ -473,14 +519,21 @@ namespace NGUInjector.Managers
             var globalValue = globalWeight * Math.Log(nextTotal / currentTotal);
             var weight = ObjectiveWeights.ContainsKey(id) ? Math.Max(0.0, ObjectiveWeights[id]) : 1.0;
             var level = c.diggers.diggers[id].maxLevel;
+            var hasSlot = c.diggers.diggers[id].active
+                          || c.diggers.activeDiggers.Count < c.allDiggers.maxDiggerSlots();
+            var newLevelDrain = DiggerDrain(c, id, level + 1L);
+            var availableGps = AvailableDiggerGps(c);
+            directAttainable = hasSlot && (!c.allDiggers.consumesGPS[id]
+                || newLevelDrain <= availableGps + Math.Max(1e-9, availableGps * 1e-12));
             var start = c.allDiggers.startingBoost[id];
             var per = c.allDiggers.boostPerLevel[id];
             var before = id == 2 ? 1.0 + start + Math.Pow(level, 3.0) * per
                 : 1.0 + start + level * per;
             var after = id == 2 ? 1.0 + start + Math.Pow(level + 1.0, 3.0) * per
                 : 1.0 + start + (level + 1.0) * per;
-            var directValue = weight * Math.Log(Math.Max(1.0, after) / Math.Max(1.0, before));
-            return (globalValue + directValue) / cost;
+            var directValue = directAttainable
+                ? weight * Math.Log(Math.Max(1.0, after) / Math.Max(1.0, before)) : 0.0;
+            value = globalValue + directValue;
         }
 
         private static double ProjectedTotalLevelBonus(Character c, long sum)
@@ -497,39 +550,56 @@ namespace NGUInjector.Managers
         {
             if (CurrentLock != LockType.None) return;
             if (!Main.Settings.UpgradeDiggers && !Main.AutopilotWants(x => x.ManageDiggers)) return;
+            MutationLease purchaseLease;
+            string purchaseHold;
+            var purchaseOwner = ExecutionSafety.OwnerFor(MutationClass.Diggers);
+            if (!ExecutionSafety.TryAcquire(MutationClass.Diggers, MutationRisk.Irreversible,
+                    purchaseOwner, out purchaseLease, out purchaseHold)
+                || !purchaseLease.IsCurrent)
+            {
+                ExecutionSafety.ReportHold("digger-permanent-upgrade",
+                    "Digger max-level purchase held: "
+                    + (string.IsNullOrEmpty(purchaseHold)
+                        ? "execution lease became stale" : purchaseHold));
+                return;
+            }
             var reserve = Main.Settings.MoneyPitThreshold;
+            GoldSpendBundle bundle = null;
             if (Main.AutopilotWants(x => x.ManageDiggers))
             {
                 var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
                 var remaining = plan != null && !plan.RebirthExecutionHold
-                    ? (int)Math.Max(1.0, Math.Ceiling(plan.EffectiveAllocationTarget(Main.Character)
+                    ? (int)Math.Max(0.0, Math.Ceiling(plan.EffectiveAllocationTarget(Main.Character)
                                                      - Main.Character.rebirthTime.totalseconds))
-                    : 1;
+                    : 0;
                 var ledger = ResourceHorizonModel.EvaluateGold(Main.Character, remaining);
                 reserve = ledger.ProtectedSpendBefore(GoldClaimKind.DiggerPermanentUpgrade);
+                bundle = ledger.DiggerBundle;
             }
-            for (var purchases = 0; purchases < 100; purchases++)
-            {
-                UpdateCheapestDigger();
-                if (_cheapestDigger == -1)
-                    return;
-                var cost = Main.Character.allDiggers.upgradeCost(_cheapestDigger);
-                if (cost <= 0 || cost + reserve >= Main.Character.realGold)
-                    return;
-                var levelBefore = Main.Character.diggers.diggers[_cheapestDigger].maxLevel;
-                var goldBefore = Main.Character.realGold;
-                Main.Character.allDiggers.upgradeMaxLevel(_cheapestDigger);
-                var confirmed = Main.Character.diggers.diggers[_cheapestDigger].maxLevel > levelBefore
-                                && Main.Character.realGold < goldBefore;
-                Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
-                    confirmed
-                        ? "Upgraded " + GameNames.Digger(Main.Character, _cheapestDigger)
-                          + " max level [confirmed by level/gold delta]"
-                        : GameNames.Digger(Main.Character, _cheapestDigger)
-                          + " upgrade produced no state transition");
-                if (!confirmed)
-                    return;
-            }
+            if (bundle == null)
+                bundle = SelectUpgradeBundle(Main.Character,
+                    Math.Max(0.0, Main.Character.realGold - reserve));
+            if (bundle == null || bundle.ActorId < 0) return;
+            _cheapestDigger = bundle.ActorId;
+            var cost = Main.Character.allDiggers.upgradeCost(_cheapestDigger);
+            var tolerance = Math.Max(1e-9, Main.Character.realGold * 1e-12);
+            if (cost <= 0.0 || Math.Abs(cost - bundle.Debit) > Math.Max(1e-9, cost * 1e-9)
+                || Main.Character.realGold + tolerance < bundle.RequiredLiquidity + reserve)
+                return;
+            var levelBefore = Main.Character.diggers.diggers[_cheapestDigger].maxLevel;
+            var goldBefore = Main.Character.realGold;
+            Main.Character.allDiggers.upgradeMaxLevel(_cheapestDigger);
+            var goldDebit = goldBefore - Main.Character.realGold;
+            var confirmed = Main.Character.diggers.diggers[_cheapestDigger].maxLevel
+                            == levelBefore + 1L
+                            && goldDebit > 0.0
+                            && Math.Abs(goldDebit - cost) <= Math.Max(1e-6, cost * 1e-6);
+            Main.LogAction(confirmed ? "PURCHASE" : "REJECTED",
+                confirmed
+                    ? "Executed " + bundle.ActionId + ": upgraded "
+                      + GameNames.Digger(Main.Character, _cheapestDigger)
+                      + " max level [confirmed exact +1 level and Gold debit; replan required]"
+                    : bundle.ActionId + " produced no exact level/Gold transition");
         }
 
     }

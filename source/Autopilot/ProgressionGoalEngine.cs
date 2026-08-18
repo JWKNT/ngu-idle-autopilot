@@ -6,9 +6,25 @@ using NGUInjector.Managers;
 /*
 FILE PURPOSE
 
-ProgressionGoalEngine converts mechanics into structured roadmap nodes with progress, targets,
-ETAs, and dependencies. Nodes explain projections; they do not authorize mutations. Keep boss
-scope, unlocks, and set events truthful so the monitor never labels catch-up as record progress.
+Purpose: ProgressionGoalEngine converts both the legacy live roadmap and the immutable terminal
+dependency graph into structured, serializable goals for the monitor.
+
+Mechanism: ActiveGoals retains the direct Character projection used by the existing runtime.
+TerminalGoals is a presentation adapter over ProgressionDependencyGraph: it carries typed node
+identity, provenance, model completeness, and parallel-branch slack into GoalNode without recovering
+policy from labels, IDs, or strategy prose.
+
+Inputs and outputs: Inputs are either read-only Character state or an OptimizationSnapshot plus
+typed work estimates. The output is a list of descriptive GoalNode records, optionally serialized
+as JSON for telemetry. No controller calls or game mutations occur here.
+
+Invariants and safety: Catch-up is never labeled record progress; terminal goals are bound to a
+single snapshot hash; unknown estimates remain unknown instead of becoming zero-duration claims;
+and legacy JSON stays schema-compatible unless a node explicitly carries terminal graph metadata.
+
+Extension points and non-goals: New live feature labels belong in AddFeatureGoals, while new terminal
+policy belongs in ProgressionDependencyGraph. This adapter neither schedules scarce resources nor
+authorizes END assembly, challenge entry, rebirth, purchases, inventory moves, or other mutations.
 */
 namespace NGUInjector.Autopilot
 {
@@ -21,6 +37,14 @@ namespace NGUInjector.Autopilot
         internal double Target;
         internal int EtaSeconds = -1;
         internal string Priority;
+        internal bool HasTypedKey;
+        internal ProgressionNodeKey TypedKey;
+        internal double SlackSeconds = -1.0;
+        internal ProgressionEstimateProvenance Evidence =
+            ProgressionEstimateProvenance.Unknown;
+        internal bool ModelComplete;
+        internal bool HardGate;
+        internal string SnapshotHash;
     }
 
     internal static class ProgressionGoalEngine
@@ -83,6 +107,100 @@ namespace NGUInjector.Autopilot
 
             AddFeatureGoals(c, goals);
             return goals;
+        }
+
+        internal static List<GoalNode> TerminalGoals(OptimizationSnapshot snapshot,
+            ProgressionDependencyGraph graph,
+            IEnumerable<ProgressionWorkEstimate> estimates)
+        {
+            if (snapshot == null) throw new ArgumentNullException("snapshot");
+            if (graph == null) throw new ArgumentNullException("graph");
+            if (estimates == null) throw new ArgumentNullException("estimates");
+            var evaluation = graph.Evaluate(snapshot, estimates);
+            var branches = evaluation.ParallelBranches();
+            var result = new List<GoalNode>();
+            foreach (var branch in branches)
+            {
+                if (branch.Complete) continue;
+                var node = graph.Node(branch.Node);
+                result.Add(TerminalGoal(node.Key, TerminalLabel(node.Key),
+                    IsChallenge(node.Key) ? "challenge" : "end",
+                    branch.FinishMeanSeconds, branch.SlackSeconds,
+                    branch.ModelComplete, branch.Provenance,
+                    node.Gate.Kind != ProgressionGateKind.DependenciesOnly,
+                    evaluation.SnapshotHash));
+            }
+            if (!snapshot.EndSequenceVerified && !HasOutstandingEndBranch(branches))
+                result.Add(TerminalGoal(ProgressionNodeKey.EndSequence,
+                    "Verify the END sequence", "end",
+                    evaluation.EndSequence.MeanSeconds, 0.0,
+                    evaluation.EndSequence.ModelComplete,
+                    evaluation.EndSequence.Provenance, true,
+                    evaluation.SnapshotHash));
+            return result;
+        }
+
+        private static GoalNode TerminalGoal(ProgressionNodeKey key, string label,
+            string family, double meanSeconds, double slackSeconds, bool modelComplete,
+            ProgressionEstimateProvenance evidence, bool hardGate, string snapshotHash)
+        {
+            return new GoalNode
+            {
+                Id = "terminal-" + key,
+                Label = label,
+                Family = family,
+                Current = 0.0,
+                Target = 1.0,
+                EtaSeconds = modelComplete && !double.IsInfinity(meanSeconds)
+                    ? (int)Math.Min(int.MaxValue, Math.Ceiling(meanSeconds)) : -1,
+                Priority = slackSeconds >= 0.0 && slackSeconds < 0.000001
+                    ? "critical" : "parallel",
+                HasTypedKey = true,
+                TypedKey = key,
+                SlackSeconds = slackSeconds,
+                Evidence = evidence,
+                ModelComplete = modelComplete,
+                HardGate = hardGate,
+                SnapshotHash = snapshotHash
+            };
+        }
+
+        private static bool HasOutstandingEndBranch(
+            IEnumerable<ProgressionParallelBranch> branches)
+        {
+            foreach (var branch in branches)
+                if (!branch.Complete && !IsChallenge(branch.Node)) return true;
+            return false;
+        }
+
+        private static bool IsChallenge(ProgressionNodeKey key)
+        {
+            return key >= ProgressionNodeKey.ChallengeBasic
+                   && key <= ProgressionNodeKey.ChallengeNoTimeMachine;
+        }
+
+        private static string TerminalLabel(ProgressionNodeKey key)
+        {
+            if (key >= ProgressionNodeKey.EndItem480
+                && key <= ProgressionNodeKey.EndItem495)
+                return "Obtain one ordinary END item "
+                       + (480 + (int)key - (int)ProgressionNodeKey.EndItem480)
+                           .ToString(CultureInfo.InvariantCulture);
+            switch (key)
+            {
+                case ProgressionNodeKey.ChallengeBasic: return "Complete required Basic Challenge";
+                case ProgressionNodeKey.ChallengeNoAugments: return "Complete required No Augments Challenge";
+                case ProgressionNodeKey.ChallengeTwentyFourHour: return "Complete required 24 Hour Challenge";
+                case ProgressionNodeKey.ChallengeOneHundredLevel: return "Complete required 100 Level Challenge";
+                case ProgressionNodeKey.ChallengeNoEquipment: return "Complete required No Equipment Challenge";
+                case ProgressionNodeKey.ChallengeTroll: return "Complete required Troll Challenge";
+                case ProgressionNodeKey.ChallengeNoRebirth: return "Complete required No Rebirth Challenge";
+                case ProgressionNodeKey.ChallengeLaserSword: return "Complete required Laser Sword Challenge";
+                case ProgressionNodeKey.ChallengeBlind: return "Complete required Blind Challenge";
+                case ProgressionNodeKey.ChallengeNoNgu: return "Complete required No NGU Challenge";
+                case ProgressionNodeKey.ChallengeNoTimeMachine: return "Complete required No Time Machine Challenge";
+                default: return "Complete terminal branch " + key;
+            }
         }
 
         private static void AddFeatureGoals(Character c, ICollection<GoalNode> goals)
@@ -180,11 +298,21 @@ namespace NGUInjector.Autopilot
             var parts = new List<string>();
             foreach (var goal in goals)
             {
-                parts.Add("{\"id\":\"" + Escape(goal.Id) + "\",\"label\":\"" + Escape(goal.Label)
+                var json = "{\"id\":\"" + Escape(goal.Id) + "\",\"label\":\"" + Escape(goal.Label)
                           + "\",\"family\":\"" + Escape(goal.Family) + "\",\"current\":"
                           + goal.Current.ToString("R", CultureInfo.InvariantCulture) + ",\"target\":"
                           + goal.Target.ToString("R", CultureInfo.InvariantCulture) + ",\"etaSeconds\":"
-                          + goal.EtaSeconds + ",\"priority\":\"" + Escape(goal.Priority) + "\"}");
+                          + goal.EtaSeconds + ",\"priority\":\"" + Escape(goal.Priority) + "\"";
+                if (goal.HasTypedKey)
+                    json += ",\"typedKey\":\"" + goal.TypedKey
+                            + "\",\"slackSeconds\":"
+                            + goal.SlackSeconds.ToString("R", CultureInfo.InvariantCulture)
+                            + ",\"evidence\":\"" + goal.Evidence
+                            + "\",\"snapshotHash\":\"" + Escape(goal.SnapshotHash)
+                            + "\",\"modelComplete\":"
+                            + (goal.ModelComplete ? "true" : "false")
+                            + ",\"hardGate\":" + (goal.HardGate ? "true" : "false");
+                parts.Add(json + "}");
             }
             return "[" + string.Join(",", parts.ToArray()) + "]";
         }

@@ -1,24 +1,94 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using NGUInjector.Autopilot;
 using static NGUInjector.Main;
 
 /*
 FILE PURPOSE
 
-InventoryManager owns merge, boost, conversion, MacGuffin, loot-filter, and conservative trash
-operations. These are potentially irreversible: unMAXXED equipment, incomplete sets, puzzle keys,
-quest drops, and END pieces are always protected. Trash requires confirmed Item List MAXX plus an
-all-use dominance proof; equality is sufficient only after proving that every simultaneous current
-and saved/configured loadout has enough same-ID physical copies. Its boost queue also develops a
-proven future slot upgrade before feeding the Infinity Cube. Physical gear selection belongs to
-ProgressionLoadoutOptimizer; this file maintains contents and capacity through native controller
-calls and verifies every irreversible slot transition.
+InventoryManager owns merge, boost, conversion, MacGuffin, loot-filter, progression-key, and
+conservative trash operations. These are potentially irreversible: unMAXXED equipment, puzzle
+keys, quest drops, END pieces, and exact objects referenced by the optimizer are always protected.
+Every merge is performed one physical source at a time; native saved-loadout slot references are
+retargeted before deletion and verified afterward, while an optimizer-authoritative source is never
+retargeted. Trash and exact filtering require confirmed Item List MAXX plus retained physical-copy
+demand. The native boost auto-transform is forced off until all Item List IDs 1-39 are MAXXED.
+
+Inputs are live Inventory/InventoryController state, the build-pinned native binding registry,
+autopilot settings, and exact physical Equipment references. Outputs are verified native mutations
+and decision/action telemetry. Usable loot space is always derived from PhysicalTopology's clipped
+[totalInvMergeSlots(), curSpaces()) interval; reserved-prefix empties are not capacity. Exact unlock
+consumers are ordered 294 (Hacks/Resource 3), 343 (Wishes after Hacks), then 391 (Cards plus its
+first Card), and success requires both exact object debit and the complete native state transition.
+
+Physical gear selection belongs to ProgressionLoadoutOptimizer, collection source/value policy
+belongs to AdventureCollectionPlanner/LootSourceCatalog, and cross-subsystem scheduling belongs to
+the root transaction coordinator. This file provides the inventory-local transaction and proof
+boundary; it does not infer ownership from itemDropped/itemMaxxed alone or authorize unknown-build
+reflection.
 */
 namespace NGUInjector.Managers
 {
+
+    /*
+    PURE INVENTORY POLICY KERNEL
+
+    These helpers intentionally use only primitive copied state. They are shared by the live
+    manager and InventoryTopologyTests so permanent boost gating, merge arithmetic, safe native
+    slot retargeting, and unlock postconditions cannot drift into several ad-hoc interpretations.
+    */
+    internal enum ProgressionUnlockKind
+    {
+        Hacks,
+        Wishes,
+        Cards
+    }
+
+    internal static class InventoryTopologyPolicy
+    {
+        internal static bool AllBoostEntriesMaxxed(IList<bool> itemMaxxed)
+        {
+            if (itemMaxxed == null || itemMaxxed.Count <= 39) return false;
+            for (var id = 1; id <= 39; id++)
+                if (!itemMaxxed[id]) return false;
+            return true;
+        }
+
+        internal static int MergedLevel(int targetLevel, int sourceLevel, bool macGuffin)
+        {
+            var sum = (long)targetLevel + sourceLevel + 1L;
+            if (sum > int.MaxValue) sum = int.MaxValue;
+            if (!macGuffin && sum > 100L) sum = 100L;
+            return (int)sum;
+        }
+
+        internal static bool CanRetargetContext(int[] slots, int sourceSlot, int survivorSlot)
+        {
+            if (sourceSlot == survivorSlot || slots == null) return true;
+            var sourceUses = 0;
+            var survivorUsed = false;
+            for (var i = 0; i < slots.Length; i++)
+            {
+                if (slots[i] == sourceSlot) sourceUses++;
+                if (slots[i] == survivorSlot) survivorUsed = true;
+            }
+            if (sourceUses == 0) return true;
+            // A malformed context which uses one physical source twice must not be made to use the
+            // survivor twice. Preserve it for diagnosis instead of silently corrupting the loadout.
+            return sourceUses == 1 && !survivorUsed;
+        }
+
+        internal static bool UnlockPostcondition(ProgressionUnlockKind kind,
+            bool exactItemDebited, bool featureBefore, bool featureAfter,
+            bool resource3After, int cardsBefore, int cardsAfter)
+        {
+            if (!exactItemDebited || featureBefore || !featureAfter) return false;
+            if (kind == ProgressionUnlockKind.Hacks) return resource3After;
+            if (kind == ProgressionUnlockKind.Cards) return cardsAfter == cardsBefore + 1;
+            return true;
+        }
+    }
 
     public class FixedSizedQueue
     {
@@ -98,7 +168,8 @@ namespace NGUInjector.Managers
         private readonly int[] _guffs = {198, 200, 199, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 228, 211, 250, 291, 289, 290, 298, 299, 300};
         // Exile clues (335-341) are state-machine keys, not ordinary equipment.
         // Merging or filtering even one of these can permanently stall the puzzle.
-        private readonly int[] _mergeBlacklist = { 335, 336, 337, 338, 339, 340, 341, 367, 368, 369, 370, 371, 372 };
+        private readonly int[] _mergeBlacklist = { 294, 343, 391, 506,
+            335, 336, 337, 338, 339, 340, 341, 367, 368, 369, 370, 371, 372 };
         private BoostsNeeded _previousBoostsNeeded = null;
         private Cube _lastCube = null;
         private readonly FixedSizedQueue _invBoostAvg = new FixedSizedQueue(60);
@@ -114,7 +185,8 @@ namespace NGUInjector.Managers
 
 
         //Wandoos 98, Giant Seed, Wandoos XL, Lonely Flubber, Wanderer's Cane, Guffs, Lemmi
-        private readonly int[] _filterExcludes = { 66, 92, 163, 120, 154, 195, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287,
+        private readonly int[] _filterExcludes = { 66, 92, 163, 120, 154, 195, 294, 343, 391, 506,
+            278, 279, 280, 281, 282, 283, 284, 285, 286, 287,
             335, 336, 337, 338, 339, 340, 341 };
         public InventoryManager()
         {
@@ -418,34 +490,34 @@ namespace NGUInjector.Managers
         {
             if (ci.Any(x => x.id == _character.inventory.head.id))
             {
-                _controller.mergeAll(-1);
+                MergeOrdinarySourcesPairwise(_character.inventory.head, -1, "equipped head");
             }
 
             if (ci.Any(x => x.id == _character.inventory.chest.id))
             {
-                _controller.mergeAll(-2);
+                MergeOrdinarySourcesPairwise(_character.inventory.chest, -2, "equipped chest");
             }
 
             if (ci.Any(x => x.id == _character.inventory.legs.id))
             {
-                _controller.mergeAll(-3);
+                MergeOrdinarySourcesPairwise(_character.inventory.legs, -3, "equipped legs");
             }
 
             if (ci.Any(x => x.id == _character.inventory.boots.id))
             {
-                _controller.mergeAll(-4);
+                MergeOrdinarySourcesPairwise(_character.inventory.boots, -4, "equipped boots");
             }
 
             if (ci.Any(x => x.id == _character.inventory.weapon.id))
             {
-                _controller.mergeAll(-5);
+                MergeOrdinarySourcesPairwise(_character.inventory.weapon, -5, "equipped weapon");
             }
 
             if (_controller.weapon2Unlocked())
             {
                 if (ci.Any(x => x.id == _character.inventory.weapon2.id))
                 {
-                    _controller.mergeAll(-6);
+                    MergeOrdinarySourcesPairwise(_character.inventory.weapon2, -6, "equipped second weapon");
                 }
             }
 
@@ -454,7 +526,8 @@ namespace NGUInjector.Managers
             {
                 if (ci.Any(x => x.id == _character.inventory.accs[_controller.accessoryID(i)].id))
                 {
-                    _controller.mergeAll(i);
+                    var accessory = _character.inventory.accs[_controller.accessoryID(i)];
+                    MergeOrdinarySourcesPairwise(accessory, i, "equipped accessory");
                 }
             }
         }
@@ -467,9 +540,10 @@ namespace NGUInjector.Managers
 
             foreach (var group in grouped)
             {
-                var target = group.OrderByDescending(x => x.locked).ThenByDescending(x => x.level).First();
+                var target = SelectMergeSurvivor(group);
+                if (target == null) continue;
                 Log($"Merging {target.name} in slot {target.slot}");
-                _controller.mergeAll(target.slot);
+                MergeOrdinarySourcesPairwise(target.equipment, target.slot, "boost development");
             }
         }
 
@@ -514,6 +588,16 @@ namespace NGUInjector.Managers
                 developmentCopies[id] = development.item;
             }
 
+            // The Quest controller owns whether this run is completing a quest or deliberately
+            // farming a MAXX development copy. Never offer inventory items in the latter (or the
+            // Antlers hybrid) mode; pairwise merges may still build the protected copy.
+            if (!QuestManager.MayOfferQuestItems)
+            {
+                MergeQuestDevelopmentCopies(developmentCopies);
+                _controller.changePage(curPage);
+                return;
+            }
+
             if (!_character.beastQuest.inQuest || _character.beastQuest.targetDrops <= 0
                 || _character.beastQuest.curDrops >= _character.beastQuest.targetDrops)
             {
@@ -531,30 +615,25 @@ namespace NGUInjector.Managers
                 _controller.changePage(curPage);
                 return;
             }
-            var consume = typeof(ItemController).GetMethod("consumeItem",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-            if (consume == null)
-            {
-                Main.LogAction("REJECTED", "Native quest-item consumer was unavailable; preserving every quest item");
-                MergeQuestDevelopmentCopies(developmentCopies);
-                _controller.changePage(curPage);
-                return;
-            }
-
             while (_character.beastQuest.inQuest && _character.beastQuest.questID == questId
                    && _character.beastQuest.curDrops < _character.beastQuest.targetDrops)
             {
                 Equipment protectedCopy;
                 developmentCopies.TryGetValue(questId, out protectedCopy);
                 var slot = _character.inventory.inventory.FindIndex(x => x != null && x.id == questId
-                    && x.removable && !ReferenceEquals(x, protectedCopy));
+                    && x.removable && !ReferenceEquals(x, protectedCopy)
+                    && !ProgressionLoadoutOptimizer.IsAuthoritativeItem(x)
+                    && !IsNativeLoadoutReference(_character,
+                        _character.inventory.inventory.FindIndex(y => ReferenceEquals(y, x))));
                 if (slot < 0) break;
                 var dropsBefore = _character.beastQuest.curDrops;
                 var countBefore = _character.inventory.inventory.Count(x => x != null && x.id == questId);
-                var newSlot = ChangePage(slot);
-                consume.Invoke(_controller.inventory[newSlot], null);
+                var itemController = ItemControllerForOrdinarySlot(slot);
+                var invocation = itemController == null ? null
+                    : CreateNativeMutations().ConsumeItem(itemController);
                 var countAfter = _character.inventory.inventory.Count(x => x != null && x.id == questId);
-                var progressConfirmed = _character.beastQuest.curDrops > dropsBefore;
+                var progressConfirmed = invocation != null && invocation.ReturnedNormally
+                                        && _character.beastQuest.curDrops > dropsBefore;
                 var itemLostWithoutProgress = countAfter < countBefore && !progressConfirmed;
                 Main.LogAction(progressConfirmed ? "QUEST" : "REJECTED", progressConfirmed
                     ? "Offered one exact " + SafeItemName(questId) + " to the active quest; progress "
@@ -587,7 +666,8 @@ namespace NGUInjector.Managers
                 }
                 var levelBefore = development.item.level;
                 var countBefore = live.Length;
-                _controller.mergeAll(development.slot);
+                MergeOrdinarySourcesPairwise(development.item, development.slot,
+                    "quest Item List development");
                 var countAfter = _character.inventory.inventory.Count(x => x != null && x.id == id);
                 var merged = development.item.level > levelBefore || countAfter < countBefore;
                 Main.LogAction(merged ? "QUEST" : "REJECTED", merged
@@ -609,10 +689,250 @@ namespace NGUInjector.Managers
                 if (item.All(x => x.locked))
                     continue;
 
-                var target = item.MaxItem();
+                var target = SelectMergeSurvivor(item);
+                if (target == null) continue;
 
                 Log($"Merging {SanitizeName(target.name)} in slot {target.slot}");
-                _controller.mergeAll(target.slot);
+                MergeOrdinarySourcesPairwise(target.equipment, target.slot, "ordinary inventory");
+            }
+        }
+
+        /*
+        REFERENCE-AWARE PAIRWISE MERGE TRANSACTION
+
+        Native mergeAll deletes every matching source and calls markLoadoutIDAsDeleted, which turns
+        saved loadout references into the deleted sentinel. Instead, select one exact survivor,
+        merge one removable ordinary source at a time, and retarget each mutually-exclusive native
+        loadout context before deletion. Optimizer-authoritative sources cannot be retargeted because
+        their contract is object identity, not item ID. Transform-chain sources are likewise never
+        retargeted: their eventual native consume replaces the object, so an exact reference would
+        become a silently stale intent. Every step verifies survivor identity, source removal, exact
+        merge arithmetic, lock propagation, and the absence of references to the deleted slot.
+        */
+        private ih SelectMergeSurvivor(IEnumerable<ih> candidates)
+        {
+            var array = candidates.Where(x => x != null && x.equipment != null).ToArray();
+            if (array.Length == 0) return null;
+            var isTransformChain = _convertibles.Contains(array[0].id);
+            return array.OrderBy(x => isTransformChain
+                                      && ProgressionLoadoutOptimizer.IsAuthoritativeItem(x.equipment))
+                .ThenBy(x => isTransformChain && IsNativeLoadoutReference(_character, x.slot))
+                .ThenByDescending(x => !isTransformChain
+                                       && ProgressionLoadoutOptimizer.IsAuthoritativeItem(x.equipment))
+                .ThenByDescending(x => !isTransformChain && IsNativeLoadoutReference(_character, x.slot))
+                .ThenByDescending(x => x.locked)
+                .ThenByDescending(x => x.level)
+                .ThenBy(x => x.slot).First();
+        }
+
+        private void MergeOrdinarySourcesPairwise(Equipment survivor, int survivorSlot, string purpose)
+        {
+            if (survivor == null || survivor.id <= 0) return;
+            var id = survivor.id;
+            var isMacGuffin = (int)survivor.type == 11;
+            var isTransformChain = _convertibles.Contains(id);
+            var initialLevel = survivor.level;
+            var mergedCount = 0;
+            var retargetedCount = 0;
+            while (isMacGuffin || survivor.level < 100)
+            {
+                var sources = _character.inventory.inventory
+                    .Select((item, slot) => new {item, slot})
+                    .Where(x => x.item != null && x.item.id == id && x.item.removable
+                                && !ReferenceEquals(x.item, survivor))
+                    .OrderByDescending(x => x.item.level).ThenBy(x => x.slot).ToArray();
+                if (sources.Length == 0) break;
+
+                var mergedOne = false;
+                foreach (var source in sources)
+                {
+                    if (ProgressionLoadoutOptimizer.IsAuthoritativeItem(source.item))
+                        continue;
+                    if (isTransformChain && IsNativeLoadoutReference(_character, source.slot))
+                        continue;
+                    if (!CanRetargetNativeReferences(source.slot, survivorSlot))
+                        continue;
+
+                    var savedLoadouts = CaptureNativeLoadouts();
+                    var sourceReferenceCount = CountNativeLoadoutReferences(source.slot);
+                    if (!RetargetNativeLoadoutReferences(source.slot, survivorSlot))
+                    {
+                        RestoreNativeLoadouts(savedLoadouts);
+                        continue;
+                    }
+
+                    var targetLevelBefore = survivor.level;
+                    var targetRemovableBefore = survivor.removable;
+                    var expectedLevel = InventoryTopologyPolicy.MergedLevel(targetLevelBefore,
+                        source.item.level, isMacGuffin);
+                    var expectedRemovable = targetRemovableBefore && source.item.removable;
+                    Exception failure = null;
+                    try
+                    {
+                        survivor.mergeItem(source.item);
+                        _character.inventory.deleteItem(source.slot);
+                        _controller.checkIfItemMaxxed(survivor);
+                        _controller.updateInventory();
+                    }
+                    catch (Exception error)
+                    {
+                        failure = error;
+                    }
+
+                    var sourceGone = !_character.inventory.inventory.Any(x => ReferenceEquals(x, source.item));
+                    var survivorExact = ReferenceEquals(EquipmentAtLocation(survivorSlot), survivor);
+                    var referencesExact = CountNativeLoadoutReferences(source.slot) == 0
+                                          && (sourceReferenceCount == 0
+                                              || CountNativeLoadoutReferences(survivorSlot) >= sourceReferenceCount);
+                    var confirmed = failure == null && sourceGone && survivorExact && referencesExact
+                                    && survivor.level == expectedLevel
+                                    && survivor.removable == expectedRemovable;
+                    if (!confirmed)
+                    {
+                        // References may point back to the source only while that exact source still
+                        // exists. After an unproven debit, retain the safe survivor mapping and report
+                        // the topology as indeterminate rather than manufacturing a dangling pointer.
+                        if (!sourceGone) RestoreNativeLoadouts(savedLoadouts);
+                        Main.LogAction("REJECTED", "Pairwise merge for " + SafeItemName(id)
+                            + " (" + purpose + ") failed exact identity/level/loadout verification"
+                            + (mergedCount > 0 ? "; " + mergedCount + " earlier pair(s) were committed exactly" : string.Empty)
+                            + (failure == null ? string.Empty : "; " + failure.GetType().Name + ": " + failure.Message));
+                        return;
+                    }
+                    mergedCount++;
+                    retargetedCount += sourceReferenceCount;
+                    mergedOne = true;
+                    break;
+                }
+                if (!mergedOne) break;
+            }
+            if (mergedCount > 0)
+                Main.LogAction("INVENTORY", "Merged " + mergedCount + " exact " + SafeItemName(id)
+                    + " source(s) into the retained " + purpose + " object: level "
+                    + initialLevel + " -> " + survivor.level
+                    + (retargetedCount > 0
+                        ? "; retargeted " + retargetedCount + " saved-loadout reference(s)"
+                        : string.Empty)
+                    + " [each pair confirmed by exact reference, level, lock, and topology]");
+        }
+
+        private Equipment EquipmentAtLocation(int slot)
+        {
+            var inv = _character.inventory;
+            if (slot >= 0 && slot < inv.inventory.Count) return inv.inventory[slot];
+            switch (slot)
+            {
+                case -1: return inv.head;
+                case -2: return inv.chest;
+                case -3: return inv.legs;
+                case -4: return inv.boots;
+                case -5: return inv.weapon;
+                case -6: return inv.weapon2;
+            }
+            if (slot >= 1000000)
+            {
+                var guff = slot - 1000000;
+                return guff >= 0 && guff < inv.macguffins.Count ? inv.macguffins[guff] : null;
+            }
+            if (slot >= 10000)
+            {
+                var accessory = _controller.accessoryID(slot);
+                return accessory >= 0 && accessory < inv.accs.Count ? inv.accs[accessory] : null;
+            }
+            return null;
+        }
+
+        private sealed class NativeLoadoutSnapshot
+        {
+            internal Loadout Target;
+            internal int Head;
+            internal int Chest;
+            internal int Legs;
+            internal int Boots;
+            internal int Weapon;
+            internal int Weapon2;
+            internal int[] Accessories;
+        }
+
+        private NativeLoadoutSnapshot[] CaptureNativeLoadouts()
+        {
+            if (_character.inventory.loadouts == null) return new NativeLoadoutSnapshot[0];
+            return _character.inventory.loadouts.Where(x => x != null).Select(x =>
+                new NativeLoadoutSnapshot
+                {
+                    Target = x,
+                    Head = x.head,
+                    Chest = x.chest,
+                    Legs = x.legs,
+                    Boots = x.boots,
+                    Weapon = x.weapon,
+                    Weapon2 = x.weapon2,
+                    Accessories = x.accessories == null ? null : x.accessories.ToArray()
+                }).ToArray();
+        }
+
+        private static int[] LoadoutSlots(Loadout loadout)
+        {
+            if (loadout == null) return new int[0];
+            return new[] {loadout.head, loadout.chest, loadout.legs, loadout.boots,
+                    loadout.weapon, loadout.weapon2}
+                .Concat(loadout.accessories ?? new List<int>()).ToArray();
+        }
+
+        private bool CanRetargetNativeReferences(int sourceSlot, int survivorSlot)
+        {
+            if (sourceSlot == survivorSlot) return true;
+            var loadouts = _character.inventory.loadouts;
+            return loadouts == null || loadouts.Where(x => x != null).All(x =>
+                InventoryTopologyPolicy.CanRetargetContext(LoadoutSlots(x), sourceSlot, survivorSlot));
+        }
+
+        private bool RetargetNativeLoadoutReferences(int sourceSlot, int survivorSlot)
+        {
+            if (!CanRetargetNativeReferences(sourceSlot, survivorSlot)) return false;
+            var loadouts = _character.inventory.loadouts;
+            if (loadouts == null) return true;
+            foreach (var loadout in loadouts.Where(x => x != null))
+            {
+                if (loadout.head == sourceSlot) loadout.head = survivorSlot;
+                if (loadout.chest == sourceSlot) loadout.chest = survivorSlot;
+                if (loadout.legs == sourceSlot) loadout.legs = survivorSlot;
+                if (loadout.boots == sourceSlot) loadout.boots = survivorSlot;
+                if (loadout.weapon == sourceSlot) loadout.weapon = survivorSlot;
+                if (loadout.weapon2 == sourceSlot) loadout.weapon2 = survivorSlot;
+                if (loadout.accessories == null) continue;
+                for (var i = 0; i < loadout.accessories.Count; i++)
+                    if (loadout.accessories[i] == sourceSlot)
+                        loadout.accessories[i] = survivorSlot;
+            }
+            return CountNativeLoadoutReferences(sourceSlot) == 0;
+        }
+
+        private int CountNativeLoadoutReferences(int slot)
+        {
+            var loadouts = _character.inventory.loadouts;
+            return loadouts == null ? 0 : loadouts.Where(x => x != null)
+                .Sum(x => LoadoutSlots(x).Count(y => y == slot));
+        }
+
+        private static void RestoreNativeLoadouts(IEnumerable<NativeLoadoutSnapshot> snapshots)
+        {
+            foreach (var state in snapshots)
+            {
+                state.Target.head = state.Head;
+                state.Target.chest = state.Chest;
+                state.Target.legs = state.Legs;
+                state.Target.boots = state.Boots;
+                state.Target.weapon = state.Weapon;
+                state.Target.weapon2 = state.Weapon2;
+                if (state.Accessories == null)
+                    state.Target.accessories = null;
+                else
+                {
+                    if (state.Target.accessories == null) state.Target.accessories = new List<int>();
+                    state.Target.accessories.Clear();
+                    state.Target.accessories.AddRange(state.Accessories);
+                }
             }
         }
 
@@ -651,7 +971,8 @@ namespace NGUInjector.Managers
             {
                 var guffId = _character.inventory.macguffins[id].id;
                 if (ci.Any(x => x.id == guffId))
-                    _controller.mergeAll(_controller.globalMacguffinID(id));
+                    MergeOrdinarySourcesPairwise(_character.inventory.macguffins[id],
+                        _controller.globalMacguffinID(id), "equipped MacGuffin");
             }
 
             var invGuffs = ci.Where(x => _guffs.Contains(x.id)).GroupBy(x => x.id).Where(x => x.Count() > 1);
@@ -659,8 +980,10 @@ namespace NGUInjector.Managers
             {
                 if (guff.All(x => x.locked))
                     continue;
-                var target = guff.MaxItem();
-                _controller.mergeAll(target.slot);
+                var target = SelectMergeSurvivor(guff);
+                if (target == null) continue;
+                MergeOrdinarySourcesPairwise(target.equipment, target.slot,
+                    "ordinary MacGuffin");
             }
         }
 
@@ -777,6 +1100,26 @@ namespace NGUInjector.Managers
                 return;
             var curPage = (int)Math.Floor((double)_controller.inventory[0].id / 60);
 
+            /*
+            EXACT DIFFICULTY-MECHANIC UNLOCK CHAIN
+
+            Native consumeItem debits each key before it checks the prerequisite/flag. Item 343 is
+            therefore destroyed without Wishes when Hacks is still locked, and item 391 is not a
+            complete success unless addCard delivered the first physical Card. Consume at most one
+            ordered key per sweep through the build-pinned adapter, then prove reference debit plus
+            the complete native postcondition. A partial debit is logged REJECTED and is not retried.
+            */
+            if (TryConsumeProgressionUnlock(ci, 294, ProgressionUnlockKind.Hacks,
+                    !_character.hacks.hacksOn, true)
+                || TryConsumeProgressionUnlock(ci, 343, ProgressionUnlockKind.Wishes,
+                    _character.hacks.hacksOn && !_character.wishes.wishesOn, true)
+                || TryConsumeProgressionUnlock(ci, 391, ProgressionUnlockKind.Cards,
+                    !_character.cards.cardsOn, true))
+            {
+                _controller.changePage(curPage);
+                return;
+            }
+
             // One-use progression keys should not sit inert in inventory.
             var progression = ci.FirstOrDefault(x => x.slot >= 0
                 && ((x.id == 102 && !_character.settings.nguOn)
@@ -786,6 +1129,16 @@ namespace NGUInjector.Managers
                     || (x.id == 506 && !_character.adventure.move69Unlocked)));
             if (progression != null && _character.inventory.inventory[progression.slot].removable)
             {
+                var progressionItem = _character.inventory.inventory[progression.slot];
+                if (ProgressionLoadoutOptimizer.IsAuthoritativeItem(progressionItem)
+                    || IsNativeLoadoutReference(_character, progression.slot)
+                    || IsConfiguredLoadoutItem(progression.id))
+                {
+                    Main.LogAction("REJECTED", "Progression key " + GameNames.Item(_character, progression.id)
+                        + " is an exact loadout reference; preserving it instead of consuming it");
+                    _controller.changePage(curPage);
+                    return;
+                }
                 var itemDebited = ConsumeInventorySlot(progression.slot);
                 var featureEnabled = progression.id == 102 ? _character.settings.nguOn
                     : progression.id == 141 ? _character.settings.beardsOn
@@ -804,12 +1157,16 @@ namespace NGUInjector.Managers
 
             var wandoos = ci.FirstOrDefault(x => x.slot >= 0 && x.id == 66
                 && _character.inventory.inventory[x.slot].removable
+                && !ProgressionLoadoutOptimizer.IsAuthoritativeItem(_character.inventory.inventory[x.slot])
+                && !IsNativeLoadoutReference(_character, x.slot) && !IsConfiguredLoadoutItem(x.id)
                 && (!_character.settings.wandoos98On
                     || _character.wandoos98.installed && _character.wandoos98.installTime.totalseconds >= 86400
                     && x.level >= _character.wandoos98.OSlevel + 1));
             if (wandoos == null)
                 wandoos = ci.FirstOrDefault(x => x.slot >= 0 && x.id == 163
                     && _character.inventory.inventory[x.slot].removable
+                    && !ProgressionLoadoutOptimizer.IsAuthoritativeItem(_character.inventory.inventory[x.slot])
+                    && !IsNativeLoadoutReference(_character, x.slot) && !IsConfiguredLoadoutItem(x.id)
                     && _character.settings.wandoos98On
                     && (_character.wandoos98.XLLevels == 0 || x.level >= _character.wandoos98.XLLevels + 1));
             if (wandoos != null)
@@ -835,20 +1192,14 @@ namespace NGUInjector.Managers
                 if (item.level != 100) continue;
                 var temp = _character.inventory.inventory[item.slot];
                 if (!temp.removable) continue;
-                var newSlot = ChangePage(item.slot);
-                var ic = _controller.inventory[newSlot];
+                if (ProgressionLoadoutOptimizer.IsAuthoritativeItem(temp)
+                    || IsNativeLoadoutReference(_character, item.slot)
+                    || IsConfiguredLoadoutItem(item.id))
+                    continue;
                 var countBefore = _character.inventory.inventory.Count(x => x != null && x.id == item.id);
-                var method = typeof(ItemController).GetMethod("consumeItem",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-                if (method == null)
-                {
-                    Main.LogAction("REJECTED", "Native convertible consumer was unavailable for "
-                                               + GameNames.Item(_character, item.id));
-                    break;
-                }
-                method.Invoke(ic, null);
+                var invoked = ConsumeInventorySlot(item.slot);
                 var consumed = _character.inventory.inventory.Count(x => x != null && x.id == item.id) < countBefore;
-                if (!consumed)
+                if (!invoked || !consumed)
                 {
                     Main.LogAction("REJECTED", "Convertible " + GameNames.Item(_character, item.id)
                                                + " produced no verified inventory debit");
@@ -856,6 +1207,52 @@ namespace NGUInjector.Managers
                 }
             }
             _controller.changePage(curPage);
+        }
+
+        private bool TryConsumeProgressionUnlock(IEnumerable<ih> converted, int itemId,
+            ProgressionUnlockKind kind, bool prerequisitesSatisfied, bool requireRemovable)
+        {
+            if (!prerequisitesSatisfied) return false;
+            var candidate = converted.FirstOrDefault(x => x != null && x.id == itemId
+                && x.slot >= 0 && x.slot < _character.inventory.inventory.Count);
+            if (candidate == null) return false;
+            var exactItem = _character.inventory.inventory[candidate.slot];
+            if (exactItem == null || exactItem.id != itemId
+                || requireRemovable && !exactItem.removable)
+                return false;
+            if (ProgressionLoadoutOptimizer.IsAuthoritativeItem(exactItem)
+                || IsNativeLoadoutReference(_character, candidate.slot)
+                || IsConfiguredLoadoutItem(itemId))
+            {
+                Main.LogAction("REJECTED", "Unlock key ID " + itemId
+                    + " is an exact loadout reference; preserving it until the loadout intent is reconciled");
+                return false;
+            }
+
+            var featureBefore = kind == ProgressionUnlockKind.Hacks ? _character.hacks.hacksOn
+                : kind == ProgressionUnlockKind.Wishes ? _character.wishes.wishesOn
+                : _character.cards.cardsOn;
+            var cardsBefore = _character.cards == null || _character.cards.cards == null
+                ? 0 : _character.cards.cards.Count;
+            var itemController = ItemControllerForOrdinarySlot(candidate.slot);
+            var invocation = itemController == null ? null : CreateNativeMutations().ConsumeItem(itemController);
+            var exactDebited = !_character.inventory.inventory.Any(x => ReferenceEquals(x, exactItem));
+            var featureAfter = kind == ProgressionUnlockKind.Hacks ? _character.hacks.hacksOn
+                : kind == ProgressionUnlockKind.Wishes ? _character.wishes.wishesOn
+                : _character.cards.cardsOn;
+            var cardsAfter = _character.cards == null || _character.cards.cards == null
+                ? 0 : _character.cards.cards.Count;
+            var confirmed = invocation != null && invocation.ReturnedNormally
+                && InventoryTopologyPolicy.UnlockPostcondition(kind, exactDebited,
+                    featureBefore, featureAfter, _character.res3.res3On, cardsBefore, cardsAfter);
+            var label = kind == ProgressionUnlockKind.Hacks ? "Hacks and Resource 3"
+                : kind == ProgressionUnlockKind.Wishes ? "Wishes" : "Cards and its first Card";
+            Main.LogAction(confirmed ? "PROGRESSION" : "REJECTED", confirmed
+                ? "Consumed " + GameNames.Item(_character, itemId) + " (ID " + itemId
+                  + ") and unlocked " + label + " [confirmed by exact reference debit and native state]"
+                : "Unlock key ID " + itemId + " lacked the required debit + " + label
+                  + " postcondition" + InvocationFailure(invocation));
+            return true;
         }
 
         private bool ConsumeInventorySlot(int slot)
@@ -866,14 +1263,38 @@ namespace NGUInjector.Managers
             var id = target.id;
             var levelBefore = target.level;
             var countBefore = _character.inventory.inventory.Count(x => x != null && x.id == id);
-            var newSlot = ChangePage(slot);
-            var method = typeof(ItemController).GetMethod("consumeItem",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-            if (method == null) return false;
-            method.Invoke(_controller.inventory[newSlot], null);
+            var itemController = ItemControllerForOrdinarySlot(slot);
+            if (itemController == null) return false;
+            var invocation = CreateNativeMutations().ConsumeItem(itemController);
+            if (!invocation.ReturnedNormally)
+            {
+                Main.LogAction("REJECTED", "Native item consume held or failed" + InvocationFailure(invocation));
+                return false;
+            }
             return _character.inventory.inventory.Count(x => x != null && x.id == id) < countBefore
                    || !_character.inventory.inventory.Any(x => ReferenceEquals(x, target))
                    || target.level < levelBefore;
+        }
+
+        private ItemController ItemControllerForOrdinarySlot(int slot)
+        {
+            if (slot < 0 || slot >= _character.inventory.inventory.Count) return null;
+            var pageSlot = ChangePage(slot);
+            return _controller.inventory != null && pageSlot >= 0 && pageSlot < _controller.inventory.Length
+                ? _controller.inventory[pageSlot] : null;
+        }
+
+        private static NativeMutationAdapters CreateNativeMutations()
+        {
+            return NativeBindingRegistry.Create(typeof(Character).Assembly,
+                Main.GameAssemblySha256).CreateMutationAdapters();
+        }
+
+        private static string InvocationFailure(NativeInvocationResult invocation)
+        {
+            return invocation == null ? "; native item controller was unavailable"
+                : invocation.ReturnedNormally ? string.Empty
+                : "; native binding " + invocation.Status + ": " + invocation.Reason;
         }
 
         internal static bool ExileAssemblyReady(Character c)
@@ -946,9 +1367,7 @@ namespace NGUInjector.Managers
                 return RollBackEndPlacement(inv, before, swaps,
                     "END placement failed canonical validation after native swaps");
 
-            var consume = typeof(ItemController).GetMethod("consumeItem",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-            if (consume == null || _controller.inventory == null || _controller.inventory.Length <= 39)
+            if (_controller.inventory == null || _controller.inventory.Length <= 39)
                 return RollBackEndPlacement(inv, before, swaps,
                     "native END trigger method or slot controller is unavailable");
 
@@ -956,7 +1375,11 @@ namespace NGUInjector.Managers
             try
             {
                 _controller.changePage(0);
-                consume.Invoke(_controller.inventory[MechanicsEndgame.FinalTriggerSlot], null);
+                var invocation = CreateNativeMutations().ConsumeItem(
+                    _controller.inventory[MechanicsEndgame.FinalTriggerSlot]);
+                if (!invocation.ReturnedNormally)
+                    return RollBackEndPlacement(inv, before, swaps,
+                        "build-pinned native END trigger was held" + InvocationFailure(invocation));
                 _endSequenceStarted = true;
             }
             finally
@@ -1013,15 +1436,21 @@ namespace NGUInjector.Managers
             }
 
             var oldPage = (int)Math.Floor((double)_controller.inventory[0].id / 60);
-            _controller.changePage(0);
             var beforeUnlock = _character.adventure.titan9Unlocked;
             var beforeSpecial = _character.adventure.titan9SpecialReward;
-            typeof(ItemController).GetMethod("consumeItem", BindingFlags.NonPublic | BindingFlags.Instance)
-                ?.Invoke(_controller.inventory[0], null);
-            _controller.changePage(oldPage);
+            NativeInvocationResult invocation;
+            try
+            {
+                _controller.changePage(0);
+                invocation = CreateNativeMutations().ConsumeItem(_controller.inventory[0]);
+            }
+            finally
+            {
+                _controller.changePage(oldPage);
+            }
             var confirmed = special
-                ? !beforeSpecial && _character.adventure.titan9SpecialReward
-                : !beforeUnlock && _character.adventure.titan9Unlocked;
+                ? invocation.ReturnedNormally && !beforeSpecial && _character.adventure.titan9SpecialReward
+                : invocation.ReturnedNormally && !beforeUnlock && _character.adventure.titan9Unlocked;
             Main.LogAction(confirmed ? "PROGRESSION" : "REJECTED", confirmed
                 ? (special ? "Completed the Exile special assembly" : "Completed the Exile unlock assembly")
                   + " [confirmed by Adventure puzzle state]"
@@ -1110,12 +1539,33 @@ namespace NGUInjector.Managers
 
         internal void ManageBoostConversion()
         {
+            var maxxed = _character.inventory.itemList == null
+                ? null : _character.inventory.itemList.itemMaxxed;
+            if (!InventoryTopologyPolicy.AllBoostEntriesMaxxed(maxxed))
+            {
+                // The transform mode persists in PlayerSettings across ticks and restarts. Repair it
+                // even when automation/config is otherwise disabled: leaving an old Power/Toughness/
+                // Special choice active would continue starving the other permanent Item List IDs.
+                if (_character.settings.autoTransform != 0)
+                    _controller.selectAutoNoneTransform();
+                LastBoostDecision = "Auto-transform held at None until every boost Item List ID 1-39 is MAXXED";
+                return;
+            }
+
             if (_character.challenges.levelChallenge10k.curCompletions <
                 _character.challenges.levelChallenge10k.maxCompletions)
+            {
+                if (_character.settings.autoTransform != 0)
+                    _controller.selectAutoNoneTransform();
                 return;
+            }
 
             if (!Settings.AutoConvertBoosts)
+            {
+                if (_character.settings.autoTransform != 0)
+                    _controller.selectAutoNoneTransform();
                 return;
+            }
 
             var converted = _character.inventory.GetConvertedInventory();
             //If we have a boost locked, we want to stay on that until its maxxed
@@ -1359,6 +1809,19 @@ namespace NGUInjector.Managers
             return false;
         }
 
+        internal static OrdinaryInventoryTopology CaptureOrdinaryTopology(Character character)
+        {
+            if (character == null || character.inventory == null
+                || character.inventory.inventory == null || character.inventoryController == null)
+                return null;
+            var ids = character.inventory.inventory.Select(x => x == null ? 0 : x.id).ToArray();
+            var identities = character.inventory.inventory
+                .Select(x => x == null || x.id == 0 ? null : (object)x).ToArray();
+            return PhysicalTopology.CaptureOrdinary(ids, identities,
+                character.inventoryController.curSpaces(),
+                character.inventoryController.totalInvMergeSlots());
+        }
+
         private static bool IsConfiguredLoadoutItem(int id)
         {
             return Settings.TitanLoadout.Contains(id)
@@ -1598,6 +2061,16 @@ namespace NGUInjector.Managers
                 || _filterExcludes.Contains(id) || _guffs.Contains(id) || _mergeBlacklist.Contains(id)
                 || _convertibles.Contains(id) || EndgameDependencyModel.IsEndItem(id)
                 || id >= 278 && id <= 287)
+                return false;
+            var owned = new List<Equipment>
+            {
+                _character.inventory.head, _character.inventory.chest, _character.inventory.legs,
+                _character.inventory.boots, _character.inventory.weapon, _character.inventory.weapon2
+            };
+            owned.AddRange(_character.inventory.accs ?? new List<Equipment>());
+            owned.AddRange(_character.inventory.inventory ?? new List<Equipment>());
+            owned.AddRange(_character.inventory.daycare ?? new List<Equipment>());
+            if (OwnedCopyCount(id, owned) < RequiredPhysicalCopyCount(id))
                 return false;
             return !IsConfiguredLoadoutItem(id);
         }

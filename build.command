@@ -20,6 +20,22 @@ cp "$game_managed/Assembly-CSharp.dll" "$refs_dir/"
 cp "$game_managed"/UnityEngine*.dll "$refs_dir/"
 
 cd "$source_dir"
+
+# The legacy compiler intentionally receives every maintained source file, while the explicit
+# project is the review/dependency manifest. Fail when those surfaces drift so a successful glob
+# build cannot hide a source omitted from IDE or downstream project builds.
+manifest_missing=0
+for source_file in **/*.cs(N); do
+  windows_path=${source_file//\//\\}
+  if ! rg -Fq "<Compile Include=\"$windows_path\"" NGUInjector.csproj; then
+    print -u2 "Source missing from NGUInjector.csproj: $source_file"
+    manifest_missing=1
+  fi
+done
+if (( manifest_missing )); then
+  exit 1
+fi
+
 env CX_BOTTLE=Steam "$wine_bin" "$mono_dir/resgen.exe" SettingsForm.resx ../build/SettingsForm.resources
 
 sources=(**/*.cs(N))
@@ -36,7 +52,9 @@ env CX_BOTTLE=Steam "$wine_bin" "$mono_dir/csc.exe" \
 
 print "Built $bot_dir/NGUIdleAutopilot.dll"
 
-if [[ -x /usr/bin/swiftc ]]; then
+if [[ ${NGU_AUTOPILOT_SKIP_MONITOR:-0} == 1 ]]; then
+  print "Skipped monitor build (NGU_AUTOPILOT_SKIP_MONITOR=1)"
+elif [[ -x /usr/bin/swiftc ]]; then
   /usr/bin/swiftc -O -framework AppKit "$bot_dir/monitor/ActionMonitor.swift" -o "$bot_dir/ngu-action-monitor"
   app_contents="$bot_dir/NGU Action Monitor.app/Contents"
   mkdir -p "$app_contents/MacOS"

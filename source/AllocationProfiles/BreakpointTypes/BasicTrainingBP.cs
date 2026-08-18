@@ -12,7 +12,10 @@ FILE PURPOSE
 BasicTrainingBP models one attack/defense training pair, including asymmetric unlocks, Sync
 Training's two-Energy cost, native discrete rates, boss marginal value, and permanent cap-
 compression payoff. It allocates through explicit side overloads and verifies idle/side deltas.
-Never replace this with equal shares or a strongest-skill-only shortcut.
+CAPALLBT is one aggregate group ceiling; capped members reject the executor's generic residual
+sweep once that ceiling is filled. Ordinary marginal funding ends at the next ten-native-tick
+completion event so the 5 Hz recovery heartbeat can rerank instead of filling a row's whole cap.
+Never replace this with equal shares, unconditional residual, or a strongest-skill-only shortcut.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -60,7 +63,16 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             }
         }
 
-        internal double ConfiguredFraction { get { return CapPercent; } }
+        internal double ConfiguredFraction
+        {
+            get
+            {
+                // CustomAllocation sums this property to form the portfolio budget. Only one
+                // member publishes an aggregate CAPALLBT share; the other expanded rows are
+                // distribution candidates within that same share, not independent caps.
+                return IsAggregateGroupCap ? (Index == 0 ? CapPercent : 0.0) : CapPercent;
+            }
+        }
 
         // A locally greedy boss derivative can permanently starve a newly unlocked,
         // high-cap row.  This reservation asks a different question: can a constant
@@ -300,23 +312,40 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         internal override bool Allocate()
         {
-            AllocateResidual(Math.Max(0L, (long)Math.Floor(MaxAllocation)));
+            AllocateResidual(Math.Max(0L, MaxAllocation));
             return true;
         }
 
         internal long AllocateResidual(long idleBudget)
         {
-            if (idleBudget <= 0 || !IsValid()) return 0;
+            if (idleBudget <= 0 || !IsValid() || PriorityScore <= 0.0) return 0;
+            if (IsCap)
+            {
+                var ceiling = ExactResourceAllocator.CeilingShare(Character.curEnergy,
+                    Math.Max(0L, (long)Math.Round(CapPercent * 1000000.0,
+                        MidpointRounding.AwayFromZero)), 1000000L);
+                var current = CurrentCoveredAllocation();
+                if (current >= ceiling) return 0;
+                idleBudget = Math.Min(idleBudget, ceiling - current);
+            }
             var idleBefore = Character.idleEnergy;
             if (Index <= 5)
             {
-                var headroom = Math.Max(0L,
-                    Character.training.attackCaps[BTIndex] - Character.training.attackEnergy[BTIndex]);
+                var headroom = Math.Min(Math.Max(0L,
+                        Character.training.attackCaps[BTIndex] - Character.training.attackEnergy[BTIndex]),
+                    ExactResourceAllocator.CompletionHeadroomForTicks(
+                        Character.training.attackCaps[BTIndex],
+                        Character.training.attackEnergy[BTIndex],
+                        Character.training.attackBarProgress[BTIndex], 10));
                 if (Character.settings.syncTraining)
                 {
                     var attackHeadroom = AttackUnlocked ? headroom : 0L;
-                    var defenseHeadroom = DefenseUnlocked ? Math.Max(0L,
-                        Character.training.defenseCaps[BTIndex] - Character.training.defenseEnergy[BTIndex]) : 0L;
+                    var defenseHeadroom = DefenseUnlocked ? Math.Min(Math.Max(0L,
+                            Character.training.defenseCaps[BTIndex] - Character.training.defenseEnergy[BTIndex]),
+                        ExactResourceAllocator.CompletionHeadroomForTicks(
+                            Character.training.defenseCaps[BTIndex],
+                            Character.training.defenseEnergy[BTIndex],
+                            Character.training.defenseBarProgress[BTIndex], 10)) : 0L;
                     var remainingBudget = Math.Min(idleBudget, Character.idleEnergy);
                     // Pair only the mutually productive part. Once the lower-cap
                     // side is full, explicit native side overloads let the remaining
@@ -370,13 +399,35 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             }
             else
             {
-                var headroom = Math.Max(0L,
-                    Character.training.defenseCaps[BTIndex] - Character.training.defenseEnergy[BTIndex]);
+                var headroom = Math.Min(Math.Max(0L,
+                        Character.training.defenseCaps[BTIndex] - Character.training.defenseEnergy[BTIndex]),
+                    ExactResourceAllocator.CompletionHeadroomForTicks(
+                        Character.training.defenseCaps[BTIndex],
+                        Character.training.defenseEnergy[BTIndex],
+                        Character.training.defenseBarProgress[BTIndex], 10));
                 var amount = Math.Min(headroom, idleBudget);
                 if (amount <= 0) return 0;
                 Character.allDefenseController.trains[BTIndex].addEnergy(amount);
             }
             return Math.Max(0L, idleBefore - Character.idleEnergy);
+        }
+
+        private long CurrentCoveredAllocation()
+        {
+            if (IsAggregateGroupCap)
+            {
+                decimal total = 0m;
+                for (var i = 0; i < 6; i++)
+                    total += Math.Max(0L, Character.training.attackEnergy[i])
+                             + Math.Max(0L, Character.training.defenseEnergy[i]);
+                return total >= long.MaxValue ? long.MaxValue : (long)total;
+            }
+            if (Character.settings.syncTraining && Index <= 5)
+                return Math.Max(0L, Character.training.attackEnergy[BTIndex])
+                       + Math.Max(0L, Character.training.defenseEnergy[BTIndex]);
+            return Index <= 5
+                ? Math.Max(0L, Character.training.attackEnergy[BTIndex])
+                : Math.Max(0L, Character.training.defenseEnergy[BTIndex]);
         }
 
         protected override bool CorrectResourceType()

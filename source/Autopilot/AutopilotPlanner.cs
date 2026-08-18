@@ -8,9 +8,11 @@ FILE PURPOSE
 
 AutopilotPlanner composes a Character snapshot and config into a progression stage, resource
 breakpoints, and rebirth recommendation. Exact subsystem formulas stay in breakpoints/managers;
-this layer sequences them. Prefer live events over fixed chapter-clock schedules. Number loss is
-an explicit counterfactual cost, never an invented admission rule; only invalid native previews or
-an unverified mutation boundary may turn a scheduled ordinary rebirth into a hard hold.
+this layer sequences them and stamps the task-29 staged-authority ceiling onto the immutable plan.
+Prefer live events over fixed chapter-clock schedules. Number loss is an explicit counterfactual
+cost, never an invented admission rule; only invalid native previews or an unverified mutation
+boundary may turn a scheduled ordinary rebirth into a hard hold. The task-28 scheduler remains a
+typed shadow output and never replaces incumbent execution here.
 */
 namespace NGUInjector.Autopilot
 {
@@ -29,6 +31,7 @@ namespace NGUInjector.Autopilot
             ApplyProgressionCheckpoint(c, plan);
             ApplyActiveChallengePlan(c, plan);
             FinalizeOrdinaryRebirthProjection(c, plan);
+            plan.ApplyDeploymentAuthority(config);
             return plan;
         }
 

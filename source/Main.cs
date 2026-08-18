@@ -6,6 +6,7 @@ using System.IO.Pipes;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Remoting.Messaging;
+using System.Runtime.CompilerServices;
 using System.Security.Policy;
 using System.Security.Cryptography;
 using System.Text;
@@ -23,14 +24,15 @@ using Application = UnityEngine.Application;
 /*
 FILE PURPOSE
 
-Main is the Unity orchestration and native-mutation dispatch host. It discovers live controllers,
-establishes the active-game synchronization barrier, snapshots a sticky ExecutionSafety lease for
-each scheduled pass, selects exactly one allocation owner, and writes confirmed action/deployment
-telemetry. Inputs are Unity state, legacy settings, autopilot config/plans, and watched files;
-outputs are leased manager/controller calls plus append-only runtime evidence. No mutation may run
-before IsAutomationReady, dry-run can never inherit authority from GlobalEnabled, assist cannot
-spend finite resources through legacy fallbacks, and a state-version change invalidates the whole
-pass. Focused managers own mechanics and native postconditions; Main owns cadence and permission,
+Main is the Unity orchestration, lifecycle-epoch, save/load, and native-mutation dispatch host. It
+publishes its instance before callbacks, discovers/rebinds live controllers, establishes the
+active-game synchronization barrier, keys queued work and decision latches to GameEpoch, selects
+exactly one allocation owner, and writes confirmed action/deployment telemetry. Inputs are Unity
+state, legacy settings, autopilot config/plans, watched files, and manual snapshot keys; outputs are
+leased manager/controller calls, durable last-good snapshot generations, and append-only runtime
+evidence. No mutation may run before a synchronized epoch has a newly installed plan; reset/load/
+unload synchronously cancel old work; dry-run and assist cannot inherit stronger legacy authority.
+Focused managers own mechanics/native postconditions. Main owns lifecycle, cadence, and permission,
 not progression strategy.
 */
 namespace NGUInjector
@@ -62,64 +64,56 @@ namespace NGUInjector
         private static int _furthestZone;
         private bool _syncStateInitialized;
         private bool _lastGameplayReady;
-        private bool _decisionPublishPending;
-        private bool _pendingTransactionComplete;
-        private string _pendingTransactionError = string.Empty;
+        private sealed class PendingDecisionPublication
+        {
+            internal bool TransactionComplete;
+            internal string TransactionError;
+        }
+        private readonly EpochLatch<PendingDecisionPublication> _pendingDecision =
+            new EpochLatch<PendingDecisionPublication>();
         private DateTime _lastAutoEnterAttempt = DateTime.MinValue;
         private volatile bool _zoneReloadRequested;
         private volatile bool _settingsReloadRequested;
         private volatile bool _allocationReloadRequested;
         private volatile bool _allocationListReloadRequested;
         private static bool _isUnloading;
-        private static readonly Queue<Action> MainThreadActions = new Queue<Action>();
-        private static readonly Queue<Action> MainThreadLifecycleActions = new Queue<Action>();
-        private static readonly object MainThreadActionsLock = new object();
+        private static readonly EpochActionQueue MainThreadActions = new EpochActionQueue();
+        private static readonly EpochActionQueue MainThreadLifecycleActions = new EpochActionQueue();
         private static long _rejectionEpoch;
         private static bool _allocationOwnerKnown;
         private static bool _autopilotOwnsAllocations;
+        private string _lastRunSignature = string.Empty;
 
         internal static bool Test { get; set; }
 
-        // WinForms events run on their own UI thread.  Unity controllers may only
-        // be touched by the game thread, so every form-triggered mutation is queued
-        // and drained from MonoBehaviour.Update().
+        // WinForms events run on their own UI thread. Unity controllers may only be touched by the
+        // game thread, so every form-triggered mutation captures its enqueue epoch and is drained
+        // from MonoBehaviour.Update(). Save-bound work is discarded after reset/load; lifecycle
+        // work survives those transitions but cannot cross host replacement/unload.
         internal static void RunOnMainThread(Action action)
         {
-            if (action == null) return;
-            lock (MainThreadActionsLock) MainThreadActions.Enqueue(action);
+            MainThreadActions.Enqueue(GameEpochController.Shared.Current,
+                EpochWorkScope.ExactGameState, action);
         }
 
         internal static void RunLifecycleOnMainThread(Action action)
         {
-            if (action == null) return;
-            lock (MainThreadActionsLock) MainThreadLifecycleActions.Enqueue(action);
+            MainThreadLifecycleActions.Enqueue(GameEpochController.Shared.Current,
+                EpochWorkScope.HostSession, action);
         }
 
         private static void DrainMainThreadActions()
         {
-            for (var i = 0; i < 32; i++)
-            {
-                Action action;
-                lock (MainThreadActionsLock)
-                {
-                    if (MainThreadActions.Count == 0) return;
-                    action = MainThreadActions.Dequeue();
-                }
-                try { action(); }
-                catch (Exception ex) { LogAction("REJECTED", "Queued settings action failed: " + ex.Message); }
-            }
+            MainThreadActions.Drain(GameEpochController.Shared.Current, 32,
+                reason => LogAction("HOLD", "Discarded queued settings action: " + reason),
+                ex => LogAction("REJECTED", "Queued settings action failed: " + ex.Message));
         }
 
         private static void DrainLifecycleActions()
         {
-            Action action;
-            lock (MainThreadActionsLock)
-            {
-                if (MainThreadLifecycleActions.Count == 0) return;
-                action = MainThreadLifecycleActions.Dequeue();
-            }
-            try { action(); }
-            catch (Exception ex) { LogAction("REJECTED", "Queued lifecycle action failed: " + ex.Message); }
+            MainThreadLifecycleActions.Drain(GameEpochController.Shared.Current, 1,
+                reason => LogAction("HOLD", "Discarded queued lifecycle action: " + reason),
+                ex => LogAction("REJECTED", "Queued lifecycle action failed: " + ex.Message));
         }
 
         private static string _dir;
@@ -129,6 +123,18 @@ namespace NGUInjector
         internal static string SessionId
         {
             get { return _sessionId; }
+        }
+        internal static string CurrentGameEpochFingerprint
+        {
+            get { return GameEpochController.Shared.Current.Fingerprint; }
+        }
+
+        // Multi-frame managers register unconditional cleanup (for example key-up) here. The
+        // callback is bound to the current exact game epoch and is invoked synchronously before a
+        // reset, load, quarantine, or unload publishes the successor epoch.
+        internal static void RegisterEpochCancellation(string id, Action cancellation)
+        {
+            GameEpochController.Shared.RegisterCancellation(id, cancellation);
         }
         internal static string ActiveLocationSha256AtObservation { get; private set; } = string.Empty;
         internal static string DiskArtifactSha256 { get; private set; } = string.Empty;
@@ -249,7 +255,8 @@ namespace NGUInjector
             get
             {
                 return IsGameplayReady && reference != null && reference._syncStateInitialized
-                       && reference._lastGameplayReady;
+                       && reference._lastGameplayReady
+                       && GameEpochController.Shared.MutationOpen;
             }
         }
 
@@ -259,20 +266,40 @@ namespace NGUInjector
                 return;
 
             var ready = IsGameplayReady;
+            string epochReason;
+            if (ready)
+                GameEpochController.Shared.ObserveSynchronizedFrame(
+                    CaptureControllerIdentity(), out epochReason);
+            else
+                epochReason = "main menu is visible";
             var detail = ready
-                ? "active gameplay verified by MainMenuController.doneInitialLoad and hidden menu transform"
+                ? "active gameplay verified by MainMenuController.doneInitialLoad and hidden menu transform; "
+                  + (GameEpochController.Shared.MutationOpen
+                      ? "game epoch and plan are active"
+                      : GameEpochController.Shared.HoldReason)
                 : "main menu is still visible; all game mutations are hard-paused";
             Autopilot.ReportSynchronization(ready, detail);
 
             if (!_syncStateInitialized || ready != _lastGameplayReady)
             {
-                LogAction("SYNC", ready ? "Active gameplay verified; automation enabled" : "Main menu detected; automation paused");
+                LogAction("SYNC", ready
+                    ? (GameEpochController.Shared.MutationOpen
+                        ? "Active gameplay and current-epoch plan verified; automation enabled"
+                        : "Active gameplay verified; automation remains held by "
+                          + GameEpochController.Shared.Phase + ": "
+                          + GameEpochController.Shared.HoldReason)
+                    : "Main menu detected; automation paused");
                 ExecutionSafety.Invalidate(ready
                     ? "active gameplay synchronization acquired"
                     : "active gameplay synchronization lost");
                 _syncStateInitialized = true;
                 _lastGameplayReady = ready;
             }
+
+            if (ready && !string.IsNullOrEmpty(epochReason)
+                && GameEpochController.Shared.Phase == GameEpochPhase.Quarantined)
+                LogAction("REJECTED", "Gameplay synchronization could not reopen automation: "
+                                      + epochReason);
 
             if (ready || !Autopilot.Config.Enabled || !Autopilot.Config.IsFull || !Autopilot.Config.AutoEnterGame)
                 return;
@@ -282,15 +309,8 @@ namespace NGUInjector
                 return;
 
             _lastAutoEnterAttempt = DateTime.Now;
-            using (ExecutionSafety.BeginCycle("gameplay synchronization", CurrentAutopilotConfig))
-            {
-                TryRunMutation("automatic Load Autosave", MutationClass.Synchronization,
-                    MutationOwner.Autopilot, () =>
-                    {
-                        LogAction("SYNC", "Verified local autosave found; invoking the game's own Load Autosave controller");
-                        Character.mainMenu.loadAutosave();
-                    });
-            }
+            ExecutionSafety.ReportHold("typed-intent:auto-load",
+                "Automatic autosave loading is held until its Boolean load/rebind transaction owns the lifecycle root.");
         }
 
         private static CustomAllocation ActiveProfile
@@ -386,16 +406,33 @@ namespace NGUInjector
         {
             if (!IsAutomationReady || ActiveProfile == null)
                 return;
-            TryRunMutation("post-gear allocation restoration", MutationClass.Allocation,
-                AllocationOwner, () => ActiveProfile.DoAllocations());
+            ExecutionSafety.ReportHold("typed-intent:post-gear-allocation",
+                "Post-gear allocation restoration is held until allocation exposes an exact typed child intent.");
         }
 
         internal void Unload()
         {
+            if (_isUnloading) return;
             _isUnloading = true;
+            _syncStateInitialized = true;
+            _lastGameplayReady = false;
+            GameEpochController.Shared.BeginUnload("assembly host is unloading");
             ExecutionSafety.Invalidate("assembly host is unloading");
             try
             {
+                // The current Titan-7 implementation releases its pending key whenever automation
+                // is paused. Invoke it while its native P/Invoke state still exists; newer
+                // multi-frame managers use RegisterEpochCancellation and were already cancelled by
+                // BeginUnload above.
+                try
+                {
+                    if (Autopilot != null) Autopilot.TryTitan7PuzzleStep();
+                }
+                catch (Exception keyError)
+                {
+                    LogAction("REJECTED", "Pending key release failed during unload: "
+                                          + keyError.Message);
+                }
                 CancelInvoke("AutomationRoutine");
                 CancelInvoke("SnipeZone");
                 CancelInvoke("MonitorLog");
@@ -417,28 +454,65 @@ namespace NGUInjector
                 ConfigWatcher?.Dispose();
                 AllocationWatcher?.Dispose();
                 ZoneWatcher?.Dispose();
-                lock (MainThreadActionsLock)
-                {
-                    MainThreadActions.Clear();
-                    MainThreadLifecycleActions.Clear();
-                }
+                MainThreadActions.Clear();
+                MainThreadLifecycleActions.Clear();
+                _pendingDecision.Clear();
             }
             catch (Exception e)
             {
                 Log(e.Message);
             }
             OutputWriter?.Close();
+
+            // Mono may keep this assembly/static graph alive after Unity destroys the host.
+            // Explicitly release every object which could otherwise be mistaken for the next
+            // injection's controller/session identity.
+            if (reference == this) reference = null;
+            MutationCoordinator.BindSharedEpochProvider(null);
+            Character = null;
+            Controller = null;
+            PlayerController = null;
+            Autopilot = null;
+            WishManager = null;
+            settingsForm = null;
+            ConfigWatcher = null;
+            AllocationWatcher = null;
+            ZoneWatcher = null;
+            OutputWriter = null;
+            LootWriter = null;
+            CombatWriter = null;
+            AllocationWriter = null;
+            PitSpinWriter = null;
+            ActionWriter = null;
+            _profile = null;
+            _sessionId = string.Empty;
+            _allocationOwnerKnown = false;
+            _autopilotOwnsAllocations = false;
+        }
+
+        public void Awake()
+        {
+            if (reference != null && reference != this)
+                throw new InvalidOperationException(
+                    "A different NGU Autopilot Main instance is already published");
+            // AddComponent invokes Awake synchronously. Publishing here guarantees that Start and
+            // every later zero-delay InvokeRepeating callback see the actual owning instance.
+            reference = this;
+            MutationCoordinator.BindSharedEpochProvider(
+                () => CurrentGameEpochFingerprint);
         }
 
         public void Start()
         {
             _isUnloading = false;
             _allocationOwnerKnown = false;
+            string assemblyDir = null;
+            string installDir = null;
             ExecutionSafety.Invalidate("assembly host started");
             try
             {
-                var assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-                var installDir = Directory.Exists(@"Z:\Users\jw\Desktop\bin\ngu-idle-bot")
+                assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                installDir = Directory.Exists(@"Z:\Users\jw\Desktop\bin\ngu-idle-bot")
                     ? @"Z:\Users\jw\Desktop\bin\ngu-idle-bot"
                     : assemblyDir;
                 if (string.IsNullOrEmpty(installDir))
@@ -484,7 +558,6 @@ namespace NGUInjector
                 AllocationWriter.WriteLine(sessionMarker);
                 PitSpinWriter.WriteLine(sessionMarker);
                 ActionWriter.WriteLine(sessionMarker);
-                PublishDeploymentIdentity(assemblyDir, installDir);
 
                 _profilesDir = Path.Combine(_dir, "profiles");
                 if (!Directory.Exists(_profilesDir))
@@ -686,6 +759,17 @@ namespace NGUInjector
                 ExecutionSafety.ObserveConfig(Autopilot.Config);
                 RefreshAllocationOwnership();
 
+                var initialSave = CaptureLiveSaveFingerprint(
+                    Character.importExport.getBase64Data(), Character);
+                _lastRunSignature = initialSave.RunSignature;
+                GameEpochController.Shared.StartHost(_sessionId, initialSave,
+                    CaptureControllerIdentity());
+                ExecutionSafety.Invalidate("published initial game lifecycle epoch");
+                // Deployment is not accepted merely because writers opened. Publish identity only
+                // after the host/session/controller epoch exists for task-4's PID/session/MVID
+                // handshake.
+                PublishDeploymentIdentity(assemblyDir, installDir);
+
                 ZoneWatcher = new FileSystemWatcher
                 {
                     Path = _dir,
@@ -772,9 +856,6 @@ namespace NGUInjector
                 InvokeRepeating("FastAllocationRoutine", 0.0f, .2f);
                 InvokeRepeating("ShowBoostProgress", 0.0f, 60.0f);
                 InvokeRepeating("SetResnipe", 0f,1f);
-
-
-                reference = this;
             }
             catch (Exception e)
             {
@@ -801,6 +882,8 @@ namespace NGUInjector
             // ordinary settings/game mutations stay behind IsAutomationReady.
             DrainLifecycleActions();
             if (_isUnloading) return;
+            ObserveGameEpochTransitions();
+            TryInstallPlanForCurrentEpoch();
             if (IsAutomationReady)
                 DrainMainThreadActions();
             _timeLeft -= Time.deltaTime;
@@ -902,39 +985,207 @@ namespace NGUInjector
             //}
         }
 
+        /*
+        RESET / CONTROLLER EPOCH OBSERVATION
+
+        Native reset, challenge, and difficulty calls finish synchronously but can originate from
+        a manager or the user's UI. Observe their authoritative run signature before any queued
+        settings work is drained and once more at the end of the one-second transaction. The old
+        epoch closes before rebuilding managers/profiles, so no callback can execute the prior
+        run's breakpoint objects or pending decision latch.
+        */
+        private void ObserveGameEpochTransitions()
+        {
+            var phase = GameEpochController.Shared.Phase;
+            if (phase == GameEpochPhase.Uninitialized || phase == GameEpochPhase.Loading
+                || phase == GameEpochPhase.Unloading || phase == GameEpochPhase.Quarantined)
+                return;
+            if (Character == null)
+            {
+                GameEpochController.Shared.Quarantine("Character disappeared from the active epoch");
+                ExecutionSafety.Invalidate("active Character disappeared");
+                return;
+            }
+
+            var controllers = CaptureControllerIdentity();
+            if (!GameEpochController.Shared.ControllersMatch(controllers))
+            {
+                GameEpochController.Shared.Quarantine(
+                    "controller identity changed outside a committed load/rebind");
+                ExecutionSafety.Invalidate("unexpected controller identity change");
+                _lastGameplayReady = false;
+                return;
+            }
+
+            var runSignature = CaptureRunSignature(Character);
+            if (string.IsNullOrEmpty(_lastRunSignature))
+            {
+                _lastRunSignature = runSignature;
+                return;
+            }
+            if (string.Equals(runSignature, _lastRunSignature, StringComparison.Ordinal)) return;
+
+            var previous = _lastRunSignature;
+            _lastRunSignature = runSignature;
+            var successorAlreadyPublished = string.Equals(runSignature,
+                GameEpochController.Shared.Current.RunSignature, StringComparison.Ordinal);
+            if (!successorAlreadyPublished)
+            {
+                var fingerprint = CaptureLiveSaveFingerprint(string.Empty, Character);
+                GameEpochController.Shared.AdvanceRun(fingerprint, controllers,
+                    "authoritative run signature changed from " + previous + " to " + runSignature);
+            }
+            _lastGameplayReady = true;
+            ExecutionSafety.Invalidate(successorAlreadyPublished
+                ? "verified reset successor reconciled with live controllers"
+                : "rebirth/challenge/difficulty run epoch advanced");
+
+            // Pause is already visible through GameEpoch, so this call can only release an existing
+            // pending Titan-7 key; it cannot start another one.
+            if (Autopilot != null) Autopilot.TryTitan7PuzzleStep();
+            try
+            {
+                RecreateEpochBoundManagers();
+            }
+            catch (Exception rebuildError)
+            {
+                GameEpochController.Shared.Quarantine(
+                    "run changed but epoch-bound manager reset failed: "
+                    + rebuildError.GetType().Name + ": " + rebuildError.Message);
+                LogAction("REJECTED", "Run epoch quarantined while rebuilding managers: "
+                                      + rebuildError.Message);
+                return;
+            }
+            LogAction("EPOCH", successorAlreadyPublished
+                ? "Verified reset epoch reconciled; managers rebuilt without a duplicate generation advance"
+                : "Run epoch advanced; stale queues/latches discarded and a new plan is required");
+        }
+
+        private void RecreateEpochBoundManagers()
+        {
+            _pendingDecision.Clear();
+            LoadoutManager.ReleaseLock();
+            DiggerManager.ReleaseLock();
+            _invManager = new InventoryManager();
+            _yggManager = new YggdrasilManager();
+            _questManager = new QuestManager();
+            _combManager = new CombatManager();
+            WishManager = new WishManager();
+            Autopilot = new AutopilotManager(_dir, _profilesDir);
+            _allocationOwnerKnown = false;
+            LoadAllocation();
+            ExecutionSafety.ObserveConfig(Autopilot.Config);
+            RefreshAllocationOwnership();
+        }
+
+        private void TryInstallPlanForCurrentEpoch()
+        {
+            if (GameEpochController.Shared.Phase != GameEpochPhase.AwaitingPlan
+                || !IsGameplayReady || !_syncStateInitialized || !_lastGameplayReady
+                || Autopilot == null)
+                return;
+
+            var epoch = GameEpochController.Shared.Current;
+            try
+            {
+                // Tick builds/installs policy before a root exists. MutationCoordinator's nonzero
+                // root rule causes every purchase/action branch to hold, while pure planning and
+                // allocation-profile compilation still complete.
+                Autopilot.Tick();
+                if (Autopilot.Config == null) return;
+                if (Autopilot.Config.Enabled && Autopilot.Plan == null) return;
+                if (Autopilot.Config.Enabled && Autopilot.Config.ManageAllocations
+                    && Autopilot.Profile == null) return;
+
+                var fingerprint = Autopilot.Plan == null
+                    ? "disabled|" + Autopilot.Config.ExecutionFingerprint()
+                    : Autopilot.Plan.Signature(Character);
+                string reason;
+                if (!GameEpochController.Shared.InstallPlan(epoch, fingerprint, out reason))
+                {
+                    LogAction("HOLD", "New-epoch plan installation held: " + reason);
+                    return;
+                }
+                ExecutionSafety.Invalidate("new game-epoch plan installed");
+                RefreshAllocationOwnership();
+                LogAction("EPOCH", "Installed plan for "
+                                   + GameEpochController.Shared.Current.Fingerprint);
+            }
+            catch (Exception error)
+            {
+                LogAction("REJECTED", "New-epoch plan build failed; automation remains held: "
+                                      + error.GetType().Name + ": " + error.Message);
+            }
+        }
+
         private void QuickSave()
         {
+            var phase = GameEpochController.Shared.Phase;
+            if (phase == GameEpochPhase.Loading || phase == GameEpochPhase.Quarantined
+                || phase == GameEpochPhase.Unloading || phase == GameEpochPhase.Uninitialized)
+            {
+                LogAction("HOLD", "Quicksave held because the game epoch is " + phase
+                                  + ": " + GameEpochController.Shared.HoldReason);
+                return;
+            }
             using (ExecutionSafety.BeginCycle("manual quicksave", CurrentAutopilotConfig))
             {
                 TryRunMutation("manual quicksave and Steam Cloud write",
                     MutationClass.SaveLoad, MutationOwner.User, () =>
                     {
-                        Log("Writing quicksave and json");
+                        Log("Writing timestamped quicksave and last-good generations");
+                        // Native quicksave helpers establish this boundary before serializing.
+                        // Direct cloud dispatch does not, so failing to do it here replays already
+                        // played online time when F7 later computes offline progress.
+                        var snapshotTime = Epoch.Current();
+                        Character.lastTime = snapshotTime;
                         var data = Character.importExport.getBase64Data();
-                        WriteTextAtomic(Path.Combine(_dir, "NGUSave.txt"), data + Environment.NewLine);
+                        var parsed = Character.importExport.getDataFromString(data);
+                        if (parsed == null || parsed.lastTime != snapshotTime)
+                            throw new InvalidDataException(
+                                "quicksave failed timestamp/read-back validation before publication");
+                        var savePath = Path.Combine(_dir, "NGUSave.txt");
+                        var saveResult = WriteTextAtomic(savePath, data + Environment.NewLine,
+                            candidate =>
+                            {
+                                var candidateData = Character.importExport.getDataFromString(
+                                    File.ReadAllText(candidate));
+                                return candidateData != null
+                                       && candidateData.lastTime == snapshotTime;
+                            });
 
-                        data = JsonUtility.ToJson(Character.importExport.gameStateToData());
-                        WriteTextAtomic(Path.Combine(_dir, "NGUSave.json"), data + Environment.NewLine);
+                        try
+                        {
+                            var json = JsonUtility.ToJson(Character.importExport.gameStateToData());
+                            WriteTextAtomic(Path.Combine(_dir, "NGUSave.json"),
+                                json + Environment.NewLine,
+                                candidate => JsonUtility.FromJson<PlayerData>(
+                                    File.ReadAllText(candidate)) != null);
+                        }
+                        catch (Exception jsonError)
+                        {
+                            // The validated base64 generation is the recovery artifact. A JSON
+                            // diagnostic failure must not roll its timestamp back or destroy it.
+                            LogAction("REJECTED", "Quicksave JSON diagnostic was not published: "
+                                                  + jsonError.Message);
+                        }
 
-                        Character.saveLoad.saveGamestateToSteamCloud();
+                        var cloudDispatched = Character.saveLoad.saveGamestateToSteamCloud();
+                        LogAction(cloudDispatched ? "SAVE" : "REJECTED",
+                            cloudDispatched
+                                ? "Local quicksave committed at native timestamp " + snapshotTime
+                                  + " (sha256 " + saveResult.PublishedSha256
+                                  + "); Steam Cloud write dispatched, durability unconfirmed"
+                                : "Local quicksave committed at native timestamp " + snapshotTime
+                                  + " but Steam Cloud dispatch returned false");
                     });
             }
         }
 
-        private static void WriteTextAtomic(string path, string contents)
+        private static DurableGenerationResult WriteTextAtomic(string path, string contents,
+            Func<string, bool> validator = null)
         {
-            var temp = path + ".tmp";
-            File.WriteAllText(temp, contents);
-            try
-            {
-                if (File.Exists(path)) File.Replace(temp, path, null);
-                else File.Move(temp, path);
-            }
-            catch
-            {
-                if (File.Exists(path)) File.Delete(path);
-                File.Move(temp, path);
-            }
+            return DurableGenerationWriter.WriteText(path, contents, validator);
         }
 
         /*
@@ -968,13 +1219,22 @@ namespace NGUInjector
                 GameAssemblySha256 = gameHash;
                 var activeBuild = assembly.ManifestModule.ModuleVersionId.ToString();
                 var handshake = process.Id + ":" + _sessionId + ":" + activeBuild;
+                var gameEpoch = GameEpochController.Shared.Current;
                 var json = "{\n"
-                           + "  \"schemaVersion\": 1,\n"
+                           + "  \"schemaVersion\": 2,\n"
                            + "  \"observedAt\": \"" + DateTime.UtcNow.ToString("o") + "\",\n"
                            + "  \"producerPid\": " + process.Id + ",\n"
                            + "  \"producerProcessStartUtc\": \"" + process.StartTime.ToUniversalTime().ToString("o") + "\",\n"
                            + "  \"producerSessionId\": \"" + _sessionId + "\",\n"
                            + "  \"telemetryHandshake\": \"" + handshake + "\",\n"
+                           + "  \"gameEpochFingerprint\": \""
+                           + JsonEscape(gameEpoch.Fingerprint) + "\",\n"
+                           + "  \"gameEpochPhase\": \""
+                           + GameEpochController.Shared.Phase + "\",\n"
+                           + "  \"gameEpochHostGeneration\": " + gameEpoch.HostGeneration + ",\n"
+                           + "  \"gameEpochSaveGeneration\": " + gameEpoch.SaveGeneration + ",\n"
+                           + "  \"gameEpochRunGeneration\": " + gameEpoch.RunGeneration + ",\n"
+                           + "  \"gameEpochGeneration\": " + gameEpoch.Generation + ",\n"
                            + "  \"activeBuildId\": \"" + activeBuild + "\",\n"
                            + "  \"activeAssemblyPath\": \"" + JsonEscape(activePath) + "\",\n"
                            + "  \"activeLocationSha256AtObservation\": \"" + activeLocationHash + "\",\n"
@@ -1051,8 +1311,14 @@ namespace NGUInjector
                 var saveDataFromString = Character.importExport.getSaveDataFromString(base64Data);
                 var dataFromString = Character.importExport.getDataFromString(base64Data);
 
-                if ((dataFromString == null || dataFromString.version < 361) &&
-                    Application.platform != RuntimePlatform.WindowsEditor)
+                if (saveDataFromString == null || dataFromString == null)
+                {
+                    Log("Quicksave envelope/checksum did not produce a complete save graph");
+                    return;
+                }
+
+                if (dataFromString.version < 361
+                    && Application.platform != RuntimePlatform.WindowsEditor)
                 {
                     Log("Bad save version");
                     return;
@@ -1064,58 +1330,253 @@ namespace NGUInjector
                     return;
                 }
 
+                var expected = CaptureImportedSaveFingerprint(base64Data, dataFromString);
+                var beforeSerialized = Character.importExport.getBase64Data();
+                var before = CaptureLiveSaveFingerprint(beforeSerialized, Character);
+                var gameHash = GameAssemblySha256;
+                if (string.IsNullOrEmpty(gameHash)
+                    && File.Exists(typeof(Character).Assembly.Location))
+                    gameHash = Sha256(typeof(Character).Assembly.Location);
+                var registry = NativeBindingRegistry.Create(typeof(Character).Assembly, gameHash);
+                if (!registry.IrreversibleActionsEnabled
+                    || !registry.HasBinding(NativeBindingKeys.LoadIntoGame))
+                {
+                    LogAction("HOLD", "Quicksave load held before epoch transition: "
+                                      + (registry.IsKnownBuild
+                                          ? registry.FailureFor(NativeBindingKeys.LoadIntoGame)
+                                          : registry.BuildFailureReason));
+                    return;
+                }
+                var native = registry.CreateMutationAdapters();
+
                 using (ExecutionSafety.BeginCycle("manual quickload", CurrentAutopilotConfig))
                 {
                     TryRunMutation("manual quickload", MutationClass.SaveLoad, MutationOwner.User, () =>
                     {
-                        // Publish the pause before the game's load mutates controllers. All
-                        // repeating bot routines remain behind this barrier until the normal
-                        // gameplay synchronization probe verifies the new save is active.
+                        // Close the old epoch and publish the pause before native validation can
+                        // touch a controller. Every queue/latch/cancellation is now stale.
+                        var loadingEpoch = GameEpochController.Shared.BeginLoad(
+                            "quicksave load is in progress");
                         _syncStateInitialized = true;
                         _lastGameplayReady = false;
+                        _pendingDecision.Clear();
                         if (Autopilot != null)
                             Autopilot.ReportSynchronization(false, "quicksave load is in progress; waiting for a verified gameplay state");
-                        Character.saveLoad.loadintoGame(saveDataFromString);
-                        ExecutionSafety.Invalidate("manual quickload began");
+                        ExecutionSafety.Invalidate("manual quickload epoch began");
+
+                        // Release the existing Titan-7 key after the epoch pause is visible. This
+                        // branch cannot start a new key while IsAutomationReady is false.
+                        if (Autopilot != null) Autopilot.TryTitan7PuzzleStep();
+                        LoadoutManager.ReleaseLock();
+                        DiggerManager.ReleaseLock();
+
+                        var invocation = native.LoadSave(Character.saveLoad, saveDataFromString);
+                        var nativeTrue = invocation.ReturnedNormally
+                                         && invocation.ReturnValue is bool
+                                         && (bool)invocation.ReturnValue;
+                        if (!nativeTrue)
+                        {
+                            var failureAfter = TryCaptureLiveSaveFingerprint();
+                            var unchanged = failureAfter != null
+                                            && string.Equals(before.ContentHash,
+                                                failureAfter.ContentHash,
+                                                StringComparison.Ordinal);
+                            var failure = invocation.Status + ": " + invocation.Reason
+                                          + (invocation.Exception == null ? string.Empty
+                                              : "; " + invocation.Exception.GetType().Name + ": "
+                                                + invocation.Exception.Message)
+                                          + (unchanged ? "; exact before bytes retained"
+                                              : "; live state changed or could not be recaptured");
+                            GameEpochController.Shared.FailLoad(loadingEpoch, failure,
+                                failureAfter);
+                            LogAction("REJECTED", "Quicksave load quarantined: " + failure);
+                            return;
+                        }
+
+                        string rebindError;
+                        if (!TryRebindGameControllers(out rebindError))
+                        {
+                            GameEpochController.Shared.FailLoad(loadingEpoch,
+                                "native load returned true but controller rebind failed: "
+                                + rebindError, TryCaptureLiveSaveFingerprint());
+                            LogAction("REJECTED", "Quicksave load quarantined after native true: "
+                                                  + rebindError);
+                            return;
+                        }
+
+                        var afterSerialized = Character.importExport.getBase64Data();
+                        var after = CaptureLiveSaveFingerprint(afterSerialized, Character);
+                        string commitError;
+                        if (!GameEpochController.Shared.CommitLoad(loadingEpoch, true,
+                                expected, after, CaptureControllerIdentity(), out commitError))
+                        {
+                            LogAction("REJECTED", "Quicksave load returned true but its exact "
+                                                  + "postcondition failed; automation quarantined: "
+                                                  + commitError);
+                            return;
+                        }
+
+                        _lastRunSignature = after.RunSignature;
+                        try
+                        {
+                            RecreateEpochBoundManagers();
+                        }
+                        catch (Exception rebuildError)
+                        {
+                            GameEpochController.Shared.Quarantine(
+                                "load committed but epoch-bound manager/plan reset failed: "
+                                + rebuildError.GetType().Name + ": " + rebuildError.Message);
+                            throw;
+                        }
+                        _syncStateInitialized = true;
+                        _lastGameplayReady = false;
+                        ExecutionSafety.Invalidate("manual quickload committed a new save epoch");
+                        LogAction("SAVE", "Quicksave load committed as "
+                                          + GameEpochController.Shared.Current.Fingerprint
+                                          + "; waiting for a later synchronized frame and plan");
                     });
                 }
             }
             catch (Exception e)
             {
+                if (GameEpochController.Shared.Phase == GameEpochPhase.Loading)
+                    GameEpochController.Shared.FailLoad(
+                        GameEpochController.Shared.Current,
+                        "quicksave load threw after its epoch closed: "
+                        + e.GetType().Name + ": " + e.Message);
+                _syncStateInitialized = true;
+                _lastGameplayReady = false;
                 Log($"Failed to load quicksave: {e.Message}");
+            }
+        }
+
+        private static SaveStateFingerprint CaptureImportedSaveFingerprint(string serialized,
+            PlayerData data)
+        {
+            if (data == null) return null;
+            var difficulty = data.settings == null
+                ? string.Empty : data.settings.rebirthDifficulty.ToString();
+            var rebirth = data.stats == null ? -1L : data.stats.rebirthNumber;
+            return new SaveStateFingerprint(
+                EpochHash.Sha256((serialized ?? string.Empty).Trim()), data.version,
+                data.lastTime, rebirth, difficulty, data.highestBoss,
+                data.highestHardBoss, data.highestSadisticBoss,
+                CaptureRunSignature(data));
+        }
+
+        private static SaveStateFingerprint CaptureLiveSaveFingerprint(string serialized,
+            Character character)
+        {
+            if (character == null) return null;
+            var difficulty = character.settings == null
+                ? string.Empty : character.settings.rebirthDifficulty.ToString();
+            var rebirth = character.stats == null ? -1L : character.stats.rebirthNumber;
+            return new SaveStateFingerprint(
+                string.IsNullOrEmpty(serialized) ? string.Empty
+                    : EpochHash.Sha256(serialized.Trim()),
+                character.version, character.lastTime, rebirth, difficulty,
+                character.highestBoss, character.highestHardBoss,
+                character.highestSadisticBoss, CaptureRunSignature(character));
+        }
+
+        private static SaveStateFingerprint TryCaptureLiveSaveFingerprint()
+        {
+            try
+            {
+                return Character == null || Character.importExport == null ? null
+                    : CaptureLiveSaveFingerprint(Character.importExport.getBase64Data(), Character);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string CaptureRunSignature(Character character)
+        {
+            if (character == null) return "missing-character";
+            var rebirth = character.stats == null ? -1L : character.stats.rebirthNumber;
+            var difficulty = character.settings == null ? "missing-difficulty"
+                : character.settings.rebirthDifficulty.ToString();
+            var challenge = character.challenges == null ? "missing-challenges"
+                : (character.challenges.inChallenge ? "active:" : "none:")
+                  + character.challenges.curChallengeType;
+            return rebirth + "|" + difficulty + "|next="
+                   + character.nextRebirthDifficulty + "|" + challenge;
+        }
+
+        private static string CaptureRunSignature(PlayerData data)
+        {
+            if (data == null) return "missing-player-data";
+            var rebirth = data.stats == null ? -1L : data.stats.rebirthNumber;
+            var difficulty = data.settings == null ? "missing-difficulty"
+                : data.settings.rebirthDifficulty.ToString();
+            var challenge = data.challenges == null ? "missing-challenges"
+                : (data.challenges.inChallenge ? "active:" : "none:")
+                  + data.challenges.curChallengeType;
+            return rebirth + "|" + difficulty + "|next="
+                   + data.nextRebirthDifficulty + "|" + challenge;
+        }
+
+        private static ControllerIdentity CaptureControllerIdentity()
+        {
+            return new ControllerIdentity(ObjectIdentity(Character), ObjectIdentity(Controller),
+                ObjectIdentity(PlayerController));
+        }
+
+        private static int ObjectIdentity(object value)
+        {
+            return value == null ? 0 : RuntimeHelpers.GetHashCode(value);
+        }
+
+        private static bool TryRebindGameControllers(out string error)
+        {
+            error = string.Empty;
+            try
+            {
+                var character = FindObjectOfType<Character>();
+                var playerController = FindObjectOfType<PlayerController>();
+                if (character == null)
+                {
+                    error = "Character was not rediscovered";
+                    return false;
+                }
+                if (character.inventoryController == null || playerController == null
+                    || character.importExport == null || character.saveLoad == null
+                    || character.mainMenu == null)
+                {
+                    error = "one or more required native controllers are null";
+                    return false;
+                }
+                Character = character;
+                Controller = character.inventoryController;
+                PlayerController = playerController;
+                return CaptureControllerIdentity().IsComplete;
+            }
+            catch (Exception rebindError)
+            {
+                error = rebindError.GetType().Name + ": " + rebindError.Message;
+                return false;
             }
         }
 
         // Stuff on a very short timer
         void FastAllocationRoutine()
         {
+            ObserveGameEpochTransitions();
             if (!IsAutomationReady)
                 return;
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
 
             RefreshAllocationOwnership();
-            using (ExecutionSafety.BeginCycle("fast allocation", CurrentAutopilotConfig))
+            ExecutionSafety.ReportHold("typed-intent:fast-allocation",
+                "Fast loadout/allocation mutations are held until both expose typed child intents.");
+            PendingDecisionPublication heldPublication;
+            if (_pendingDecision.TryGet(GameEpochController.Shared.Current, out heldPublication))
             {
-                try
-                {
-                    if ((Settings.ManageInventory || AutopilotWants(x => x.ManageInventory || x.ManageAdventure || x.ManageBosses))
-                        && !Controller.midDrag)
-                        TryRunMutation("fast progression loadout", MutationClass.Loadout,
-                            ExecutionSafety.OwnerFor(MutationClass.Loadout),
-                            () => ProgressionLoadoutOptimizer.Manage());
-                    if (ActiveProfile != null && AutopilotWants(x => x.ManageAllocations))
-                        TryRunMutation("fast allocations", MutationClass.Allocation,
-                            AllocationOwner, () => ActiveProfile.DoAllocations());
-                }
-                catch (Exception e)
-                {
-                    Log("Fast allocation error: " + e.Message);
-                    _pendingTransactionComplete = false;
-                    _pendingTransactionError = string.IsNullOrEmpty(_pendingTransactionError)
-                        ? "Fast allocation " + e.GetType().Name + ": " + e.Message
-                        : _pendingTransactionError + "; fast allocation " + e.GetType().Name + ": " + e.Message;
-                }
+                heldPublication.TransactionComplete = false;
+                heldPublication.TransactionError = "Fast loadout/allocation typed intents unavailable";
             }
 
             /*
@@ -1127,13 +1588,14 @@ namespace NGUInjector
             pending decision only after this sweep, when all cooperating mutation loops have
             reached their stable state. Any allocation failure marks the cycle partial.
             */
-            if (_decisionPublishPending && Autopilot != null)
+            PendingDecisionPublication publication;
+            if (Autopilot != null && _pendingDecision.TryTake(
+                    GameEpochController.Shared.Current, out publication))
             {
                 try
                 {
-                    Autopilot.PublishDecisionAfterAutomation(_pendingTransactionComplete,
-                        _pendingTransactionError);
-                    _decisionPublishPending = false;
+                    Autopilot.PublishDecisionAfterAutomation(publication.TransactionComplete,
+                        publication.TransactionError);
                 }
                 catch (Exception e)
                 {
@@ -1145,127 +1607,13 @@ namespace NGUInjector
         // Stuff on a very short timer
         void QuickStuff()
         {
+            ObserveGameEpochTransitions();
             if (!IsAutomationReady)
                 return;
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
-
-            RefreshAllocationOwnership();
-            using (ExecutionSafety.BeginCycle("quick combat and rewards", CurrentAutopilotConfig))
-            {
-
-            //Turn on autoattack if we're in ITOPOD and its not on
-            if (Settings.AutoQuestITOPOD && Character.adventureController.zone >= 1000 && !Character.adventure.autoattacking && !Settings.CombatEnabled)
-            {
-                TryRunMutation("ITOPOD autoattack toggle", MutationClass.Combat,
-                    MutationOwner.Legacy, () => Character.adventureController.idleAttackMove.setToggle());
-            }
-
-            if (Settings.AutoFight || AutopilotWants(x => x.ManageBosses))
-            {
-                var combatOwner = AutopilotWants(x => x.ManageBosses)
-                    ? MutationOwner.Autopilot : MutationOwner.Legacy;
-                MutationLease combatLease;
-                string combatHold;
-                if (!ExecutionSafety.TryAcquire(MutationClass.Combat, combatOwner,
-                    out combatLease, out combatHold) || !combatLease.IsCurrent)
-                {
-                    ExecutionSafety.ReportHold("lease:quick-boss-combat",
-                        "Boss combat held: " + (string.IsNullOrEmpty(combatHold)
-                            ? "execution lease became stale" : combatHold));
-                    return;
-                }
-                if (Autopilot != null && Autopilot.TryTitan7PuzzleStep())
-                    return;
-                var needsAllocation = false;
-                var bc = Character.bossController;
-                if (!bc.isFighting && !bc.nukeBoss)
-                {
-                    if (Character.bossID == 0)
-                        needsAllocation = true;
-
-                    if (CombatHelpers.CanNukeCurrentBoss(bc.character))
-                    {
-                        bc.startNuke();
-                        LogAction(bc.isFighting && bc.nukeBoss ? "BOSS" : "REJECTED",
-                            bc.isFighting && bc.nukeBoss
-                                ? "Boss nuke started [confirmed by BossController state]"
-                                : "Boss nuke request produced no state transition");
-                    }
-                    else
-                    {
-                        double expectedKillSeconds;
-                        if (CombatHelpers.CanWinCurrentBoss(bc.character, out expectedKillSeconds))
-                        {
-                            bc.beginFight();
-                            bc.stopButton.gameObject.SetActive(true);
-                            LogAction(bc.isFighting ? "BOSS" : "REJECTED",
-                                bc.isFighting
-                                    ? "Exact-viability boss fight started; expected kill "
-                                      + expectedKillSeconds.ToString("0.00")
-                                      + "s [confirmed by BossController state]"
-                                    : "Boss fight request produced no state transition");
-                        }
-                    }
-                }
-
-                if (needsAllocation)
-                {
-                    if (ActiveProfile != null)
-                        TryRunMutation("post-boss allocations", MutationClass.Allocation,
-                            AllocationOwner, () => ActiveProfile.DoAllocations());
-                }
-            }
-
-            if (Settings.AutoMoneyPit || AutopilotWants(x => x.ManageMoneyPit))
-            {
-                var autopilotPit = AutopilotWants(x => x.ManageMoneyPit);
-                TryRunMutation("Money Pit", MutationClass.MoneyPit,
-                    autopilotPit ? MutationOwner.Autopilot : MutationOwner.Legacy,
-                    // Full autopilot's shared Gold ledger inside MoneyPitManager is the only
-                    // reserve authority. 1e5 is the native minimum toss, not a second policy.
-                    () => MoneyPitManager.CheckMoneyPit(autopilotPit
-                        ? 1e5 : Settings.MoneyPitThreshold));
-            }
-
-            if (Settings.AutoSpin || AutopilotWants(x => x.ManageDailySpin))
-            {
-                TryRunMutation("daily spin", MutationClass.DailySpin,
-                    AutopilotWants(x => x.ManageDailySpin)
-                        ? MutationOwner.Autopilot : MutationOwner.Legacy,
-                    () => MoneyPitManager.DoDailySpin());
-            }
-
-            if (Settings.AutoQuestITOPOD)
-            {
-                TryRunMutation("legacy ITOPOD routing", MutationClass.Adventure,
-                    MutationOwner.Legacy, MoveToITOPOD);
-            }
-
-            if (Settings.AutoSpellSwap || AutopilotWants(x => x.ManageBloodMagic))
-            {
-                var spaghetti = (Character.bloodMagicController.lootBonus() - 1) * 100;
-                var counterfeit = ((Character.bloodMagicController.goldBonus() - 1)) * 100;
-                var number = Character.bloodMagic.rebirthPower;
-                var autopilotBlood = AutopilotWants(x => x.ManageBloodMagic);
-                // Native automation divides Blood equally, then lets invalid low shares
-                // fail while Rebirth still consumes its share. Full mode owns the cast
-                // decision, so disable that lossy splitter and cast one best spell.
-                TryRunMutation("Blood spell automation toggles", MutationClass.BloodMagic,
-                    autopilotBlood ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
-                    {
-                        Character.bloodMagic.rebirthAutoSpell = !autopilotBlood
-                                                                 && Settings.BloodNumberThreshold > 0 && number < Settings.BloodNumberThreshold;
-                        Character.bloodMagic.goldAutoSpell = !autopilotBlood
-                                                              && Settings.CounterfeitThreshold > 0 && counterfeit < Settings.CounterfeitThreshold;
-                        Character.bloodMagic.lootAutoSpell = !autopilotBlood
-                                                              && Settings.SpaghettiThreshold > 0 && spaghetti < Settings.SpaghettiThreshold;
-                        Character.bloodSpells.updateGoldToggleState();
-                        Character.bloodSpells.updateLootToggleState();
-                        Character.bloodSpells.updateRebirthToggleState();
-                    });
-            }
-            }
+            ExecutionSafety.ReportHold("typed-intent:quick-combat-rewards",
+                "Quick combat, reward, Money Pit, spin, ITOPOD, and Blood mutations are held until their typed child intents are integrated.");
         }
 
         // Runs every second; tactical combat and allocations have separate faster loops.
@@ -1274,16 +1622,19 @@ namespace NGUInjector
             var transactionComplete = false;
             var transactionError = string.Empty;
             var transactionErrors = new List<string>();
+            GameEpochToken transactionEpoch = null;
             var rejectionEpochBefore = System.Threading.Interlocked.Read(ref _rejectionEpoch);
-            ExecutionCycle executionCycle = null;
+            RootTransaction mutationRoot = null;
             long executionStateVersion = -1;
             try
             {
+                ObserveGameEpochTransitions();
                 if (!IsAutomationReady)
                 {
                     _timeLeft = 1f;
                     return;
                 }
+                transactionEpoch = GameEpochController.Shared.Current;
                 // File watcher callbacks are deliberately drained only after the
                 // gameplay synchronization barrier.  Allocation reload invokes its
                 // allocation pass, so even a seemingly read-only profile change can
@@ -1292,9 +1643,30 @@ namespace NGUInjector
                 if (Autopilot != null)
                     Autopilot.Tick();
                 RefreshAllocationOwnership();
-                executionCycle = ExecutionSafety.BeginCycle("one-second automation transaction",
-                    CurrentAutopilotConfig);
+                if (Autopilot == null)
+                {
+                    _timeLeft = 1f;
+                    return;
+                }
+                var rootBegin = Autopilot.BeginAutomationRoot(
+                    "one-second automation transaction");
+                if (rootBegin.Status != RootBeginStatus.Begun || rootBegin.Transaction == null)
+                {
+                    ExecutionSafety.ReportHold("automation-root",
+                        "One-second automation held: " + rootBegin.Reason);
+                    _timeLeft = 1f;
+                    return;
+                }
+                mutationRoot = rootBegin.Transaction;
                 executionStateVersion = ExecutionSafety.StateVersion;
+                Autopilot.ExecutePlannedMutations(mutationRoot);
+                if (mutationRoot.IsClosed
+                    || !string.Equals(mutationRoot.Token.EpochFingerprint,
+                        CurrentGameEpochFingerprint, StringComparison.Ordinal))
+                {
+                    transactionErrors.Add("automation root closed during typed plan execution");
+                    throw new InvalidOperationException(transactionErrors[0]);
+                }
 
                 if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 {
@@ -1302,79 +1674,23 @@ namespace NGUInjector
                     return;
                 }
 
-                RunAutomationStep("ITOPOD routing", MutationClass.Adventure,
-                    MutationOwner.Legacy, () => ZoneHelpers.OptimizeITOPOD(), transactionErrors);
-
+                ExecutionSafety.ReportHold("typed-intent:itopod-routing",
+                    "ITOPOD routing is held until its post-kill controller is integrated.");
                 if (AutopilotWants(x => x.ManageBeards))
-                    RunAutomationStep("Beards", MutationClass.Beards,
-                        MutationOwner.Autopilot, () => BeardManager.Manage(), transactionErrors);
-
-                RunAutomationStep("Inventory", MutationClass.Inventory,
-                    AutopilotWants(x => x.ManageInventory)
-                        ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
-                {
-                    if ((Settings.ManageInventory || AutopilotWants(x => x.ManageInventory)) && !Controller.midDrag)
-                    {
-                        var converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.EnsureFiltered(converted);
-                        // A transient event loadout keeps exact physical references
-                        // for rollback. While that lock is held, any merge, boost,
-                        // conversion, trash, or daycare move could consume one of
-                        // those temporarily unequipped objects and make restoration
-                        // impossible. Filters remain fail-closed, but topology waits.
-                        if (LoadoutManager.CurrentLock != LockType.None)
-                            return;
-                        _invManager.ManageConvertibles(converted);
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.MergeEquipped(converted);
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.MergeInventory(converted);
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.MergeBoosts(converted);
-                        // Native set-completion flags are awarded by the Item List
-                        // controller, not by mergeAll itself.  Claim them immediately
-                        // so an item that just reached level 100 cannot leave Adventure
-                        // stuck in boss-snipe mode until the player opens that menu.
-                        Character.allItemList.checkforBonuses();
-                        _invManager.TrashProvenRedundantItem();
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.MergeGuffs(converted);
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        var immediateBoostSlots = _invManager.GetImmediateBoostSlots(converted);
-                        _invManager.BoostInventory(immediateBoostSlots);
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.BoostInfinityCubeToSoftcaps();
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        var boostSlots = _invManager.GetBoostSlots(converted);
-                        _invManager.BoostInventory(boostSlots);
-                        _invManager.BoostInfinityCube();
-                        converted = Character.inventory.GetConvertedInventory().ToArray();
-                        _invManager.ManageBoostConversion();
-
-                        // Re-evaluate the whole equipped set after merges/boosts because
-                        // those operations can change both candidate stats and legality.
-                        ProgressionLoadoutOptimizer.Manage();
-                    }
-                }, transactionErrors);
-
+                    ExecutionSafety.ReportHold("typed-intent:beards",
+                        "Beard mutation is held; the exact marginal oracle is shadow-only.");
+                if (Settings.ManageInventory || AutopilotWants(x => x.ManageInventory))
+                    ExecutionSafety.ReportHold("typed-intent:inventory",
+                        "Bulk inventory mutation is held until its topology operations are coordinator child intents.");
                 if (AutopilotWants(x => x.AllowEndSequence))
-                    RunAutomationStep("terminal END placement and trigger", MutationClass.EndSequence,
-                        MutationOwner.Autopilot, () => _invManager.TryExecuteEndSequence(),
-                        transactionErrors);
-
-                // MacGuffin selection occurs inside the inventory transaction. Cast permanent
-                // MacGuffin Blood spells only afterward so their levels compound the chosen set.
+                    ExecutionSafety.ReportHold("typed-intent:end-sequence",
+                        "END execution is disabled for this deployment.");
                 if (AutopilotWants(x => x.ManageBloodMagic))
-                    RunAutomationStep("Blood spell policy", MutationClass.BloodMagic,
-                        MutationOwner.Autopilot, () => Autopilot.ManageBloodSpell(), transactionErrors);
-
-                // Daycare timers and completed-item rotation are independent of bulk
-                // inventory manipulation, so a drag or disabled merge policy must not
-                // stall this permanent progression system.
-                if (AutopilotWants(x => x.ManageInventory) && !Controller.midDrag
-                    && LoadoutManager.CurrentLock == LockType.None)
-                    RunAutomationStep("Daycare", MutationClass.Daycare,
-                        MutationOwner.Autopilot, () => DaycareManager.Manage(), transactionErrors);
+                    ExecutionSafety.ReportHold("typed-intent:blood",
+                        "Blood spell execution is held until its typed delivery/cast intent is integrated.");
+                if (AutopilotWants(x => x.ManageInventory) && !Controller.midDrag)
+                    ExecutionSafety.ReportHold("typed-intent:daycare",
+                        "Daycare mutation is held until its exact exchange is a coordinator child intent.");
 
                 //if (Settings.ManageInventory && !Controller.midDrag)
                 //{
@@ -1418,129 +1734,34 @@ namespace NGUInjector
                     || AutopilotWants(x => x.ManageAdventure)
                     || Settings.ManageGoldLoadouts && Settings.NeedsGoldSwap())
                 {
-                    RunAutomationStep("Titan loadout", MutationClass.TitanLoadout,
-                        ExecutionSafety.OwnerFor(MutationClass.TitanLoadout),
-                        () => LoadoutManager.TryTitanSwap(), transactionErrors);
-                    // Do not let the clock alone stage/lock Titan diggers. Gear preflight
-                    // either acquired the Titan lock or the currently equipped set already
-                    // satisfies the authoritative combat gate.
-                    var titanDiggerOwnerEnabled = AutopilotWants(x => x.ManageDiggers)
-                                                  || Settings.GlobalEnabled && Settings.ManageDiggers;
-                    if (titanDiggerOwnerEnabled && (LoadoutManager.CurrentLock == LockType.Titan
-                        || ZoneHelpers.HighestAvailableTitan() >= 0))
-                        RunAutomationStep("Titan diggers", MutationClass.Diggers,
-                            ExecutionSafety.OwnerFor(MutationClass.Diggers),
-                            () => DiggerManager.TryTitanSwap(), transactionErrors);
+                    ExecutionSafety.ReportHold("typed-intent:titan-execution",
+                        "Titan loadout/digger staging is held until TitanExecutionManager is wired to the root.");
                 }
 
                 if ((Settings.ManageYggdrasil || AutopilotWants(x => x.ManageYggdrasil)) && Character.buttons.yggdrasil.interactable)
                 {
-                    RunAutomationStep("Yggdrasil", MutationClass.Yggdrasil,
-                        AutopilotWants(x => x.ManageYggdrasil)
-                            ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
+                    if (mutationRoot == null || mutationRoot.IsClosed)
                     {
-                        _yggManager.ManageYggHarvest();
-                        _yggManager.CheckFruits();
-                    }, transactionErrors);
+                        transactionErrors.Add("Yggdrasil: typed mutation root is unavailable");
+                    }
+                    else
+                    {
+                        _yggManager.ManageYggHarvest(mutationRoot);
+                        if (!mutationRoot.IsClosed)
+                            _yggManager.CheckFruits(mutationRoot);
+                    }
                 }
 
                 if (Settings.AutoBuyEM && Character.highestBoss >= 17)
                 {
-                    MutationLease purchaseLease;
-                    string purchaseHold;
-                    if (!ExecutionSafety.TryAcquire(MutationClass.PermanentSpend,
-                        MutationOwner.Legacy, out purchaseLease, out purchaseHold)
-                        || !purchaseLease.IsCurrent)
-                    {
-                        ExecutionSafety.ReportHold("lease:legacy-em-purchases",
-                            "Legacy Energy/Magic/R3 purchases held: "
-                            + (string.IsNullOrEmpty(purchaseHold)
-                                ? "execution lease became stale" : purchaseHold));
-                    }
-                    else
-                    {
-                    var ePurchase = Character.energyPurchases;
-                    var mPurchase = Character.magicPurchases;
-                    var r3Purchase = Character.res3Purchases;
-
-                    var energy = ePurchase.customAllCost() > 0;
-                    var r3 = Character.res3.res3On && r3Purchase.customAllCost() > 0;
-                    var magic = Character.highestBoss >= 37 && mPurchase.customAllCost() > 0;
-
-                    long total = 0;
-
-                    if (energy)
-                    {
-                        total += ePurchase.customAllCost();
-                    }
-                    
-                    if (magic)
-                    {
-                        total += mPurchase.customAllCost();
-                    }
-
-                    if (r3)
-                    {
-                        total += r3Purchase.customAllCost();
-                    }
-
-                    if (total > 0)
-                    {
-                        var numPurchases = Math.Floor((double)(Character.realExp / total));
-
-                        if (numPurchases > 0)
-                        {
-                            var t = string.Empty;
-                            if (energy)
-                            {
-                                t += "/exp";
-                            }
-
-                            if (magic)
-                            {
-                                t += "/magic";
-                            }
-
-                            if (r3)
-                            {
-                                t += "/res3";
-                            }
-
-                            t = t.Substring(1);
-
-                            Log($"Buying {numPurchases} {t} purchases");
-                            for (var i = 0; i < numPurchases; i++)
-                            {
-                                if (energy)
-                                {
-                                    var ePurchaseMethod = ePurchase.GetType().GetMethod("buyCustomAll",
-                                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                    ePurchaseMethod?.Invoke(ePurchase, null);
-                                }
-
-                                if (magic)
-                                {
-                                    var mPurchaseMethod = mPurchase.GetType().GetMethod("buyCustomAll",
-                                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                    mPurchaseMethod?.Invoke(mPurchase, null);
-                                }
-
-                                if (r3)
-                                {
-                                    var r3PurchaseMethod = r3Purchase.GetType().GetMethod("buyCustomAll",
-                                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                    r3PurchaseMethod?.Invoke(r3Purchase, null);
-                                }
-                            }
-                        }
-                    }
-                    }
+                    ExecutionSafety.ReportHold("typed-intent:legacy-em-purchases",
+                        "Legacy Energy/Magic/R3 purchases are held until the exact purchase catalog owns the transaction.");
                 }
 
                 if (!AutopilotWants(x => x.ManageAllocations) && Settings.GlobalEnabled
                     && ActiveProfile != null)
-                    RunAutomationStep("Allocations", MutationClass.Allocation,
-                        MutationOwner.Legacy, () => ActiveProfile.DoAllocations(), transactionErrors);
+                    ExecutionSafety.ReportHold("typed-intent:legacy-allocations",
+                        "Legacy allocation mutation is held until ExactResourceAllocator owns the child intent.");
 
                 // Full autopilot already made one conservation-aware Blood decision
                 // after MacGuffin selection.  Running the legacy threshold caster as
@@ -1548,24 +1769,24 @@ namespace NGUInjector
                 if (Settings.CastBloodSpells && !AutopilotWants(x => x.ManageBloodMagic))
                 {
                     if (ActiveProfile != null)
-                    RunAutomationStep("Blood spells", MutationClass.BloodMagic,
-                        MutationOwner.Legacy, () => ActiveProfile.CastBloodSpells(), transactionErrors);
+                        ExecutionSafety.ReportHold("typed-intent:legacy-blood",
+                            "Legacy Blood spell mutation is held until a typed cast intent is integrated.");
                 }
 
                 if ((Settings.AutoQuest || AutopilotWants(x => x.ManageQuests)) && Character.buttons.beast.interactable)
                 {
-                    RunAutomationStep("Quests", MutationClass.Quests,
-                        AutopilotWants(x => x.ManageQuests)
-                            ? MutationOwner.Autopilot : MutationOwner.Legacy, () =>
+                    if (mutationRoot == null || mutationRoot.IsClosed)
                     {
-                        if (!Character.inventoryController.midDrag)
-                        {
-                            var converted = Character.inventory.GetConvertedInventory().ToArray();
-                            _invManager.ManageQuestItems(converted);
-                            _questManager.CheckQuestTurnin();
-                            _questManager.ManageQuests();
-                        }
-                    }, transactionErrors);
+                        transactionErrors.Add("Quests: typed mutation root is unavailable");
+                    }
+                    else if (!Character.inventoryController.midDrag)
+                    {
+                        ExecutionSafety.ReportHold("quest-inventory-root-adapter",
+                            "Quest-item merge/offer service is held until it exposes typed child intents.");
+                        _questManager.CheckQuestTurnin(mutationRoot);
+                        if (!mutationRoot.IsClosed)
+                            _questManager.ManageQuests(mutationRoot);
+                    }
                 }
 
                 // Rebirth is the transaction commit boundary. Exceptions and normal-return
@@ -1578,13 +1799,8 @@ namespace NGUInjector
                 if (transactionErrors.Count == 0 && (Settings.AutoRebirth
                     || Autopilot != null && Autopilot.CanExecuteIrreversible && Autopilot.Config.AllowRebirths))
                 {
-                    var rebirthOwner = Autopilot != null && Autopilot.CanExecuteIrreversible
-                                      && Autopilot.Config.AllowRebirths
-                        ? MutationOwner.Autopilot : MutationOwner.Legacy;
-                    var rebirthProfile = RebirthProfile(rebirthOwner);
-                    if (rebirthProfile != null)
-                        RunAutomationStep("Rebirth", MutationClass.Rebirth, rebirthOwner,
-                            () => rebirthProfile.DoRebirth(), transactionErrors);
+                    ExecutionSafety.ReportHold("typed-intent:rebirth",
+                        "Rebirth/challenge execution is held until the exact route intent is wired to this root.");
                 }
                 if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore
                     && transactionErrors.Count == 0)
@@ -1600,32 +1816,33 @@ namespace NGUInjector
             }
             finally
             {
-                if (executionCycle != null) executionCycle.Dispose();
+                if (mutationRoot != null)
+                {
+                    var epochChanged = !string.Equals(mutationRoot.Token.EpochFingerprint,
+                        CurrentGameEpochFingerprint, StringComparison.Ordinal);
+                    if (Autopilot != null)
+                        Autopilot.RecordAutomationRoot(mutationRoot,
+                            epochChanged ? "closed-by-epoch-transition" : "closed");
+                    mutationRoot.Dispose();
+                }
             }
-            // Queue publication for the next fast-allocation sweep. Gear work above may
-            // have reclaimed resource pools that are intentionally restored on that cadence.
-            _pendingTransactionComplete = transactionComplete;
-            _pendingTransactionError = transactionError;
-            _decisionPublishPending = Autopilot != null;
+            // A synchronous rebirth/challenge/difficulty may have happened at the commit boundary.
+            // Observe it before publishing anything derived from the old run.
+            ObserveGameEpochTransitions();
+            var currentEpoch = GameEpochController.Shared.Current;
+            if (Autopilot != null && transactionEpoch != null
+                && transactionEpoch.Matches(currentEpoch, EpochWorkScope.ExactGameState)
+                && GameEpochController.Shared.MutationOpen)
+            {
+                // Queue publication for the next fast-allocation sweep. Gear work above may have
+                // reclaimed resource pools that are intentionally restored on that cadence.
+                _pendingDecision.Set(currentEpoch, new PendingDecisionPublication
+                {
+                    TransactionComplete = transactionComplete,
+                    TransactionError = transactionError
+                });
+            }
             _timeLeft = 1f;
-        }
-
-        private static void RunAutomationStep(string name, MutationClass mutationClass,
-            MutationOwner owner, Action action, ICollection<string> errors)
-        {
-            try
-            {
-                TryRunMutation(name, mutationClass, owner, action);
-            }
-            catch (Exception e)
-            {
-                var detail = name + ": " + e.GetType().Name + ": " + e.Message;
-                errors.Add(detail);
-                Log(detail);
-                Log(e.StackTrace);
-                LogAction("REJECTED", name + " subsystem was quarantined for this sweep: "
-                                      + e.GetType().Name + ": " + e.Message);
-            }
         }
 
         internal static void LoadAllocation()
@@ -1686,142 +1903,19 @@ namespace NGUInjector
 
         private void SnipeZone()
         {
+            ObserveGameEpochTransitions();
             if (!IsAutomationReady)
                 return;
             if (!Settings.GlobalEnabled && (Autopilot == null || !Autopilot.CanExecuteSafe))
                 return;
-
-            RefreshAllocationOwnership();
-            using (ExecutionSafety.BeginCycle("Adventure routing", CurrentAutopilotConfig))
-            {
-            var adventureOwner = AutopilotWants(x => x.ManageAdventure)
-                ? MutationOwner.Autopilot : MutationOwner.Legacy;
-            MutationLease adventureLease;
-            string adventureHold;
-            if (!ExecutionSafety.TryAcquire(MutationClass.Adventure, adventureOwner,
-                out adventureLease, out adventureHold) || !adventureLease.IsCurrent)
-            {
-                ExecutionSafety.ReportHold("lease:adventure-routing",
-                    "Adventure routing held: " + (string.IsNullOrEmpty(adventureHold)
-                        ? "execution lease became stale" : adventureHold));
-                return;
-            }
-
-            //If tm ever drops to 0, reset our gold loadout stuff
-            if (Character.machine.realBaseGold == 0.0 && !Settings.DoGoldSwap)
-            {
-                Log("Time Machine Gold is 0. Lets reset gold snipe zone.");
-                Settings.DoGoldSwap = true;
-                Settings.TitanMoneyDone = new bool[ZoneHelpers.TitanZones.Length];
-            }
-
-            //This logic should trigger only if Time Machine is ready
-            if (Character.buttons.brokenTimeMachine.interactable)
-            {
-                if (Character.machine.realBaseGold == 0.0)
-                {
-                    _combManager.ManualZone(0, false, false, false, true, false);
-                    return;
-                }
-                //Go to our gold loadout zone next to get a high gold drop
-                if (Settings.ManageGoldLoadouts && Settings.DoGoldSwap && Settings.GoldDropLoadout.Length > 0)
-                {
-                    if (LoadoutManager.TryGoldDropSwap())
-                    {
-                        var bestZone = ZoneStatHelper.GetBestZone();
-                        _furthestZone = ZoneHelpers.GetMaxReachableZone(false);
-                        
-                        _combManager.ManualZone(bestZone.Zone, true, bestZone.FightType == 1, false, bestZone.FightType == 2, false);
-                        return;
-                    }
-                }
-            }
-
-            var questZone = _questManager.IsQuesting();
-
-            if (Autopilot != null && Autopilot.ControlAdventure(_combManager, _questManager))
-                return;
-            if (!Settings.CombatEnabled || Settings.AdventureTargetITOPOD || !ZoneHelpers.ZoneIsTitan(Settings.SnipeZone) ||
-                ZoneHelpers.ZoneIsTitan(Settings.SnipeZone) &&
-                !ZoneHelpers.TitanSpawningSoon(Array.IndexOf(ZoneHelpers.TitanZones, Settings.SnipeZone)))
-            {
-                if (questZone > 0)
-                {
-                    if (Settings.QuestCombatMode == 0)
-                    {
-                        _combManager.ManualZone(questZone, false, false, false, Settings.QuestFastCombat, Settings.BeastMode);
-                    }
-                    else
-                    {
-                        _combManager.IdleZone(questZone, false, false);
-                    }
-
-                    return;
-                }
-            }
-
-            if (!Settings.CombatEnabled)
-                return;
-
-            var tempZone = Settings.AdventureTargetITOPOD ? 1000 : Settings.SnipeZone;
-            if (tempZone < 1000)
-            {
-                if (!CombatManager.IsZoneUnlocked(Settings.SnipeZone))
-                {
-                    tempZone = Settings.AllowZoneFallback ? ZoneHelpers.GetMaxReachableZone(false) : 1000;
-                }
-                else
-                {
-                    if (ZoneHelpers.ZoneIsTitan(Settings.SnipeZone) && !ZoneHelpers.TitanSpawningSoon(Array.IndexOf(ZoneHelpers.TitanZones, Settings.SnipeZone)))
-                    {
-                        tempZone = 1000;
-                    }
-                }
-            }
-
-            if (tempZone >= 1000)
-            {
-                if (Settings.ITOPODCombatMode == 0)
-                {
-                    _combManager.ManualZone(tempZone, false, Settings.ITOPODRecoverHP, Settings.ITOPODPrecastBuffs, Settings.ITOPODFastCombat, Settings.ITOPODBeastMode);
-                }
-                else
-                {
-                    _combManager.IdleZone(tempZone, false, Settings.ITOPODRecoverHP);
-                }
-
-                return;
-            }
-            
-            if (Settings.CombatMode == 0)
-            {
-                _combManager.ManualZone(tempZone, Settings.SnipeBossOnly, Settings.RecoverHealth, Settings.PrecastBuffs, Settings.FastCombat, Settings.BeastMode);
-            }
-            else
-            {
-                _combManager.IdleZone(tempZone, Settings.SnipeBossOnly, Settings.RecoverHealth);
-            }
-            }
+            ExecutionSafety.ReportHold("typed-intent:adventure-routing",
+                "Adventure routing/combat is held until CombatManager exposes coordinator child intents.");
         }
 
         private void MoveToITOPOD()
         {
-            if (!Settings.GlobalEnabled)
-                return;
-
-            if (_questManager.IsQuesting() >= 0)
-                return;
-
-            if (Settings.CombatEnabled)
-                return;
-
-            if (Settings.DoGoldSwap)
-                return;
-
-            //If we're not in ITOPOD, move there if its set
-            if (Character.adventureController.zone >= 1000 || !Settings.AutoQuestITOPOD) return;
-            Log($"Moving to ITOPOD to idle.");
-            _combManager.MoveToZone(1000);
+            ExecutionSafety.ReportHold("typed-intent:itopod-routing",
+                "Legacy ITOPOD movement is held until the typed post-kill/range controller is integrated.");
         }
 
         private void DumpEquipped()

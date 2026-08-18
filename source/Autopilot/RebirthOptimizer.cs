@@ -6,15 +6,608 @@ using NGUInjector.Managers;
 /*
 FILE PURPOSE
 
-RebirthOptimizer searches one-second run ages and named mechanic events, scoring compounded
-persistent growth, repeatable catch-up Boss EXP, AP, and cap compression. Ordinary candidates may
-project an Attack or Defense Number below the currently banked multiplier because the native game
-permits that reset and persistent rewards can repay it. The projected/current ratio is therefore a
-cost in the counterfactual score, not an eligibility gate. Reset-local unfinished work, replay time,
-and reachable boss chains must be modeled here rather than hidden behind fixed timers.
+RebirthOptimizer contains two deliberately separated policies. RebirthTransitionKernel and
+RebirthRouteEvaluator are pure source-order mechanics: Number is replaced by the exact preview,
+reset replay starts at Boss 0, every supplied Boss and Attack-training event is applied, and Beard
+and MacGuffin conversion uses PermanentMarginalOracle. The incumbent one-run score remains only as
+the live fallback until tasks 28/29 transfer authority from shadow route traces.
+
+The pure route API consumes deterministic Boss replay durations produced by the exact combat
+projection layer. It never invents repeated geometric Number growth. An unreachable terminal has
+ETA=-1 and a separate finite next-continuation event, so unknown recovery cannot authorize reset.
 */
 namespace NGUInjector.Autopilot
 {
+    internal sealed class RebirthPreviewResult
+    {
+        internal double Attack;
+        internal double Defense;
+    }
+
+    internal sealed class RebirthBankInput
+    {
+        internal long[] ActiveBeardTemporaryLevels = new long[0];
+        internal long BeardPerk21Level;
+        internal MacGuffinConversionInput[] EquippedMacGuffins = new MacGuffinConversionInput[0];
+        internal bool SadisticTrollTwo;
+        internal double MacGuffinBoosterMultiplier = 1.0;
+    }
+
+    internal sealed class RebirthBankResult
+    {
+        internal long BeardTrimmings;
+        internal double MacGuffinAccumulatorDelta;
+        internal double MacGuffinDeltaLogEffect;
+        internal double NumberMacGuffinDeltaLogEffect;
+    }
+
+    /*
+    PURE NATIVE-EQUIVALENT REBIRTH STATE
+
+    PersistentNumberFactor is every preview factor other than boss/time/training/Blood. Keeping
+    Blood explicit makes the same-frame Blood preview fixture auditable. Both native preview fields
+    use total Attack Training levels; Defense Training is intentionally absent.
+    */
+    internal sealed class RebirthTransitionState
+    {
+        internal double CurrentAttackNumber = 1.0;
+        internal double CurrentDefenseNumber = 1.0;
+        internal double BossMulti = 1.0;
+        internal double OldBossMulti = 1.0;
+        internal double TimeMulti;
+        internal double OldTimeMulti = 1.0;
+        internal long TotalAttackTrainingLevels;
+        internal double AttackPersistentNumberFactor = 1.0;
+        internal double DefensePersistentNumberFactor = 1.0;
+        internal double BloodPower = 1.0;
+        internal double RunSeconds;
+        internal int BossId;
+        internal long CumulativeBeardTrimmings;
+        internal double CumulativeMacGuffinAccumulatorDelta;
+        internal double CumulativeMacGuffinDeltaLogEffect;
+
+        internal RebirthTransitionState Clone()
+        {
+            return (RebirthTransitionState)MemberwiseClone();
+        }
+    }
+
+    internal static class RebirthTransitionKernel
+    {
+        internal static readonly double[] TimeMultiplierBoundaries =
+            {60.0, 120.0, 180.0, 240.0, 300.0, 420.0, 600.0, 720.0, 900.0, 1800.0, 3600.0};
+
+        internal static double ExactTimeMultiplier(double seconds)
+        {
+            var t = Math.Max(0.0, seconds);
+            if (t < 60.0) return t / 34359738368.0 / 3600.0;
+            if (t < 120.0) return t / 33554432.0 / 3600.0;
+            if (t < 180.0) return t / 518144.0 / 3600.0;
+            if (t < 240.0) return t / 16192.0 / 3600.0;
+            if (t < 300.0) return t / 2048.0 / 3600.0;
+            if (t < 420.0) return t / 512.0 / 3600.0;
+            if (t < 600.0) return t / 128.0 / 3600.0;
+            if (t < 720.0) return t / 32.0 / 3600.0;
+            if (t < 900.0) return t / 8.0 / 3600.0;
+            if (t < 1800.0) return t / 4.0 / 3600.0;
+            if (t < 3600.0) return t / 2.0 / 3600.0;
+            return 1.0 + t / 172800.0;
+        }
+
+        internal static long AttackTrainingStep(long totalAttackLevels)
+        {
+            return Math.Max(0L, totalAttackLevels) / 10000L + 1L;
+        }
+
+        internal static RebirthPreviewResult Preview(RebirthTransitionState state)
+        {
+            if (state == null) throw new ArgumentNullException("state");
+            var step = AttackTrainingStep(state.TotalAttackTrainingLevels);
+            var common = Positive(state.BossMulti) * Positive(state.OldBossMulti)
+                         * Positive(state.OldTimeMulti) * step * Positive(state.TimeMulti)
+                         * Positive(state.BloodPower);
+            return new RebirthPreviewResult
+            {
+                Attack = 1.0 + common * Positive(state.AttackPersistentNumberFactor),
+                Defense = 1.0 + common * Positive(state.DefensePersistentNumberFactor)
+            };
+        }
+
+        internal static RebirthBankResult EvaluateBank(RebirthBankInput input, double rebirthSeconds)
+        {
+            var result = new RebirthBankResult();
+            if (input == null) return result;
+            var beards = input.ActiveBeardTemporaryLevels ?? new long[0];
+            for (var i = 0; i < beards.Length; i++)
+                result.BeardTrimmings += PermanentMarginalOracle.BeardBankDelta(
+                    beards[i], rebirthSeconds, input.BeardPerk21Level);
+            var guffs = input.EquippedMacGuffins ?? new MacGuffinConversionInput[0];
+            for (var i = 0; i < guffs.Length; i++)
+            {
+                if (guffs[i] == null) continue;
+                var bank = PermanentMarginalOracle.EvaluateMacGuffinBank(guffs[i],
+                    rebirthSeconds, input.SadisticTrollTwo,
+                    input.MacGuffinBoosterMultiplier);
+                result.MacGuffinAccumulatorDelta += bank.AccumulatorDelta;
+                result.MacGuffinDeltaLogEffect += bank.WeightedDeltaLogEffect;
+                if (bank.EffectTarget == PermanentEffectTarget.Number)
+                    result.NumberMacGuffinDeltaLogEffect += bank.DeltaLogEffect;
+            }
+            return result;
+        }
+
+        internal static RebirthTransitionState ApplyOrdinaryRebirth(
+            RebirthTransitionState finishedRun, RebirthBankInput bankInput)
+        {
+            if (finishedRun == null) throw new ArgumentNullException("finishedRun");
+            var preview = Preview(finishedRun);
+            if (!FinitePositive(preview.Attack) || !FinitePositive(preview.Defense))
+                throw new InvalidOperationException("rebirth preview must be finite and positive");
+            var bank = EvaluateBank(bankInput, finishedRun.RunSeconds);
+            var successor = finishedRun.Clone();
+            // Native setNewMultis is assignment, never current * (preview/current).
+            successor.CurrentAttackNumber = preview.Attack;
+            successor.CurrentDefenseNumber = preview.Defense;
+            successor.OldBossMulti = finishedRun.BossMulti;
+            successor.OldTimeMulti = finishedRun.TimeMulti;
+            successor.BossMulti = 1.0;
+            successor.TimeMulti = 0.0;
+            successor.TotalAttackTrainingLevels = 0L;
+            successor.BloodPower = 1.0;
+            successor.RunSeconds = 0.0;
+            successor.BossId = 0;
+            successor.CumulativeBeardTrimmings += bank.BeardTrimmings;
+            successor.CumulativeMacGuffinAccumulatorDelta += bank.MacGuffinAccumulatorDelta;
+            successor.CumulativeMacGuffinDeltaLogEffect += bank.MacGuffinDeltaLogEffect;
+            // applyAllMacguffinBonuses precedes setNewMultis, but engage never recalculates the
+            // already-published preview. The Number Guff therefore affects later previews only.
+            var numberGuffMultiplier = Math.Exp(bank.NumberMacGuffinDeltaLogEffect);
+            if (FinitePositive(numberGuffMultiplier))
+            {
+                successor.AttackPersistentNumberFactor *= numberGuffMultiplier;
+                successor.DefensePersistentNumberFactor *= numberGuffMultiplier;
+            }
+            return successor;
+        }
+
+        private static double Positive(double value)
+        {
+            return FinitePositive(value) ? value : 0.0;
+        }
+
+        internal static bool FinitePositive(double value)
+        {
+            return value > 0.0 && !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+    }
+
+    internal sealed class RebirthRouteBossStep
+    {
+        internal int FromBossId;
+        internal int ToBossId;
+        internal double ReplaySeconds;
+        internal double MinimumAttackNumber = 1.0;
+        internal double MinimumDefenseNumber = 1.0;
+        internal double BossMultiFactor = 2.0;
+    }
+
+    internal sealed class RebirthRouteTrainingStep
+    {
+        internal double AtRunSeconds;
+        internal long AttackLevelsGained;
+    }
+
+    internal sealed class RebirthRouteProblem
+    {
+        internal RebirthTransitionState InitialState = new RebirthTransitionState();
+        internal RebirthRouteBossStep[] BossSteps = new RebirthRouteBossStep[0];
+        internal RebirthRouteTrainingStep[] TrainingSteps = new RebirthRouteTrainingStep[0];
+        internal double[] ResetCandidateAges = new double[0];
+        internal double MinimumRebirthSeconds;
+        internal double HorizonSeconds = 172800.0;
+        internal int TargetBossId;
+        internal int MaximumResets = 3;
+        internal int MaximumEvents = 64;
+        internal RebirthBankInput BankInput;
+    }
+
+    internal sealed class RebirthRouteEstimate
+    {
+        internal bool TerminalReached;
+        internal double EtaSeconds = -1.0;
+        internal double NextContinuationEventSeconds = -1.0;
+        internal bool FirstActionIsReset;
+        internal int ResetCount;
+        internal string[] Actions = new string[0];
+        internal RebirthTransitionState FinalState;
+    }
+
+    internal sealed class RebirthRouteComparison
+    {
+        internal RebirthRouteEstimate Continue;
+        internal RebirthRouteEstimate Reset;
+        internal RebirthRouteEstimate Preferred;
+        internal string Reason = string.Empty;
+    }
+
+    /*
+    BOUNDED EVENT ROUTE EVALUATOR
+
+    BossSteps are deterministic replay macro-edges. Their durations can be supplied by task 10's
+    source-order combat kernel without exposing Unity objects here. Attack-training events are
+    applied at every crossed run age and alter only the next native Number preview. Reset branches
+    always call ApplyOrdinaryRebirth, which returns to Boss 0 and preserves only native one-run
+    boss/time memory.
+    */
+    internal static class RebirthRouteEvaluator
+    {
+        private sealed class SearchResult
+        {
+            internal bool Reached;
+            internal double Seconds = double.PositiveInfinity;
+            internal int Resets;
+            internal List<string> Actions = new List<string>();
+            internal RebirthTransitionState Final;
+        }
+
+        internal static RebirthRouteComparison Compare(RebirthRouteProblem problem)
+        {
+            Validate(problem);
+            var continuation = EvaluateContinuation(problem);
+            RebirthRouteEstimate bestReset = null;
+            foreach (var age in CandidateAges(problem))
+            {
+                if (age + 1e-12 < Math.Max(problem.MinimumRebirthSeconds,
+                        problem.InitialState.RunSeconds)) continue;
+                var candidate = EvaluateForcedReset(problem, age);
+                if (Better(candidate, bestReset)) bestReset = candidate;
+            }
+            if (bestReset == null)
+                bestReset = new RebirthRouteEstimate
+                {
+                    NextContinuationEventSeconds = NextContinuationEvent(problem,
+                        problem.InitialState),
+                    FinalState = problem.InitialState.Clone()
+                };
+            var preferred = Better(bestReset, continuation) ? bestReset : continuation;
+            return new RebirthRouteComparison
+            {
+                Continue = continuation,
+                Reset = bestReset,
+                Preferred = preferred,
+                Reason = preferred.TerminalReached
+                    ? (preferred.FirstActionIsReset
+                        ? "shadow reset route reaches the terminal first through exact Boss-0 replay"
+                        : "shadow continuation route reaches the terminal first")
+                    : "terminal is outside the bounded model; preserve the finite continuation edge"
+            };
+        }
+
+        internal static RebirthRouteEstimate EvaluateContinuation(RebirthRouteProblem problem)
+        {
+            Validate(problem);
+            var initial = problem.InitialState.Clone();
+            if (initial.BossId >= problem.TargetBossId)
+                return Estimate(problem, Search(problem, initial, 0.0, 0, 0, true),
+                    initial, false);
+
+            // A continuation is a real finite edge, not the incumbent score's invented HOLD=0.
+            // Advance through exactly the next chronological event, then value the complete
+            // successor with the same reset/Boss replay search used by the reset branch.
+            var edgeSeconds = NextContinuationEvent(problem, initial);
+            if (edgeSeconds < 0.0 || edgeSeconds > problem.HorizonSeconds)
+                return new RebirthRouteEstimate
+                {
+                    NextContinuationEventSeconds = edgeSeconds,
+                    FinalState = initial
+                };
+            var successor = initial.Clone();
+            var actions = new List<string>();
+            var boss = BossStep(problem, successor.BossId);
+            var bossIsNext = boss != null
+                             && successor.CurrentAttackNumber + 1e-12
+                                >= boss.MinimumAttackNumber
+                             && successor.CurrentDefenseNumber + 1e-12
+                                >= boss.MinimumDefenseNumber
+                             && Math.Abs(Math.Max(0.0, boss.ReplaySeconds) - edgeSeconds) <= 1e-12;
+            if (bossIsNext)
+            {
+                AdvanceRun(successor, successor.RunSeconds + edgeSeconds,
+                    problem.TrainingSteps);
+                successor.BossId = boss.ToBossId;
+                successor.BossMulti *= boss.BossMultiFactor;
+                actions.Add("boss:" + boss.FromBossId + "->" + boss.ToBossId);
+            }
+            else
+            {
+                AdvanceRun(successor, successor.RunSeconds + edgeSeconds,
+                    problem.TrainingSteps);
+                actions.Add("continue@" + successor.RunSeconds.ToString("0.###") + "s");
+            }
+            var search = Search(problem, successor, edgeSeconds, 0, 1, true);
+            for (var i = actions.Count - 1; i >= 0; i--)
+                search.Actions.Insert(0, actions[i]);
+            var estimate = Estimate(problem, search, successor, false);
+            estimate.NextContinuationEventSeconds = edgeSeconds;
+            return estimate;
+        }
+
+        internal static RebirthRouteEstimate EvaluateForcedReset(RebirthRouteProblem problem,
+            double resetAge)
+        {
+            Validate(problem);
+            var initial = problem.InitialState.Clone();
+            if (resetAge + 1e-12 < initial.RunSeconds
+                || resetAge + 1e-12 < problem.MinimumRebirthSeconds)
+                return new RebirthRouteEstimate
+                {
+                    NextContinuationEventSeconds = NextContinuationEvent(problem, initial),
+                    FinalState = initial
+                };
+            var wait = resetAge - initial.RunSeconds;
+            if (wait > problem.HorizonSeconds) return new RebirthRouteEstimate
+            {
+                NextContinuationEventSeconds = NextContinuationEvent(problem, initial),
+                FinalState = initial
+            };
+            var preResetActions = new List<string>();
+            AdvanceToResetAge(problem, initial, resetAge, preResetActions);
+            var successor = RebirthTransitionKernel.ApplyOrdinaryRebirth(initial, problem.BankInput);
+            ApplyTrainingAtRunStart(successor, problem.TrainingSteps);
+            var search = Search(problem, successor, wait, 1,
+                1 + preResetActions.Count, true);
+            search.Actions.Insert(0, "reset@" + resetAge.ToString("0.###") + "s");
+            for (var i = preResetActions.Count - 1; i >= 0; i--)
+                search.Actions.Insert(0, preResetActions[i]);
+            search.Resets = Math.Max(1, search.Resets);
+            return Estimate(problem, search, successor, true);
+        }
+
+        private static void AdvanceToResetAge(RebirthRouteProblem problem,
+            RebirthTransitionState state, double resetAge, IList<string> actions)
+        {
+            // Fight Boss progresses independently while the run waits for its checkpoint. Apply
+            // every deterministic supplied replay edge which both fits before the reset age and
+            // is viable with the currently banked Number. This replaces the former one-Boss flag.
+            while (true)
+            {
+                var boss = BossStep(problem, state.BossId);
+                if (boss == null || boss.ToBossId <= boss.FromBossId
+                    || boss.ReplaySeconds < 0.0
+                    || state.RunSeconds + boss.ReplaySeconds > resetAge + 1e-12
+                    || state.CurrentAttackNumber + 1e-12 < boss.MinimumAttackNumber
+                    || state.CurrentDefenseNumber + 1e-12 < boss.MinimumDefenseNumber)
+                    break;
+                AdvanceRun(state, state.RunSeconds + boss.ReplaySeconds,
+                    problem.TrainingSteps);
+                state.BossId = boss.ToBossId;
+                state.BossMulti *= boss.BossMultiFactor;
+                actions.Add("boss:" + boss.FromBossId + "->" + boss.ToBossId);
+            }
+            AdvanceRun(state, resetAge, problem.TrainingSteps);
+        }
+
+        private static SearchResult Search(RebirthRouteProblem problem,
+            RebirthTransitionState state, double absoluteSeconds, int resets, int events,
+            bool allowFurtherResets)
+        {
+            if (state.BossId >= problem.TargetBossId)
+                return new SearchResult
+                {
+                    Reached = true,
+                    Seconds = absoluteSeconds,
+                    Resets = resets,
+                    Final = state.Clone()
+                };
+            if (events >= problem.MaximumEvents || absoluteSeconds >= problem.HorizonSeconds)
+                return new SearchResult
+                {
+                    Seconds = absoluteSeconds,
+                    Final = state.Clone(),
+                    Resets = resets
+                };
+
+            SearchResult best = null;
+            var boss = BossStep(problem, state.BossId);
+            if (boss != null && boss.ToBossId > boss.FromBossId
+                && boss.ReplaySeconds >= 0.0
+                && state.CurrentAttackNumber + 1e-12 >= boss.MinimumAttackNumber
+                && state.CurrentDefenseNumber + 1e-12 >= boss.MinimumDefenseNumber
+                && absoluteSeconds + boss.ReplaySeconds <= problem.HorizonSeconds)
+            {
+                var next = state.Clone();
+                AdvanceRun(next, next.RunSeconds + boss.ReplaySeconds, problem.TrainingSteps);
+                next.BossId = boss.ToBossId;
+                next.BossMulti *= boss.BossMultiFactor;
+                var branch = Search(problem, next, absoluteSeconds + boss.ReplaySeconds,
+                    resets, events + 1, allowFurtherResets);
+                branch.Actions.Insert(0, "boss:" + boss.FromBossId + "->" + boss.ToBossId);
+                if (Better(branch, best)) best = branch;
+            }
+
+            if (allowFurtherResets && resets < problem.MaximumResets)
+            {
+                foreach (var age in CandidateAges(problem))
+                {
+                    if (age <= state.RunSeconds + 1e-12
+                        || age + 1e-12 < problem.MinimumRebirthSeconds) continue;
+                    var wait = age - state.RunSeconds;
+                    if (absoluteSeconds + wait > problem.HorizonSeconds) continue;
+                    var finished = state.Clone();
+                    var preResetActions = new List<string>();
+                    AdvanceToResetAge(problem, finished, age, preResetActions);
+                    var reset = RebirthTransitionKernel.ApplyOrdinaryRebirth(
+                        finished, problem.BankInput);
+                    ApplyTrainingAtRunStart(reset, problem.TrainingSteps);
+                    var branch = Search(problem, reset, absoluteSeconds + wait,
+                        resets + 1, events + 1 + preResetActions.Count, true);
+                    branch.Actions.Insert(0, "reset@" + age.ToString("0.###") + "s");
+                    for (var i = preResetActions.Count - 1; i >= 0; i--)
+                        branch.Actions.Insert(0, preResetActions[i]);
+                    branch.Resets = Math.Max(branch.Resets, resets + 1);
+                    if (Better(branch, best)) best = branch;
+                }
+            }
+            return best ?? new SearchResult
+            {
+                Seconds = absoluteSeconds,
+                Final = state.Clone(),
+                Resets = resets
+            };
+        }
+
+        private static RebirthRouteEstimate Estimate(RebirthRouteProblem problem,
+            SearchResult search, RebirthTransitionState fallback, bool firstReset)
+        {
+            var final = search.Final ?? fallback.Clone();
+            return new RebirthRouteEstimate
+            {
+                TerminalReached = search.Reached,
+                EtaSeconds = search.Reached ? search.Seconds : -1.0,
+                NextContinuationEventSeconds = search.Reached ? search.Seconds
+                    : search.Seconds + NextContinuationEvent(problem, final),
+                FirstActionIsReset = firstReset,
+                ResetCount = search.Resets,
+                Actions = search.Actions.ToArray(),
+                FinalState = final
+            };
+        }
+
+        private static void AdvanceRun(RebirthTransitionState state, double newRunSeconds,
+            IEnumerable<RebirthRouteTrainingStep> source)
+        {
+            var old = state.RunSeconds;
+            foreach (var step in (source ?? Enumerable.Empty<RebirthRouteTrainingStep>())
+                         .Where(x => x != null).OrderBy(x => x.AtRunSeconds))
+            {
+                if (step.AtRunSeconds <= old + 1e-12
+                    || step.AtRunSeconds > newRunSeconds + 1e-12) continue;
+                var gained = Math.Max(0L, step.AttackLevelsGained);
+                state.TotalAttackTrainingLevels = state.TotalAttackTrainingLevels
+                                                  > long.MaxValue - gained
+                    ? long.MaxValue : state.TotalAttackTrainingLevels + gained;
+            }
+            state.RunSeconds = Math.Max(old, newRunSeconds);
+            state.TimeMulti = RebirthTransitionKernel.ExactTimeMultiplier(state.RunSeconds);
+        }
+
+        private static void ApplyTrainingAtRunStart(RebirthTransitionState state,
+            IEnumerable<RebirthRouteTrainingStep> source)
+        {
+            // Native cap compression/insta-train occurs after the reset has banked Number. Encode
+            // it as an age-zero event so it changes the following preview without retroactively
+            // changing the Number just assigned by setNewMultis.
+            foreach (var step in (source ?? Enumerable.Empty<RebirthRouteTrainingStep>())
+                         .Where(x => x != null && x.AtRunSeconds <= 1e-12)
+                         .OrderBy(x => x.AtRunSeconds))
+            {
+                var gained = step.AttackLevelsGained;
+                state.TotalAttackTrainingLevels = state.TotalAttackTrainingLevels
+                                                  > long.MaxValue - gained
+                    ? long.MaxValue : state.TotalAttackTrainingLevels + gained;
+            }
+        }
+
+        private static double NextContinuationEvent(RebirthRouteProblem problem,
+            RebirthTransitionState state)
+        {
+            var bestAge = double.PositiveInfinity;
+            var boss = BossStep(problem, state.BossId);
+            if (boss != null && state.CurrentAttackNumber + 1e-12 >= boss.MinimumAttackNumber
+                && state.CurrentDefenseNumber + 1e-12 >= boss.MinimumDefenseNumber)
+                bestAge = state.RunSeconds + Math.Max(0.0, boss.ReplaySeconds);
+            foreach (var step in problem.TrainingSteps ?? new RebirthRouteTrainingStep[0])
+                if (step != null && step.AtRunSeconds > state.RunSeconds + 1e-12)
+                    bestAge = Math.Min(bestAge, step.AtRunSeconds);
+            foreach (var boundary in RebirthTransitionKernel.TimeMultiplierBoundaries)
+                if (boundary > state.RunSeconds + 1e-12)
+                {
+                    bestAge = Math.Min(bestAge, boundary);
+                    break;
+                }
+            var nextAp = state.RunSeconds < 4100.0 ? 4100.0
+                : 4100.0 + 500.0 * (Math.Floor((state.RunSeconds - 4100.0) / 500.0) + 1.0);
+            bestAge = Math.Min(bestAge, nextAp);
+            return double.IsInfinity(bestAge) ? -1.0 : Math.Max(0.0, bestAge - state.RunSeconds);
+        }
+
+        private static RebirthRouteBossStep BossStep(RebirthRouteProblem problem, int bossId)
+        {
+            return (problem.BossSteps ?? new RebirthRouteBossStep[0])
+                .Where(x => x != null && x.FromBossId == bossId)
+                .OrderBy(x => x.ToBossId).FirstOrDefault();
+        }
+
+        private static double[] CandidateAges(RebirthRouteProblem problem)
+        {
+            return (problem.ResetCandidateAges ?? new double[0])
+                .Where(x => x >= 0.0 && !double.IsNaN(x) && !double.IsInfinity(x))
+                .Distinct().OrderBy(x => x).ToArray();
+        }
+
+        private static bool Better(RebirthRouteEstimate left, RebirthRouteEstimate right)
+        {
+            if (left == null) return false;
+            if (right == null) return true;
+            if (left.TerminalReached != right.TerminalReached) return left.TerminalReached;
+            if (left.TerminalReached && Math.Abs(left.EtaSeconds - right.EtaSeconds) > 1e-12)
+                return left.EtaSeconds < right.EtaSeconds;
+            var leftNext = left.NextContinuationEventSeconds < 0.0
+                ? double.PositiveInfinity : left.NextContinuationEventSeconds;
+            var rightNext = right.NextContinuationEventSeconds < 0.0
+                ? double.PositiveInfinity : right.NextContinuationEventSeconds;
+            return leftNext < rightNext - 1e-12;
+        }
+
+        private static bool Better(SearchResult left, SearchResult right)
+        {
+            if (left == null) return false;
+            if (right == null) return true;
+            if (left.Reached != right.Reached) return left.Reached;
+            if (!left.Reached) return false;
+            if (Math.Abs(left.Seconds - right.Seconds) > 1e-12)
+                return left.Seconds < right.Seconds;
+            return left.Resets < right.Resets;
+        }
+
+        private static void Validate(RebirthRouteProblem problem)
+        {
+            if (problem == null) throw new ArgumentNullException("problem");
+            if (problem.InitialState == null) throw new ArgumentException(
+                "route initial state is required", "problem");
+            if (problem.HorizonSeconds < 0.0 || double.IsNaN(problem.HorizonSeconds)
+                || double.IsInfinity(problem.HorizonSeconds))
+                throw new ArgumentOutOfRangeException("problem", "route horizon must be finite");
+            if (problem.MaximumResets < 0 || problem.MaximumEvents <= 0)
+                throw new ArgumentOutOfRangeException("problem", "route bounds must be positive");
+            if (double.IsNaN(problem.InitialState.RunSeconds)
+                || double.IsInfinity(problem.InitialState.RunSeconds)
+                || problem.InitialState.RunSeconds < 0.0)
+                throw new ArgumentOutOfRangeException("problem", "initial run age must be finite");
+            foreach (var boss in problem.BossSteps ?? new RebirthRouteBossStep[0])
+            {
+                if (boss == null) continue;
+                if (boss.FromBossId < 0 || boss.ToBossId <= boss.FromBossId
+                    || double.IsNaN(boss.ReplaySeconds)
+                    || double.IsInfinity(boss.ReplaySeconds) || boss.ReplaySeconds < 0.0
+                    || !RebirthTransitionKernel.FinitePositive(boss.MinimumAttackNumber)
+                    || !RebirthTransitionKernel.FinitePositive(boss.MinimumDefenseNumber)
+                    || !RebirthTransitionKernel.FinitePositive(boss.BossMultiFactor))
+                    throw new ArgumentOutOfRangeException("problem",
+                        "Boss replay edges must be finite, forward, and positive");
+            }
+            foreach (var training in problem.TrainingSteps ?? new RebirthRouteTrainingStep[0])
+            {
+                if (training == null) continue;
+                if (double.IsNaN(training.AtRunSeconds)
+                    || double.IsInfinity(training.AtRunSeconds)
+                    || training.AtRunSeconds < 0.0 || training.AttackLevelsGained < 0L)
+                    throw new ArgumentOutOfRangeException("problem",
+                        "Attack-training events must be finite and non-negative");
+            }
+        }
+    }
+
     internal sealed class RebirthRecommendation
     {
         internal int TargetSeconds;
@@ -60,7 +653,6 @@ namespace NGUInjector.Autopilot
             internal double ProjectedMultiplier;
             internal double ProjectedGainRatio;
             internal int ProjectedAP;
-            internal double RecoveryEta;
             internal int RemainingCatchupBosses;
             internal double ExpectedCatchupExp;
             internal double ExpectedCatchupExpPerHour;
@@ -400,7 +992,7 @@ namespace NGUInjector.Autopilot
                     c.training.attackEnergy[i], c.training.attackCaps[i]) * remaining);
             var projectedNumberStep = Math.Max(1.0, Math.Floor(projectedAttackLevels / 10000.0) + 1.0);
 
-            var currentTimeMulti = ExactTimeMultiplier(Math.Max(1, elapsed));
+            var currentTimeMulti = RebirthTransitionKernel.ExactTimeMultiplier(Math.Max(1, elapsed));
             var currentBossMulti = Math.Max(1e-300, (double)c.bossMulti);
             var staticFactor = (c.nextAttackMulti - 1.0)
                                / Math.Max(1e-300, currentBossMulti * currentNumberStep * currentTimeMulti);
@@ -415,26 +1007,15 @@ namespace NGUInjector.Autopilot
             var includesBoss = bossEta >= 0 && remaining >= bossEta + 1;
             var projectedBossMulti = currentBossMulti * (includesBoss ? 2.0 : 1.0);
             var projected = 1.0 + staticFactor * projectedBossMulti * projectedNumberStep
-                            * ExactTimeMultiplier(candidate.Time);
+                            * RebirthTransitionKernel.ExactTimeMultiplier(candidate.Time);
             var projectedDefense = 1.0 + staticDefenseFactor * projectedBossMulti * projectedNumberStep
-                                   * ExactTimeMultiplier(candidate.Time);
+                                   * RebirthTransitionKernel.ExactTimeMultiplier(candidate.Time);
             var currentMultiplier = Math.Max(1e-300, (double)c.attackMulti);
             candidate.ProjectedMultiplier = projected;
             candidate.ProjectedGainRatio = Math.Min(projected / currentMultiplier,
                 projectedDefense / Math.Max(1e-300, (double)c.defenseMulti));
-            // While a damaged run is below its persistent record, the same
-            // logarithmic-growth objective has a more useful interpretation: boss
-            // requirements are multiplicative, so required log-stat distance divided
-            // by log(Number gain) is the expected count of repeated cycles needed to
-            // recover. Include the exact current-boss event (a native 2x bossMulti)
-            // and the boss-array ratios instead of imposing "reach record first".
-            var recoveryMode = c.bossID < c.highestBoss;
             var recoveryStart = c.bossID + (includesBoss ? 1 : 0);
             candidate.RemainingCatchupBosses = Math.Max(0, c.highestBoss - recoveryStart);
-            var requiredBossLog = RequiredBossLogDistance(c, recoveryStart, c.highestBoss);
-            candidate.RecoveryEta = candidate.ProjectedGainRatio <= 1.000001
-                ? double.PositiveInfinity
-                : remaining + duration * requiredBossLog / Math.Log(candidate.ProjectedGainRatio);
             candidate.ProjectedAP = candidate.Time < 4100 ? 0 : 1 + (candidate.Time - 4100) / 500;
             var capCompression = ProjectedCapCompression(c, remaining);
             candidate.CapScore = capCompression / duration;
@@ -447,8 +1028,8 @@ namespace NGUInjector.Autopilot
 
             Absolute Number already owned by the save is not a reward from this candidate. Score only the
             incremental projected/current multiplier ratio, plus AP and newly reached persistent cap progress;
-            otherwise the shortest candidate wins merely by amortizing the inherited baseline. During record
-            recovery, retain the exact repeated-cycle ETA when Number is improving.
+            otherwise the shortest candidate wins merely by amortizing the inherited baseline. Boss-record
+            recovery is intentionally absent here; only RebirthRouteEvaluator may publish that route ETA.
             */
             // Catch-up Boss EXP is repeatable persistent income. Normalize it against
             // lifetime EXP so a replay is valuable early without dominating mature
@@ -508,101 +1089,22 @@ namespace NGUInjector.Autopilot
             return baseExp;
         }
 
-        // Compare the two routes at the actual mutation boundary. Route A resets
-        // with the native Number preview and repeats the selected cycle. Route B
-        // waits for the exact projected selected-boss defeat, banks its 2x Normal
-        // bossMulti, then repeats the longer cycle with one fewer catch-up boss.
-        // Both are expressed as remaining wall-clock seconds to remove the exact
-        // multiplicative boss-stat distance. This is a recovery calculation, not a
-        // catch-up safeguard; if waiting is exponentially bad, reset wins directly.
+        // Compatibility hook retained for telemetry callers. The former implementation
+        // geometrically compounded next/current Number and therefore had mutation authority over
+        // a different dynamical system. Callers must build a RebirthRouteProblem and use Compare;
+        // without that full Boss-0 replay input this method fails closed.
         internal static bool RecoveryResetEfficient(Character c, int selectedBossEta,
             out int resetRouteEta, out int continueRouteEta, out string reason)
         {
             resetRouteEta = -1;
-            continueRouteEta = -1;
-            reason = string.Empty;
+            continueRouteEta = selectedBossEta < 0 ? -1 : selectedBossEta;
             if (c == null || c.bossID >= c.highestBoss)
             {
                 reason = "boss record already caught up; normal checkpoint objective applies";
                 return true;
             }
-
-            var elapsed = Math.Max(1, (int)Math.Floor(c.rebirthTime.totalseconds));
-            var attackGain = c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0;
-            var defenseGain = c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0;
-            var gain = Math.Min(attackGain, defenseGain);
-            if (gain <= 1.000001 || double.IsNaN(gain) || double.IsInfinity(gain))
-            {
-                reason = "native Number preview is not a strict Attack/Defense improvement";
-                return false;
-            }
-
-            var resetDistance = RequiredBossLogDistance(c, c.bossID, c.highestBoss);
-            var resetEta = elapsed * resetDistance / Math.Log(gain);
-            resetRouteEta = FiniteSeconds(resetEta);
-
-            if (selectedBossEta < 0)
-            {
-                reason = "reset wins: selected boss has no finite current-run defeat ETA, while repeated higher-Number cycles remove the remaining log-stat distance";
-                return true;
-            }
-
-            var wait = Math.Max(1, selectedBossEta + 2);
-            var continueDistance = RequiredBossLogDistance(c, c.bossID + 1, c.highestBoss);
-            var continueGain = gain * 2.0; // exact Normal advanceBoss bossMulti reward
-            var continueEta = wait + (elapsed + wait) * continueDistance / Math.Log(continueGain);
-            continueRouteEta = FiniteSeconds(continueEta);
-            if (continueEta + 0.5 < resetEta)
-            {
-                reason = "continue wins: defeating selected Boss " + (c.bossID + 1)
-                         + " first shortens modeled record recovery by "
-                         + FiniteSeconds(resetEta - continueEta).ToString("N0") + "s";
-                return false;
-            }
-
-            reason = "reset wins: higher Number plus replay reaches the record about "
-                     + FiniteSeconds(continueEta - resetEta).ToString("N0")
-                     + "s sooner than extending this run for the selected boss";
-            return true;
-        }
-
-        private static int FiniteSeconds(double value)
-        {
-            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0 || value >= int.MaxValue)
-                return -1;
-            return (int)Math.Ceiling(value);
-        }
-
-        private static double RequiredBossLogDistance(Character c, int startBossIndex, int recordIndex)
-        {
-            if (c == null || startBossIndex >= recordIndex) return 0.0;
-            var total = 0.0;
-            try
-            {
-                var boss = c.bossController == null ? null : c.bossController.boss;
-                var attack = boss == null ? null : boss.bossAttack;
-                var defense = boss == null ? null : boss.bossDefense;
-                var hp = boss == null ? null : boss.bossMaxHP;
-                for (var i = Math.Max(1, startBossIndex); i < recordIndex; i++)
-                {
-                    var ratio = Math.Max(StatRatio(attack, i),
-                        Math.Max(StatRatio(defense, i), StatRatio(hp, i)));
-                    total += Math.Log(Math.Max(1.000001, ratio));
-                }
-            }
-            catch
-            {
-                var remaining = Math.Max(0, recordIndex - startBossIndex);
-                total = remaining * Math.Log(startBossIndex >= 20 ? 10.0 : 5.0);
-            }
-            return total;
-        }
-
-        private static double StatRatio(double[] values, int index)
-        {
-            if (values == null || index <= 0 || index >= values.Length || values[index - 1] <= 0)
-                return index >= 20 ? 10.0 : 5.0;
-            return values[index] / values[index - 1];
+            reason = "hold: exact recovery needs a bounded RebirthRouteProblem with Boss-0 replay; geometric Number authority is disabled";
+            return false;
         }
 
         private static double ProjectedCapCompression(Character c, int seconds)
@@ -625,23 +1127,6 @@ namespace NGUInjector.Autopilot
             if (cap <= 1) return 0;
             var nextCap = Math.Max(1L, cap - CapReduction(level, cap, tier));
             return Math.Log((double)cap / nextCap);
-        }
-
-        private static double ExactTimeMultiplier(int seconds)
-        {
-            var t = Math.Max(0.0, seconds);
-            if (t < 60) return t / 34359738368.0 / 3600.0;
-            if (t < 120) return t / 33554432.0 / 3600.0;
-            if (t < 180) return t / 518144.0 / 3600.0;
-            if (t < 240) return t / 16192.0 / 3600.0;
-            if (t < 300) return t / 2048.0 / 3600.0;
-            if (t < 420) return t / 512.0 / 3600.0;
-            if (t < 600) return t / 128.0 / 3600.0;
-            if (t < 720) return t / 32.0 / 3600.0;
-            if (t < 900) return t / 8.0 / 3600.0;
-            if (t < 1800) return t / 4.0 / 3600.0;
-            if (t < 3600) return t / 2.0 / 3600.0;
-            return 1.0 + t / 172800.0;
         }
 
         internal static int SecondsToNextTrainingEvent(Character c)

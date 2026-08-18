@@ -16,11 +16,12 @@ confirmed fight outcomes reported by CombatManager. Output is a read-only MajorU
 by Adventure routing, contextual gear scoring, and telemetry. This class never grants an item,
 writes an unlock flag, consumes inventory, or bypasses native combat/drop controllers.
 
-Safety invariant: an aggressive push still needs positive modeled damage and must survive the
-target enemy's conservative first hit; static Power/Toughness guide thresholds are descriptive,
-not a combat proof. Three consecutive deaths suspend the exact target until stats improve or a
-short monotonic backoff expires. InventoryManager remains the sole native consumer of acquired
-keys. Add future mechanics here only with an audited source zone/drop or native unlock condition.
+Safety invariant: a structural target is published only when the immutable loadout solver finds an
+owned candidate that passes its conservative combat/current-HP/capacity gates. Static
+Power/Toughness guide thresholds are descriptive, not a combat proof. Three consecutive deaths
+suspend the exact target until stats improve or a short monotonic backoff expires.
+InventoryManager remains the sole native consumer of acquired keys. Add future mechanics here
+only with an audited source zone/drop or native unlock condition.
 */
 namespace NGUInjector.Managers
 {
@@ -41,6 +42,8 @@ namespace NGUInjector.Managers
         internal double EligibleTrialSeconds = -1.0;
         internal double MinimumPower;
         internal double MinimumToughness;
+        internal int TitanIndex = -1;
+        internal int TitanVersion;
         internal int ConsecutiveFailures;
         internal int RetryEtaSeconds;
 
@@ -60,25 +63,58 @@ namespace NGUInjector.Managers
             internal float DefenseAtFailure;
         }
 
-        private static readonly Dictionary<int, FailureState> Failures = new Dictionary<int, FailureState>();
+        private static readonly Dictionary<string, FailureState> Failures =
+            new Dictionary<string, FailureState>();
         private static int _lastTargetZone = -1;
+        private static string _lastTargetKey = string.Empty;
 
         internal static MajorUnlockTarget Evaluate(Character c)
+        {
+            foreach (var target in EnumerateStructural(c))
+            {
+                string projection;
+                if (!ProgressionLoadoutOptimizer.CanSupportMajorUnlock(c, target, out projection))
+                    continue;
+                if (!string.IsNullOrEmpty(projection)) target.Reason += "; " + projection;
+                return Remember(target);
+            }
+            _lastTargetZone = -1;
+            _lastTargetKey = string.Empty;
+            return null;
+        }
+
+        // Loadout optimization calls this structural-only form to avoid the old circular gate
+        // (live gear must already pass before candidate gear can be searched).  It deliberately
+        // contains no Power/Toughness/current-HP combat admission.
+        internal static MajorUnlockTarget EvaluateStructural(Character c)
+        {
+            return EnumerateStructural(c).FirstOrDefault();
+        }
+
+        private static IEnumerable<MajorUnlockTarget> EnumerateStructural(Character c)
         {
             if (c == null || c.adventure == null || c.adventureController == null
                 || c.inventory == null || c.inventory.itemList == null
                 || !c.buttons.adventure.IsInteractable())
-                return null;
+                yield break;
 
-            // A ready early Titan unlock is rarer than an ordinary-zone spawn. The
-            // normal Titan selector already handles comfortably farmable versions;
-            // this path admits a recoverable one-time push below that conservative bar.
-            int titanIndex;
-            var titanZone = ZoneHelpers.HighestMajorUnlockTitan(out titanIndex);
-            if (titanZone >= 0)
+            // Enumerate early Titan gates from source/unlock/clock facts only. Candidate combat
+            // feasibility belongs to the loadout solver, not this live snapshot.
+            var unlocked = new[]
             {
+                c.settings.nguOn, c.settings.yggdrasilOn,
+                c.settings.diggersOn, c.settings.beardsOn
+            };
+            var reachable = ZoneHelpers.GetMaxReachableZone(true);
+            for (var titanIndex = 3; titanIndex >= 0; titanIndex--)
+            {
+                var titanZone = ZoneHelpers.TitanZones[titanIndex];
+                if (unlocked[titanIndex] || titanZone > reachable
+                    || !ZoneHelpers.TitanUnlockedForAttempt(titanIndex)
+                    || !ZoneHelpers.TitanSpawningSoon(titanIndex))
+                    continue;
                 var titan = TitanTarget(c, titanIndex, titanZone);
-                if (CanAttempt(c, titan)) return Remember(titan);
+                if (CanAttempt(c, titan)) yield return titan;
             }
 
             // Sky's first Pissed Off Key is guaranteed by LootDrop.zone4Drop. The
@@ -97,7 +133,7 @@ namespace NGUInjector.Managers
                     key.Reason += "; rerolling normal spawns because the native key branch is boss-only";
                     PopulateDropForecast(c, key);
                 }
-                if (CanAttempt(c, key)) return Remember(key);
+                if (CanAttempt(c, key)) yield return key;
             }
 
             // Wandoos is a persistent mechanic rather than ordinary collection debt.
@@ -110,21 +146,19 @@ namespace NGUInjector.Managers
                     Math.Min(1.0, .003 * c.lootFactor()));
                 if (wandoos != null) wandoos.BossOnly = true;
                 PopulateDropForecast(c, wandoos);
-                if (CanAttempt(c, wandoos)) return Remember(wandoos);
+                if (CanAttempt(c, wandoos)) yield return wandoos;
             }
-
-            _lastTargetZone = -1;
-            return null;
         }
 
         internal static void RecordFightResult(Character c, int zone, bool died)
         {
             if (zone < 0 || zone != _lastTargetZone) return;
+            if (string.IsNullOrEmpty(_lastTargetKey)) return;
             FailureState state;
-            if (!Failures.TryGetValue(zone, out state))
+            if (!Failures.TryGetValue(_lastTargetKey, out state))
             {
                 state = new FailureState();
-                Failures[zone] = state;
+                Failures[_lastTargetKey] = state;
             }
             if (!died)
             {
@@ -208,6 +242,8 @@ namespace NGUInjector.Managers
                 Mechanic = mechanic,
                 Goal = "defeat " + GameNames.Titan(c, titanIndex) + " to unlock " + mechanic,
                 Zone = zone,
+                TitanIndex = titanIndex,
+                TitanVersion = 0,
                 BossOnly = true,
                 MinimumPower = c.totalAdvAttack() * .95,
                 MinimumToughness = c.totalAdvDefense() * .95,
@@ -220,11 +256,10 @@ namespace NGUInjector.Managers
             if (target == null || target.Zone < 0
                 || target.Zone > ZoneHelpers.GetMaxReachableZone(true))
                 return false;
-            if (!HasRecoverableCombatPath(c, target))
-                return false;
 
             FailureState state;
-            if (!Failures.TryGetValue(target.Zone, out state) || state.Count < 3)
+            var key = TargetKey(target);
+            if (!Failures.TryGetValue(key, out state) || state.Count < 3)
                 return true;
             var statsImproved = c.totalAdvAttack() >= state.AttackAtFailure * 1.05f
                                 || c.totalAdvDefense() >= state.DefenseAtFailure * 1.05f;
@@ -240,54 +275,25 @@ namespace NGUInjector.Managers
             return target.RetryEtaSeconds <= 0;
         }
 
-        /*
-        MAJOR-UNLOCK COMBAT ADMISSION
-
-        Guide Power/Toughness numbers describe comfortable farming, but the bot deliberately pushes
-        a one-time mechanic with active skills and Safe-Zone recovery. Admission therefore uses the
-        actual target enemy records: current active-attack damage must be positive and the strongest
-        relevant boss's conservative first hit must not be lethal. Confirmed deaths still feed the
-        monotonic retry/backoff policy above. This method is read-only and never spawns an enemy.
-        */
-        private static bool HasRecoverableCombatPath(Character c, MajorUnlockTarget target)
-        {
-            if (c.adventureController.enemyList == null
-                || target.Zone < 0 || target.Zone >= c.adventureController.enemyList.Count
-                || c.adventureController.enemyList[target.Zone] == null
-                || c.adventureController.enemyList[target.Zone].Count == 0)
-                return false;
-            var all = c.adventureController.enemyList[target.Zone];
-            var relevant = all.Where(x => x.enemyType == enemyType.boss
-                || x.enemyType.ToString().IndexOf("bigBoss", StringComparison.OrdinalIgnoreCase) >= 0).ToList();
-            if (relevant.Count == 0) relevant = all.ToList();
-            return relevant.All(enemy =>
-            {
-                var outgoing = .8 * Math.Max(0.0, c.totalAdvAttack() - enemy.defense / 2.0)
-                               * c.regAttackPower();
-                var conservativeFirstHit = 1.2 * Math.Max(enemy.attack * .1,
-                    enemy.attack - c.totalAdvDefense() / 2.0);
-                if (outgoing <= Math.Max(0.0, enemy.regen)
-                    || conservativeFirstHit >= c.totalAdvHP() * .95)
-                    return false;
-                var effectiveDamage = outgoing - Math.Max(0.0, enemy.regen);
-                var attacks = Math.Ceiling(enemy.maxHP / Math.Max(1e-9, effectiveDamage));
-                var projectedHits = Math.Max(0.0, attacks - 1.0);
-                var projectedDamage = projectedHits * conservativeFirstHit;
-                return attacks <= 300.0 && projectedDamage < c.totalAdvHP() * .95;
-            });
-        }
-
         private static MajorUnlockTarget Remember(MajorUnlockTarget target)
         {
             _lastTargetZone = target.Zone;
+            _lastTargetKey = TargetKey(target);
             FailureState state;
-            if (Failures.TryGetValue(target.Zone, out state))
+            if (Failures.TryGetValue(_lastTargetKey, out state))
             {
                 target.ConsecutiveFailures = state.Count;
                 target.RetryEtaSeconds = Math.Max(0,
                     (int)Math.Ceiling(state.SuppressedUntil - UnityEngine.Time.realtimeSinceStartup));
             }
             return target;
+        }
+
+        private static string TargetKey(MajorUnlockTarget target)
+        {
+            return target == null ? string.Empty
+                : target.Mechanic + "|zone=" + target.Zone + "|item=" + target.ItemId
+                  + "|titan=" + target.TitanIndex + "|version=" + target.TitanVersion;
         }
 
         private static bool HasPhysicalItem(Character c, int id)
@@ -299,7 +305,9 @@ namespace NGUInjector.Managers
                    || c.inventory.boots != null && c.inventory.boots.id == id
                    || c.inventory.weapon != null && c.inventory.weapon.id == id
                    || c.inventory.weapon2 != null && c.inventory.weapon2.id == id
-                   || c.inventory.accs.Any(x => x != null && x.id == id);
+                   || c.inventory.accs.Any(x => x != null && x.id == id)
+                   || c.inventory.daycare != null
+                   && c.inventory.daycare.Any(x => x != null && x.id == id);
         }
     }
 }

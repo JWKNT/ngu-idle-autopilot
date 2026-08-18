@@ -1,0 +1,505 @@
+/*
+FILE PURPOSE
+
+ItopodPerkTests is the isolated pure/fault-injection suite for reconciled task 26.  It proves the
+record-4-to-10 continuous range, exact decade awards and fought/drop-floor ordering, 8.4% boost
+table, clue-four naked session, online/offline estimator split, floor-1600 bounds and END forecast,
+typed perk/ID/Fibonacci behavior, asynchronous perk-231 slot lifetime, MOVE69 idle charging/strict
+cooldown/ETA/capacity/post-69 retry, timer cancellation/restart telemetry, and exactly one verified
+task-1 mutation atom.  It loads no game assembly, Unity UI, controller, save, or runtime process.
+*/
+using System;
+using System.Collections.Generic;
+using NGUInjector.Autopilot;
+using NGUInjector.Managers;
+
+namespace NGUInjector.Autopilot
+{
+    // Minimal task-1 policy surface for this standalone executable.
+    internal sealed class AutopilotConfig
+    {
+        internal bool Enabled = true;
+        internal string Mode = "full";
+        internal bool AutoEnterGame = true;
+        internal bool AllowLegacyFallback = true;
+        internal bool ManageAllocations = true;
+        internal bool ManageBosses = true;
+        internal bool ManageAdventure = true;
+        internal bool ManageInventory = true;
+        internal bool ManageDiggers = true;
+        internal bool ManageYggdrasil = true;
+        internal bool ManageQuests = true;
+        internal bool ManageWishes = true;
+        internal bool ManageCards = true;
+        internal bool ManageCooking = true;
+        internal bool ManageMoneyPit = true;
+        internal bool ManageDailySpin = true;
+        internal bool ManageBloodMagic = true;
+        internal bool ManageBeards = true;
+        internal bool AllowExpSpending = true;
+        internal bool AllowApSpending = true;
+        internal bool AllowPerkSpending = true;
+        internal bool AllowQuirkSpending = true;
+        internal bool AllowCardYeeting = true;
+        internal bool AllowRebirths = true;
+        internal bool AllowChallenges = true;
+        internal bool AllowEndSequence = false;
+
+        internal bool IsDryRun { get { return Mode != "assist" && Mode != "full"; } }
+        internal bool IsAssist { get { return Mode == "assist"; } }
+        internal bool IsFull { get { return Mode == "full"; } }
+
+        internal string ExecutionFingerprint()
+        {
+            return Enabled + "|" + Mode + "|" + ManageAdventure + "|" + ManageInventory;
+        }
+    }
+
+    internal sealed class AutopilotManager
+    {
+        internal AutopilotConfig Config;
+    }
+}
+
+internal static class ItopodPerkTests
+{
+    private static int _assertions;
+
+    private static void Assert(bool condition, string message)
+    {
+        _assertions++;
+        if (!condition) throw new Exception("FAIL: " + message);
+    }
+
+    private static void Equal(long actual, long expected, string message)
+    {
+        Assert(actual == expected,
+            message + " (actual " + actual + ", expected " + expected + ")");
+    }
+
+    private static void Near(double actual, double expected, double tolerance, string message)
+    {
+        Assert(Math.Abs(actual - expected) <= tolerance,
+            message + " (actual " + actual + ", expected " + expected + ")");
+    }
+
+    private static void Throws<T>(Action action, string message) where T : Exception
+    {
+        _assertions++;
+        try { action(); }
+        catch (T) { return; }
+        throw new Exception("FAIL: " + message);
+    }
+
+    private static OrdinaryInventoryTopology Topology(int freeSlots)
+    {
+        var ids = new int[Math.Max(1, freeSlots)];
+        var identities = new object[ids.Length];
+        if (freeSlots == 0)
+        {
+            ids[0] = 999;
+            identities[0] = new object();
+        }
+        return PhysicalTopology.CaptureOrdinary(ids, identities, ids.Length, 0);
+    }
+
+    private static LootCapacityProof MoveCapacity(int freeSlots)
+    {
+        return LootCapacity.ProveOrdinary(Topology(freeSlots),
+            Move69Manager.TerminalDeliveryRequirement());
+    }
+
+    private static ItopodEconomy Economy(ItopodDifficulty difficulty)
+    {
+        return new ItopodEconomy(difficulty, 1.0, 0L, false, 0.0,
+            true, ItopodEconomy.MacguffinCadence(false, false, false, false));
+    }
+
+    private static ItopodOnlineState State(int start, int end, int live,
+        int counter, int record, long globalKills)
+    {
+        return new ItopodOnlineState
+        {
+            SavedStart = start,
+            SavedEnd = end,
+            LiveFloor = live,
+            KillCounter = counter,
+            HighestRecord = record,
+            EnemiesKilled = globalKills
+        };
+    }
+
+    private static void TestContinuousClimbAndSentinelAtom()
+    {
+        var plan = ItopodPerkPlanner.PlanContinuousClimb(4, 9, 10);
+        Assert(plan.Climbing && plan.Start == 3 && plan.End == 10,
+            "record 4 uses the only legal climb start H-1 and decade target 10");
+        Equal(plan.FreshEntryKillsToTarget, 70L,
+            "fresh record 4 to record 10 is floors 3 through 9, exactly 70 kills");
+        Equal(ItopodPerkPlanner.FreshEntryKillsToRecord(3, 10, 4, 10), 70L,
+            "standalone range simulator agrees with continuous plan");
+
+        var before = State(3, 10, 9, 9, 9, 69L);
+        var transition = ItopodPerkPlanner.SimulateOnlineKill(before,
+            Economy(ItopodDifficulty.Normal));
+        var gate = new ItopodPostKillGate();
+        var directive = gate.Observe(transition.Before, transition.After, plan);
+        Assert(directive.Kind == PostKillDirectiveKind.ExitSynchronouslyAndReplan
+               && directive.BeforeNextRespawn,
+            "target record leaves live floor 10 and synchronously exits before sentinel respawn");
+        Assert(gate.Observe(transition.Before, transition.After, plan).Kind
+               == PostKillDirectiveKind.DuplicateObservation,
+            "one native kill can cause only one post-kill Adventure atom");
+    }
+
+    private static void TestExactDeathOrderingAndDecades()
+    {
+        var boundary = State(49, 50, 49, 9, 49, 37L);
+        var kill = ItopodPerkPlanner.SimulateOnlineKill(boundary,
+            Economy(ItopodDifficulty.Normal));
+        Assert(kill.FoughtFloor == 49 && kill.DropFloor == 50,
+            "ordinary reward retains fought floor while drop table sees post-move floor");
+        Equal(kill.OrdinaryProgress, 249L, "normal ordinary PP progress uses fought floor 49");
+        Assert(kill.NewRecord && kill.After.HighestRecord == 50,
+            "record saves after ten-kill floor movement");
+        Equal(kill.FirstClearPerkPoints, 1L, "new decade 50 awards one spendable PP");
+        Assert(kill.RewardTier == 2 && kill.RewardDivisor == 38 && kill.ApAwarded,
+            "AP/EXP cadence uses post-move floor 50 and global counter 38");
+        Equal(kill.After.CurrentAp, 1L, "online ITOPOD AP is a direct exact +1");
+        Equal(kill.After.LifetimeAp, 1L, "online ITOPOD lifetime AP is a direct exact +1");
+        Equal(kill.BaseExpAwarded, 2L, "tier-two base EXP is two before Character.addExp modifiers");
+
+        Equal(MechanicsItopod.FirstClearPerkPoints(10, true), 1L, "floor 10 decade award");
+        Equal(MechanicsItopod.FirstClearPerkPoints(99, true), 0L, "non-decade has no award");
+        Equal(MechanicsItopod.FirstClearPerkPoints(100, true), 10L, "floor 100 super-decade");
+        Equal(MechanicsItopod.FirstClearPerkPoints(110, true), 2L, "floor 110 award");
+        Equal(MechanicsItopod.FirstClearPerkPoints(200, true), 20L, "floor 200 super-decade");
+        Equal(MechanicsItopod.FirstClearPerkPoints(1600, true), 160L, "floor 1600 award");
+        Equal(MechanicsItopod.FirstClearPerkPoints(100, false), 0L,
+            "old records never repeat a decade award");
+
+        var fixedFarm = State(1599, 1599, 1599, 9, 1600, 0L);
+        var wrapped = ItopodPerkPlanner.SimulateOnlineKill(fixedFarm,
+            Economy(ItopodDifficulty.Sadistic));
+        Assert(wrapped.FoughtFloor == 1599 && wrapped.DropFloor == 1599
+               && wrapped.After.KillCounter == 0,
+            "fixed floor increments then wraps before drop settlement");
+    }
+
+    private static void TestBoostsClueAndFloorBounds()
+    {
+        Near(ItopodPerkPlanner.AnyBoostProbability, 0.084, 1e-15,
+            "two-stage native boost path is exactly 8.4 percent");
+        Near(ItopodPerkPlanner.EachBoostFamilyProbability, 0.028, 1e-15,
+            "each Power/Toughness/Special family is exactly 2.8 percent");
+        Assert(ItopodPerkPlanner.BoostMagnitudeIndex(499) == 10
+               && ItopodPerkPlanner.BoostMagnitudeIndex(500) == 10
+               && ItopodPerkPlanner.BoostMagnitudeIndex(700) == 11
+               && ItopodPerkPlanner.BoostMagnitudeIndex(850) == 12
+               && ItopodPerkPlanner.BoostMagnitudeIndex(1150) == 13
+               && ItopodPerkPlanner.BoostMagnitudeIndex(1600) == 13,
+            "compressed boost magnitudes follow every native tier boundary");
+
+        var cluePlan = ItopodPerkPlanner.PlanClueFour();
+        Equal(cluePlan.FreshEntryKillsToTarget, 1001L,
+            "clue route includes 1000 moves to floor 100 plus one live-floor-100 kill");
+        var clue = new ClueFourSession();
+        Assert(clue.Enter(true, 0, true).SessionEligible,
+            "clues 1-3, saved start zero, and naked entry arm the session");
+        Assert(!clue.ObserveKill(0, 100, 0, true, false).QualifyingKill,
+            "99-to-100 transition counter zero does not qualify");
+        Assert(clue.ObserveKill(0, 100, 1, true, false).QualifyingKill,
+            "first kill while live at floor 100 and counter one qualifies");
+        clue.ObserveKill(0, 50, 1, false, false);
+        Assert(!clue.ObserveKill(0, 100, 1, true, false).SessionEligible,
+            "seeing any equipped slot permanently invalidates this session");
+
+        var capPlan = ItopodPerkPlanner.PlanContinuousClimb(1599, 1599, 1600);
+        Assert(capPlan.Start == 1598 && capPlan.End == 1600 && capPlan.TargetRecord == 1600,
+            "record 1600 is reachable by fighting only through proved floor 1599");
+        Throws<ArgumentOutOfRangeException>(() =>
+            ItopodPerkPlanner.PlanContinuousClimb(1600, 1600, 1601),
+            "native floor 1601 is rejected before planning");
+        Near(ItopodPerkPlanner.EndItem491Chance(1449), 0.0, 0.0,
+            "floor 1449 is below END eligibility");
+        Near(ItopodPerkPlanner.EndItem491Chance(1450), 0.00005, 1e-15,
+            "floor 1450 END probability");
+        Near(ItopodPerkPlanner.EndItem491Chance(1600), 0.00755, 1e-15,
+            "floor 1600 END probability");
+
+        var oneSlot = ItopodPerkPlanner.ForecastEndItem491(1600, Topology(1));
+        var twoSlots = ItopodPerkPlanner.ForecastEndItem491(1600, Topology(2));
+        Assert(!oneSlot.Capacity.Admitted && twoSlots.Capacity.Admitted
+               && twoSlots.Capacity.RequiredFreeSlots == 2,
+            "scheduled MacGuffin before item 491 requires two exact ordinary slots");
+        Near(twoSlots.MeanKills, 1.0 / 0.00755, 1e-9, "floor-1600 geometric mean");
+        Assert(twoSlots.MedianKills == 92L && twoSlots.P95Kills == 396L,
+            "floor-1600 geometric median and 95th-percentile kill bounds");
+    }
+
+    private static void TestOnlineOfflineEstimatorSplit()
+    {
+        var start = State(1600, 1600, 1600, 0, 1600, 19L);
+        var online = ItopodPerkPlanner.EstimateOnline(start,
+            Economy(ItopodDifficulty.Sadistic), 20);
+        Equal(online.ApAwards, 1L, "online persistent modulo at divisor 20 awards once");
+        Near(online.ExpectedBoosts, 1.68, 1e-12,
+            "online estimate carries exact 8.4-percent expected boosts");
+        Assert(online.ProbabilityAtLeastOneEndItem491 > 0.0,
+            "online eligible floor has nonzero END progress");
+        var onlineTime = ItopodPerkPlanner.EstimateOnlineIdle(start,
+            Economy(ItopodDifficulty.Sadistic), 22.0, 1.0, 0.1);
+        Equal(onlineTime.KillEstimate.Kills, 20L,
+            "online wall-time estimator uses supplied live attack speed plus respawn");
+        Assert(onlineTime.OrdinaryPpPerSecond > 0.0
+               && onlineTime.ExpectedBoostsPerSecond > 0.0,
+            "online rate output remains distinct from native offline session arithmetic");
+
+        var offlineEconomy = new ItopodEconomy(ItopodDifficulty.Sadistic, 1.0,
+            0L, true, 0.5, true, 5000);
+        var offline = ItopodPerkPlanner.EstimateOffline(1600, 42.0, 0.1, false,
+            offlineEconomy, 0L, 8999L, true);
+        Equal(offline.Kills, 38L, "offline native one-second plus respawn cycle floors kills");
+        Equal(offline.ApAwards, 1L,
+            "offline AP uses kills/divisor and ignores a pre-session global remainder");
+        Equal(offline.DeterministicPoopAwards, 1L,
+            "offline includes deterministic perk-30 progress with carry");
+        Equal(offline.CubeBoostBatches, 4L, "offline cube filter uses deterministic kills/8");
+        Assert(!offline.SpecialDropsPossible && !offline.FirstClearAwardsPossible,
+            "offline forecast promises no random boosts, clue, Exile, END, or record awards");
+    }
+
+    private static void TestTypedPerksAndAsyncDelivery()
+    {
+        Assert(ItopodPerkPlanner.IsFibonacciMilestone(89)
+               && ItopodPerkPlanner.IsFibonacciMilestone(1597)
+               && !ItopodPerkPlanner.IsFibonacciMilestone(90),
+            "Fibonacci perk values only exact native milestone levels");
+        var terminal = ItopodPerkPlanner.TerminalPerk231(0L, 1000000.0);
+        Equal(terminal.FlatCost, 2500000000L, "perk 231 exact flat serialized cost");
+        var choices = new List<PerkCandidate>
+        {
+            new PerkCandidate(232, "id==Count bug", 1L, 0L, 1L,
+                ItopodDifficulty.Normal, PerkEffectClass.FeatureUnlock, 999999999.0, 0),
+            terminal
+        };
+        var invalidFirst = ItopodPerkPlanner.ChoosePerk(choices, 232,
+            3000000000L, 100000000L, ItopodDifficulty.Sadistic);
+        Assert(invalidFirst.Status == PerkPlanStatus.Planned
+               && invalidFirst.Candidate.Id == 231
+               && invalidFirst.HoldOrdinarySlotUntilDelivery,
+            "id==Count is rejected while typed terminal perk and async slot are selected");
+        Assert(ItopodPerkPlanner.ChoosePerk(new[] {terminal}, 232,
+                   2500000000L, 1L, ItopodDifficulty.Sadistic).Status
+               == PerkPlanStatus.HeldReserve,
+            "flat cost respects exact post-purchase PP reserve");
+        Assert(ItopodPerkPlanner.ChoosePerk(new[] {terminal}, 232,
+                   3000000000L, 0L, ItopodDifficulty.Evil).Status
+               == PerkPlanStatus.HeldDifficulty,
+            "Sadistic perk cannot be purchased in Evil");
+
+        var boss224 = ItopodPerkPlanner.EvaluatePerk231Grant(1L, 224, false,
+            Topology(1), true, 12.0);
+        Assert(boss224.Status == AsyncPerkGrantStatus.WaitingForBoss225
+               && boss224.ReservedOrdinarySlots == 1,
+            "source purchase reserves a slot even before the Boss-225 checker gate");
+        var full = ItopodPerkPlanner.EvaluatePerk231Grant(1L, 225, false,
+            Topology(0), true, 0.0);
+        Assert(full.Status == AsyncPerkGrantStatus.WaitingForCapacity
+               && full.ReservedOrdinarySlots == 1,
+            "full checker attempt remains pending and holds one future slot");
+        Assert(ItopodPerkPlanner.EvaluatePerk231Grant(1L, 225, false,
+                   Topology(1), false, 0.0).Status == AsyncPerkGrantStatus.WaitingForFilter,
+            "filter denial cannot complete asynchronous delivery");
+        var waiting = ItopodPerkPlanner.EvaluatePerk231Grant(1L, 225, false,
+            Topology(1), true, 42.0);
+        Assert(waiting.Status == AsyncPerkGrantStatus.WaitingForChecker
+               && waiting.NextCheckerEtaSeconds == 30.0,
+            "checker ETA is bounded to its native 30-second cadence");
+        Assert(ItopodPerkPlanner.EvaluatePerk231Grant(1L, 225, false,
+                   Topology(1), true, 0.0).Status == AsyncPerkGrantStatus.EligibleOnNextChecker,
+            "boss/capacity/filter-ready source waits for actual checker delivery");
+        var delivered = ItopodPerkPlanner.EvaluatePerk231Grant(1L, 225, true,
+            Topology(0), false, 20.0);
+        Assert(delivered.Status == AsyncPerkGrantStatus.Delivered
+               && delivered.ReservedOrdinarySlots == 0,
+            "only ordinary physical item 482 releases the asynchronous slot");
+    }
+
+    private static Move69Snapshot Move(int used, double timer, int itemCount,
+        bool idle, bool moveCheck, int freeSlots, string epoch, string component)
+    {
+        return new Move69Snapshot(true, used, timer, itemCount, idle, moveCheck,
+            true, true, MoveCapacity(freeSlots), epoch, component, "filters-A");
+    }
+
+    private static void TestMove69PolicyTimerAndRestart()
+    {
+        var fresh = Move(0, 0.0, 0, true, true, 1, "p1", "c1");
+        var freshDecision = Move69Manager.Evaluate(fresh);
+        Assert(freshDecision.Kind == Move69DecisionKind.ChargeInCurrentMode,
+            "idle mode charges and does not force 69 hours of manual combat");
+        Near(freshDecision.CompletionEtaSeconds, 69.0 * 3600.0, 0.0,
+            "fresh theoretical lower bound is 69 live hours");
+        Assert(Move69Manager.Evaluate(Move(10, 3600.0, 0, false, true, 1,
+                   "p1", "c1")).Kind == Move69DecisionKind.ChargeInCurrentMode,
+            "timer exactly 3600 is not usable because native predicate is strict greater-than");
+        var readyIdle = Move69Manager.Evaluate(Move(10, 3600.001, 0, true, true, 1,
+            "p1", "c1"));
+        Assert(readyIdle.Kind == Move69DecisionKind.ReadyForOneUse
+               && readyIdle.TemporarilySwitchToManual,
+            "ready idle route requests only a temporary manual transition");
+        Assert(Move69Manager.Evaluate(new Move69Snapshot(true, 68, 3601.0, 0,
+                   true, true, true, true, MoveCapacity(0), "p1", "c1", "filters-A")).Kind
+               == Move69DecisionKind.HoldCapacity,
+            "68-to-69 item opportunity requires exact ordinary capacity");
+        Assert(Move69Manager.Evaluate(Move(69, 3601.0, 0, true, true, 1,
+                   "p1", "c1")).Kind == Move69DecisionKind.ReadyForOneUse,
+            "used 69 with missing item remains a legal retry instead of deadlocking");
+        Assert(Move69Manager.Evaluate(Move(69, 0.0, 1, true, true, 0,
+                   "p1", "c1")).Kind == Move69DecisionKind.Complete,
+            "route stops only after ordinary item 481 exists");
+
+        var tracker = new Move69TimerTracker();
+        Assert(tracker.Observe(Move(20, 1000.0, 0, true, true, 1,
+                   "p1", "c1")).Kind == Move69TimerEventKind.FirstObservation,
+            "tracker captures initial unsaved timer");
+        tracker.CancelScheduledUse("Titan interruption");
+        var cancelled = tracker.Observe(Move(20, 1005.0, 0, false, true, 1,
+            "p1", "c1"));
+        Assert(cancelled.Kind == Move69TimerEventKind.CancelledButStillCharging
+               && cancelled.ScheduleCancelled,
+            "cancelling an action does not cancel native MOVE69 charge");
+        var restarted = tracker.Observe(Move(20, 0.0, 0, true, true, 1,
+            "p2", "c2"));
+        Assert(restarted.Kind == Move69TimerEventKind.ProcessRestartLostTimer,
+            "process/component replacement is explicit restart telemetry");
+        Near(restarted.EstimatedLostSeconds, 1005.0, 0.0,
+            "restart reports the exact previously observed timer at risk");
+    }
+
+    private sealed class FakeMoveRuntime : IMove69Runtime
+    {
+        internal Move69Snapshot Current;
+        internal bool LoseDelivery;
+        internal int InvokeCalls;
+
+        public string ExactBindingId { get { return "audited.move69"; } }
+        public bool LiveMutationAuthority { get { return true; } }
+
+        public Move69Snapshot Capture()
+        {
+            return Current;
+        }
+
+        public Move69ApplyResult InvokeOneUseWithTemporaryManualMode(RootTransactionToken token)
+        {
+            InvokeCalls++;
+            var before = Current;
+            var used = before.Used < 69 ? before.Used + 1 : 69;
+            var item = before.OrdinaryItem481Count;
+            if (before.DeliveryExpectedOnNextUse && !LoseDelivery) item++;
+            Current = new Move69Snapshot(before.Unlocked, used, 0.0, item,
+                before.IdleMode, before.MoveCheckPassed, before.ExactBindingAvailable,
+                before.FilterAllowsItem481, before.Capacity, before.ProcessEpoch,
+                before.ComponentIdentity, before.FilterFingerprint);
+            return new Move69ApplyResult(true, "fake exact invocation");
+        }
+    }
+
+    private static void TestMove69MutationAndRetry()
+    {
+        var config = new AutopilotConfig();
+        var manager = new Move69Manager();
+        var disabledRuntime = new FakeMoveRuntime
+        {
+            Current = Move(68, 3601.0, 0, true, true, 1, "p1", "c1")
+        };
+        var disabledCoordinator = new MutationCoordinator(() => "save-A/run-disabled");
+        using (var root = disabledCoordinator.BeginRoot("move69-disabled", config).Transaction)
+        {
+            var held = manager.ExecuteOneReadyUse(root, disabledRuntime);
+            Assert(held.Decision.Kind == Move69DecisionKind.HoldLiveAuthority
+                   && disabledRuntime.InvokeCalls == 0,
+                "manager defaults live MOVE69 execution off until integration/backtest");
+        }
+
+        manager.EnableLiveExecutionForIntegratedCaller(true);
+        var runtime = new FakeMoveRuntime
+        {
+            Current = Move(68, 3601.0, 0, true, true, 1, "p1", "c1")
+        };
+        var coordinator = new MutationCoordinator(() => "save-A/run-1");
+        using (var root = coordinator.BeginRoot("move69-delivery", config).Transaction)
+        {
+            var result = manager.ExecuteOneReadyUse(root, runtime);
+            Assert(result.Mutation.Kind == MutationResultKind.Committed
+                   && result.Delivery == Move69DeliveryOutcome.Delivered,
+                "68-to-69 exact timer/use/item state commits through task-1 protocol");
+            Assert(runtime.InvokeCalls == 1 && result.Mutation.After.IdleMode,
+                "one scheduling pass invokes one atom and restores ambient idle mode");
+        }
+
+        var lostRuntime = new FakeMoveRuntime
+        {
+            Current = Move(68, 3601.0, 0, true, true, 1, "p1", "c-loss"),
+            LoseDelivery = true
+        };
+        var lostCoordinator = new MutationCoordinator(() => "save-A/run-2");
+        using (var root = lostCoordinator.BeginRoot("move69-lost", config).Transaction)
+        {
+            var lost = manager.ExecuteOneReadyUse(root, lostRuntime);
+            Assert(lost.Mutation.Kind == MutationResultKind.Committed
+                   && lost.Delivery == Move69DeliveryOutcome.RetryAfterCooldown
+                   && lost.Mutation.After.Used == 69,
+                "verified lost final item is classified for cooldown retry, not deadlocked/quarantined");
+        }
+        lostRuntime.LoseDelivery = false;
+        lostRuntime.Current = Move(69, 3601.0, 0, true, true, 1, "p1", "c-loss");
+        var retryCoordinator = new MutationCoordinator(() => "save-A/run-2");
+        using (var root = retryCoordinator.BeginRoot("move69-retry", config).Transaction)
+        {
+            var retry = manager.ExecuteOneReadyUse(root, lostRuntime);
+            Assert(retry.Mutation.Kind == MutationResultKind.Committed
+                   && retry.Delivery == Move69DeliveryOutcome.Delivered
+                   && retry.Mutation.After.Used == 69,
+                "post-69 native use retries item 481 without incrementing saved use count");
+        }
+    }
+
+    public static int Main()
+    {
+        try
+        {
+            TestContinuousClimbAndSentinelAtom();
+            TestExactDeathOrderingAndDecades();
+            TestBoostsClueAndFloorBounds();
+            TestOnlineOfflineEstimatorSplit();
+            TestTypedPerksAndAsyncDelivery();
+            TestMove69PolicyTimerAndRestart();
+            TestMove69MutationAndRetry();
+            Console.WriteLine("ITOPOD/perk tests passed: " + _assertions + " assertions");
+            return 0;
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine(error);
+            return 1;
+        }
+    }
+}
+
+namespace NGUInjector
+{
+    internal sealed class SettingsStub
+    {
+        internal bool GlobalEnabled = true;
+    }
+
+    internal static class Main
+    {
+        internal static NGUInjector.Autopilot.AutopilotManager Autopilot;
+        internal static SettingsStub Settings = new SettingsStub();
+        internal static void LogAction(string category, string detail) { }
+    }
+}

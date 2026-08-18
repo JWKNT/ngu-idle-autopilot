@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using NGUInjector.Autopilot;
 using static NGUInjector.Main;
 using static NGUInjector.Managers.CombatHelpers;
@@ -10,10 +11,32 @@ using static NGUInjector.Managers.CombatHelpers;
 /*
 FILE PURPOSE
 
-CombatManager executes Adventure movement and active/idle skill rotations through native
-controllers, tracks observed fight timing, reports confirmed major-unlock attempt outcomes, and
-exposes recovery state. It must not fabricate kills or abandon special enemies merely to swap gear.
-Zone policy comes from AutopilotManager; this file owns tactical action sequencing and confirmation.
+Purpose: CombatManager executes Adventure movement and source-backed tactical action state through
+native controllers. It owns manual/idle selection, Walderp response windows, reactive defense,
+terminal-Titan first-action reservation, observed fight timing, and confirmed fight reconciliation.
+
+Mechanism: Zone policy arrives from AutopilotManager. This manager classifies an objective enemy
+through TitanMechanics, performs at most one zone transition per policy pass, selects only currently
+interactable native move buttons, and confirms every cast through CombatHelpers. T13/T14 are entered
+only after one exact ready move has a conservative live-state lethal proof; the reserved move is the
+only action permitted until native enemy-clear reconciliation.
+
+Inputs and outputs: Inputs are live Character/Adventure/PlayerController/EnemyAI state, immutable
+settings, Titan descriptors, and controller button readiness. Outputs are native zone/toggle/move
+calls, recovery/hold telemetry, fight samples, and loadout-lock completion signals.
+
+Invariants and safety: Regular Attack unlock is row 0 >= 5,000. A Walderp command permits exactly
+the requested move when Walderp Says and only a different damaging move otherwise; no buff or MOVE
+69 may consume that response. Three-second Block is reserved for a bounded near-impact window while
+persistent Parry is preferred at early warnings. T13/T14 never spend their first action on MOVE 69
+or a buff. Logical reservations and externally held input must have an epoch cancellation callback.
+No method in this file claims an exact general Adventure simulator: independent Unity Update order,
+RNG, bespoke AI, and cooldown progress remain live-state observations.
+
+Extension points and non-goals: Add a source-backed local transition or conservative admission
+predicate here; put global target selection and reward valuation in the planner. TitanExecutionManager
+may consume the terminal-reservation hooks when it owns pre-staging. This file does not choose a
+Titan version, project loot, buy upgrades, reset the run, or infer kills from intended actions.
 */
 namespace NGUInjector.Managers
 {
@@ -32,6 +55,26 @@ namespace NGUInjector.Managers
         private float _recoveryTargetHP;
         private string _fightSignature = string.Empty;
         private string _nextPolicySignature = string.Empty;
+        private TerminalAttackReservation _terminalReservation;
+
+        private enum AttackMove
+        {
+            None = 0,
+            Regular = 3,
+            Strong = 4,
+            Pierce = 5,
+            Ultimate = 6
+        }
+
+        private sealed class TerminalAttackReservation
+        {
+            internal int Zone;
+            internal int EnemyType;
+            internal int SpriteId;
+            internal AttackMove Move;
+            internal float ProvenWorstDamage;
+            internal bool Fired;
+        }
 
         private sealed class FightSample
         {
@@ -73,6 +116,85 @@ namespace NGUInjector.Managers
         {
             _character = Main.Character;
             _pc = Main.PlayerController;
+        }
+
+        /*
+        ADVENTURE ACTION-STATE SAFETY
+
+        These helpers encode only locally proven transitions: the installed Regular Attack gate,
+        counter-to-impact timing for generic Charger/Rapid AI, exact Walderp move identity, and a
+        one-action conservative damage lower bound. They deliberately do not advance Unity time or
+        predict an entire fight. Button interactivity and private AI factors are re-read immediately
+        before every native move so stale reservations fail closed.
+        */
+        internal static bool RegularAttackUnlocked(long rowZeroLevel)
+        {
+            return rowZeroLevel >= 5000L;
+        }
+
+        internal static double SecondsUntilCounterImpact(int observedCounter, int impactCounter,
+            double attackRate, double elapsedSinceLastEnemyAction)
+        {
+            if (observedCounter >= impactCounter) return 0.0;
+            if (double.IsNaN(attackRate) || double.IsInfinity(attackRate) || attackRate <= 0.0
+                || double.IsNaN(elapsedSinceLastEnemyAction)
+                || double.IsInfinity(elapsedSinceLastEnemyAction))
+                return double.PositiveInfinity;
+            var firstInterval = Math.Max(0.0, attackRate - Math.Max(0.0,
+                elapsedSinceLastEnemyAction));
+            return firstInterval + Math.Max(0, impactCounter - observedCounter - 1) * attackRate;
+        }
+
+        internal static int SelectWaldoResponseMove(int requestedMove, bool waldoSays,
+            bool regularReady, bool strongReady, bool pierceReady, bool ultimateReady)
+        {
+            if (requestedMove < (int)AttackMove.Regular
+                || requestedMove > (int)AttackMove.Ultimate)
+                return (int)AttackMove.None;
+            var ready = new[] {regularReady, strongReady, pierceReady, ultimateReady};
+            if (waldoSays)
+                return ready[requestedMove - (int)AttackMove.Regular]
+                    ? requestedMove : (int)AttackMove.None;
+
+            // Any different damaging move is source-correct. Prefer the strongest ready response
+            // so a successful puzzle answer also minimizes the time exposed to Walderp's growth.
+            for (var move = (int)AttackMove.Ultimate;
+                 move >= (int)AttackMove.Regular; move--)
+                if (move != requestedMove && ready[move - (int)AttackMove.Regular])
+                    return move;
+            return (int)AttackMove.None;
+        }
+
+        internal static Action RegisterHeldInputCancellation(string id, Action releaseInput)
+        {
+            if (releaseInput == null) throw new ArgumentNullException("releaseInput");
+            var released = 0;
+            Action releaseOnce = delegate
+            {
+                if (Interlocked.Exchange(ref released, 1) == 0) releaseInput();
+            };
+            Main.RegisterEpochCancellation(string.IsNullOrEmpty(id)
+                ? "combat-held-input" : id, releaseOnce);
+            return releaseOnce;
+        }
+
+        private bool ManualCombatUnlocked()
+        {
+            var training = _character.training.attackTraining;
+            return training != null && training.Length > 0
+                   && RegularAttackUnlocked(training[0]);
+        }
+
+        private bool AnyOffensiveMoveReady()
+        {
+            var ac = _character.adventureController;
+            return IsReady(ac.regularAttackMove.button) || IsReady(ac.strongAttackMove.button)
+                   || IsReady(ac.pierceMove.button) || IsReady(ac.ultimateAttackMove.button);
+        }
+
+        private static bool IsReady(UnityEngine.UI.Button button)
+        {
+            return button != null && button.IsInteractable();
         }
 
         internal void UpdateFightTimer(float diff)
@@ -136,12 +258,329 @@ namespace NGUInjector.Managers
             return true;
         }
 
+        private static int TitanIdForZone(int zone)
+        {
+            for (var titan = 1; titan <= 14; titan++)
+                if (TitanMechanics.Describe(titan).Zone == zone) return titan;
+            return 0;
+        }
+
+        private static bool IsTerminalTitanZone(int zone)
+        {
+            return zone == TitanMechanics.Describe(13).Zone
+                   || zone == TitanMechanics.Describe(14).Zone;
+        }
+
+        private static bool IsObjectiveEnemy(int zone, bool bossOnly, Enemy enemy)
+        {
+            if (enemy == null) return false;
+            if (!bossOnly) return true;
+            var titan = TitanIdForZone(zone);
+            if (titan > 0)
+                return TitanMechanics.IsTitanEnemyType(titan, (int)enemy.enemyType);
+            return enemy.enemyType == enemyType.boss
+                   || enemy.enemyType.ToString().Contains("bigBoss");
+        }
+
+        private bool IsCurrentWaldo()
+        {
+            var enemy = _character.adventureController.currentEnemy;
+            return enemy != null && _character.adventure.zone == TitanMechanics.Describe(5).Zone
+                   && TitanMechanics.IsTitanEnemyType(5, (int)enemy.enemyType);
+        }
+
+        private bool HandleWaldoResponse()
+        {
+            if (!IsCurrentWaldo()) return false;
+            var ac = _character.adventureController;
+            var ai = ac.enemyAI;
+            if (ai == null || !ai.inWaldoSaysLoop) return false;
+
+            var selected = (AttackMove)SelectWaldoResponseMove(ai.waldoAttackID, ai.waldoSays,
+                IsReady(ac.regularAttackMove.button), IsReady(ac.strongAttackMove.button),
+                IsReady(ac.pierceMove.button), IsReady(ac.ultimateAttackMove.button));
+            if (selected == AttackMove.None)
+            {
+                // A missing exact/different response becomes a native 1000x explosion at the next
+                // Walderp action. Abandon immediately; never substitute a buff, MOVE 69, or an
+                // unavailable requested button and call it a puzzle solution.
+                RecoveryReason = ai.waldoSays
+                    ? "Walderp response held: the exact requested move is not currently ready"
+                    : "Walderp response held: no different damaging move is currently ready";
+                Main.LogAction("HOLD", RecoveryReason + "; returning to Safe Zone");
+                _isFighting = false;
+                _fightTimer = 0;
+                MoveToZone(-1);
+                return true;
+            }
+
+            var description = ai.waldoSays
+                ? "Walderp Says — exact requested move"
+                : "Walderp Says — deliberately different move";
+            if (!ExecuteAttackMove(selected, description))
+            {
+                RecoveryReason = "Native controller rejected the selected Walderp response";
+                Main.LogAction("HOLD", RecoveryReason + "; returning to Safe Zone without fallback");
+                _isFighting = false;
+                _fightTimer = 0;
+                MoveToZone(-1);
+            }
+            return true;
+        }
+
+        private bool TryPrepareTerminalAttack(int zone)
+        {
+            if (!IsTerminalTitanZone(zone)) return true;
+            if (_terminalReservation != null)
+                return _terminalReservation.Zone == zone && !_terminalReservation.Fired;
+            if (_character.adventure.zone != -1
+                || _character.adventureController.currentEnemy != null)
+                return false;
+            if (!ManualCombatUnlocked() || !_pc.moveCheck() || _pc.moveTimer > 0f)
+            {
+                RecoveryReason = "Holding terminal Titan in Safe Zone until manual combat is ready";
+                return false;
+            }
+
+            var ac = _character.adventureController;
+            if (zone < 0 || zone >= ac.enemyList.Count || ac.enemyList[zone] == null
+                || ac.enemyList[zone].Count == 0 || ac.enemyList[zone][0] == null)
+            {
+                RecoveryReason = "Holding terminal Titan: the source-pinned enemy record is unavailable";
+                return false;
+            }
+            var expected = ac.enemyList[zone][0];
+            var titan = TitanIdForZone(zone);
+            if (titan < 13 || !TitanMechanics.IsTitanEnemyType(titan, (int)expected.enemyType))
+            {
+                RecoveryReason = "Holding terminal Titan: enemy type does not match the Titan oracle";
+                return false;
+            }
+
+            float damage;
+            var move = SelectLethalReadyMove(expected, 1f, false, 0, out damage);
+            if (move == AttackMove.None)
+            {
+                if (ChargeUnlocked() && !ChargeActive() && ChargeReady())
+                {
+                    RecoveryReason = "Pre-casting Charge to establish a terminal lethal move";
+                    CastCharge();
+                    return false;
+                }
+                RecoveryReason = "Holding terminal Titan in Safe Zone until a specific ready move is lethal";
+                return false;
+            }
+
+            _terminalReservation = new TerminalAttackReservation
+            {
+                Zone = zone,
+                EnemyType = (int)expected.enemyType,
+                SpriteId = expected.spriteID,
+                Move = move,
+                ProvenWorstDamage = damage,
+                Fired = false
+            };
+            Main.RegisterEpochCancellation("combat-terminal-first-action", delegate
+            {
+                _terminalReservation = null;
+            });
+            RecoveryReason = "Reserved " + AttackMoveName(move)
+                             + " as the terminal Titan's first lethal action";
+            Main.LogAction("COMBAT", RecoveryReason + " [worst damage "
+                + Math.Floor(damage) + " vs HP " + Math.Ceiling(expected.maxHP) + "]");
+            return true;
+        }
+
+        private bool ExecuteTerminalAttackOrHold(int zone)
+        {
+            var reservation = _terminalReservation;
+            var ac = _character.adventureController;
+            var enemy = ac.currentEnemy;
+            if (reservation == null || reservation.Zone != zone || enemy == null
+                || reservation.EnemyType != (int)enemy.enemyType
+                || reservation.SpriteId != enemy.spriteID)
+            {
+                RecoveryReason = "Terminal Titan first-action reservation no longer matches live state";
+                Main.LogAction("HOLD", RecoveryReason + "; returning to Safe Zone");
+                _terminalReservation = null;
+                _isFighting = false;
+                MoveToZone(-1);
+                return false;
+            }
+            if (reservation.Fired)
+                return true; // Wait for native player-first/enemy-second death reconciliation.
+
+            var defenseFactor = ac.enemyAI.GetPV<float>("defenseFactor");
+            var invincible = ac.enemyAI.invincible;
+            var invincibleCount = ac.enemyAI.invincibleCount;
+            float liveWorstDamage;
+            if (!AttackMoveReady(reservation.Move)
+                || !WorstCaseMoveDamage(reservation.Move, enemy, defenseFactor,
+                    invincible, invincibleCount, out liveWorstDamage)
+                || liveWorstDamage < enemy.curHP)
+            {
+                RecoveryReason = "Reserved terminal move is no longer ready and lethal in live state";
+                Main.LogAction("HOLD", RecoveryReason + "; returning to Safe Zone without another action");
+                _terminalReservation = null;
+                _isFighting = false;
+                MoveToZone(-1);
+                return false;
+            }
+
+            var enemyHpBefore = enemy.curHP;
+            if (!ExecuteAttackMove(reservation.Move, "Terminal Titan reserved first action"))
+            {
+                RecoveryReason = "Native controller rejected the reserved terminal move";
+                _terminalReservation = null;
+                _isFighting = false;
+                MoveToZone(-1);
+                return false;
+            }
+            if (enemy.curHP > 0f)
+            {
+                RecoveryReason = "Reserved terminal move executed but did not produce lethal enemy HP";
+                Main.LogAction("REJECTED", RecoveryReason + " [HP "
+                    + Math.Ceiling(enemyHpBefore) + " -> " + Math.Ceiling(enemy.curHP) + "]");
+                _terminalReservation = null;
+                _isFighting = false;
+                MoveToZone(-1);
+                return false;
+            }
+            reservation.Fired = true;
+            Main.LogAction("PROGRESSION", "Fired reserved " + AttackMoveName(reservation.Move)
+                + " at terminal Titan [live worst damage " + Math.Floor(liveWorstDamage)
+                + ", Safe-Zone proof " + Math.Floor(reservation.ProvenWorstDamage)
+                + " vs pre-hit HP " + Math.Ceiling(enemyHpBefore) + "]");
+            return true;
+        }
+
+        private AttackMove SelectLethalReadyMove(Enemy enemy, float defenseFactor,
+            bool invincible, int invincibleCount, out float selectedDamage)
+        {
+            selectedDamage = 0f;
+            var selected = AttackMove.None;
+            var moves = new[]
+            {
+                AttackMove.Regular, AttackMove.Strong, AttackMove.Pierce, AttackMove.Ultimate
+            };
+            for (var i = 0; i < moves.Length; i++)
+            {
+                var move = moves[i];
+                float damage;
+                if (!AttackMoveReady(move)
+                    || !WorstCaseMoveDamage(move, enemy, defenseFactor, invincible,
+                        invincibleCount, out damage)
+                    || damage < enemy.maxHP)
+                    continue;
+                // Use the largest guaranteed margin. This is more robust to a live float/state
+                // change between Safe-Zone proof and the first enemy-bearing policy pass.
+                if (selected == AttackMove.None || damage > selectedDamage)
+                {
+                    selected = move;
+                    selectedDamage = damage;
+                }
+            }
+            return selected;
+        }
+
+        private bool WorstCaseMoveDamage(AttackMove move, Enemy enemy, float defenseFactor,
+            bool invincible, int invincibleCount, out float damage)
+        {
+            damage = 0f;
+            if (enemy == null || invincible || invincibleCount > 0
+                || float.IsNaN(defenseFactor) || float.IsInfinity(defenseFactor)
+                || defenseFactor <= 0f)
+                return false;
+            var pierceDivisor = move == AttackMove.Pierce ? 3f : 2f;
+            var baseDamage = Math.Max(0f, _character.totalAdvAttack()
+                - enemy.defense / pierceDivisor);
+            var value = baseDamage * _pc.offenseBuffFactor;
+            if (move == AttackMove.Regular) value *= _pc.offenseDebuffFactor;
+            value *= _pc.chargeFactor;
+            switch (move)
+            {
+                case AttackMove.Regular:
+                    value *= _character.adventureController.regAttackMulti;
+                    break;
+                case AttackMove.Strong:
+                case AttackMove.Pierce:
+                    value *= _character.adventureController.strongAttackMulti;
+                    break;
+                case AttackMove.Ultimate:
+                    value *= _character.ultimateAttackPower();
+                    break;
+                default:
+                    return false;
+            }
+            value *= .8f;
+            damage = (float)Math.Floor(value / defenseFactor);
+            return !float.IsNaN(damage) && !float.IsInfinity(damage) && damage >= 0f;
+        }
+
+        private bool AttackMoveReady(AttackMove move)
+        {
+            var ac = _character.adventureController;
+            if (!_pc.moveCheck() || _pc.moveTimer > 0f) return false;
+            switch (move)
+            {
+                case AttackMove.Regular: return IsReady(ac.regularAttackMove.button);
+                case AttackMove.Strong: return IsReady(ac.strongAttackMove.button);
+                case AttackMove.Pierce: return IsReady(ac.pierceMove.button);
+                case AttackMove.Ultimate: return IsReady(ac.ultimateAttackMove.button);
+                default: return false;
+            }
+        }
+
+        private bool ExecuteAttackMove(AttackMove move, string reason)
+        {
+            var ac = _character.adventureController;
+            switch (move)
+            {
+                case AttackMove.Regular:
+                    return ExecuteVerifiedMove(ac.regularAttackMove.button,
+                        ac.regularAttackMove.doMove, reason + " — Regular Attack");
+                case AttackMove.Strong:
+                    return ExecuteVerifiedMove(ac.strongAttackMove.button,
+                        ac.strongAttackMove.doMove, reason + " — Strong Attack");
+                case AttackMove.Pierce:
+                    return ExecuteVerifiedMove(ac.pierceMove.button,
+                        ac.pierceMove.doMove, reason + " — Piercing Attack");
+                case AttackMove.Ultimate:
+                    return ExecuteVerifiedMove(ac.ultimateAttackMove.button,
+                        ac.ultimateAttackMove.doMove, reason + " — Ultimate Attack");
+                default:
+                    return false;
+            }
+        }
+
+        private static string AttackMoveName(AttackMove move)
+        {
+            switch (move)
+            {
+                case AttackMove.Regular: return "Regular Attack";
+                case AttackMove.Strong: return "Strong Attack";
+                case AttackMove.Pierce: return "Piercing Attack";
+                case AttackMove.Ultimate: return "Ultimate Attack";
+                default: return "no move";
+            }
+        }
+
         private void DoCombat(bool fastCombat)
         {
+            // A Walderp response deadline is stricter than the global move lock. Let the response
+            // state inspect readiness first so a locked/unavailable exact move exits safely instead
+            // of waiting until the native 1000x explosion.
+            if (HandleWaldoResponse())
+                return;
+
             if (!_pc.moveCheck())
                 return;
 
             if (Main.PlayerController.moveTimer > 0)
+                return;
+
+            // Fast combat suppresses optional setup, never source-backed imminent defenses.
+            if (CombatCriticalReactions())
                 return;
 
             if (!fastCombat)
@@ -153,40 +592,72 @@ namespace NGUInjector.Managers
             CombatAttacks(fastCombat);
         }
 
-        private bool CombatBuffs()
+        private bool CombatCriticalReactions()
         {
             var ac = _character.adventureController;
             var ai = ac.currentEnemy.AI;
             var eai = ac.enemyAI;
 
-            if (ai == AI.charger && eai.GetPV<int>("chargeCooldown") >= 3)
+            if (ai == AI.charger)
             {
-                if (ac.blockMove.button.IsInteractable() && !_pc.isParrying)
+                var counter = eai.GetPV<int>("chargeCooldown");
+                var enemyTimer = eai.GetPV<float>("enemyAttackTimer");
+                var timeToImpact = SecondsUntilCounterImpact(counter, 5,
+                    ac.currentEnemy.attackRate, enemyTimer);
+                // The warning is two enemy actions before the 4x hit. Parry persists until that
+                // hit; a three-second Block does not, so reserve Block for a bounded near-impact
+                // window with scheduler/frame margin.
+                if (counter >= 3 && counter < 5 && !_pc.isBlocking && !_pc.isParrying
+                    && IsReady(ac.parryMove.button))
                 {
-                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Block — charger reaction");
+                    return ExecuteVerifiedMove(ac.parryMove.button, ac.parryMove.doMove,
+                        "Parry — persistent charger reaction");
                 }
 
-                if (ac.parryMove.button.IsInteractable() && !_pc.isBlocking && !_pc.isParrying)
+                if (counter >= 3 && counter < 5 && timeToImpact <= 2.65
+                    && !_pc.isParrying && IsReady(ac.blockMove.button))
                 {
-                    return ExecuteVerifiedMove(ac.parryMove.button, ac.parryMove.doMove, "Parry — charger reaction");
+                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove,
+                        "Block — near-impact charger reaction");
                 }
             }
 
-            if (ai == AI.rapid && eai.GetPV<int>("rapidEffect") >= 6)
+            if (ai == AI.rapid)
             {
-                if (ac.blockMove.button.IsInteractable())
+                var counter = eai.GetPV<int>("rapidEffect");
+                var enemyTimer = eai.GetPV<float>("enemyAttackTimer");
+                var timeToImpact = SecondsUntilCounterImpact(counter, 8,
+                    ac.currentEnemy.attackRate, enemyTimer);
+                if (counter >= 5 && counter < 8 && !_pc.isBlocking && !_pc.isParrying
+                    && IsReady(ac.parryMove.button))
                 {
-                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Block — rapid-enemy reaction");
+                    return ExecuteVerifiedMove(ac.parryMove.button, ac.parryMove.doMove,
+                        "Parry — persistent rapid-enemy warning reaction");
+                }
+                if ((counter >= 8 || counter >= 5 && timeToImpact <= 2.65)
+                    && !_pc.isParrying && IsReady(ac.blockMove.button))
+                {
+                    return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove,
+                        "Block — near-impact rapid-enemy reaction");
                 }
             }
 
             if (ai == AI.exploder && ac.currentEnemy.attackRate - eai.GetPV<float>("enemyAttackTimer") < 1)
             {
-                if (ac.blockMove.button.IsInteractable())
+                if (IsReady(ac.blockMove.button))
                 {
                     return ExecuteVerifiedMove(ac.blockMove.button, ac.blockMove.doMove, "Block — exploder reaction");
                 }
             }
+
+            return false;
+        }
+
+        private bool CombatBuffs()
+        {
+            var ac = _character.adventureController;
+            var ai = ac.currentEnemy.AI;
+            var eai = ac.enemyAI;
 
             if (ac.currentEnemy.curHP / ac.currentEnemy.maxHP < .2)
             {
@@ -329,7 +800,9 @@ namespace NGUInjector.Managers
 
             if (_character.adventure.move69Unlocked
                 && _character.adventure.move69Used < 69
-                && !EndgameDependencyModel.IsOwned(_character, 481))
+                && !EndgameDependencyModel.IsOwned(_character, 481)
+                && !IsTerminalTitanZone(_character.adventure.zone)
+                && !(IsCurrentWaldo() && ac.enemyAI.inWaldoSaysLoop))
             {
                 var move = UnityEngine.Object.FindObjectOfType<Move69>();
                 if (move != null && move.button != null && move.button.IsInteractable())
@@ -384,6 +857,8 @@ namespace NGUInjector.Managers
         {
             if (!Main.IsAutomationReady || _character.adventure.zone == zone)
                 return;
+            if (_terminalReservation != null && zone != _terminalReservation.Zone)
+                _terminalReservation = null;
             var before = _character.adventure.zone;
             _character.adventureController.zoneSelector.changeZone(zone);
             var confirmed = _character.adventure.zone == zone;
@@ -460,7 +935,6 @@ namespace NGUInjector.Managers
             if (zone < 1000 && Settings.BlacklistedBosses.Contains(_character.adventureController.currentEnemy.spriteID))
             {
                 MoveToZone(-1);
-                MoveToZone(zone);
                 return;
             }
 
@@ -468,9 +942,10 @@ namespace NGUInjector.Managers
             if (bossOnly)
             {
                 //Check the type of the enemy
-                var ec = _character.adventureController.currentEnemy.enemyType;
-                //If its not a boss, move back to safe zone. Next loop will put us back in the right zone.
-                if (ec != enemyType.boss && !ec.ToString().Contains("bigBoss"))
+                // If it is not the exact objective type, make one Safe-Zone hop. The next policy
+                // pass owns recovery/precast and may then return; never consume two native zone
+                // transitions (and two lootState advances) in one pass.
+                if (!IsObjectiveEnemy(zone, true, _character.adventureController.currentEnemy))
                 {
                     MoveToZone(-1);
                 }
@@ -501,6 +976,7 @@ namespace NGUInjector.Managers
             if (_isFighting && zone >= 0 && _character.adventure.zone == -1
                 && _character.adventureController.currentEnemy == null)
             {
+                _terminalReservation = null;
                 _isFighting = false;
                 RecordObservedFight(true);
                 if (_fightTimer > 1)
@@ -523,21 +999,47 @@ namespace NGUInjector.Managers
                 }
             }
 
-            //Start by turning off auto attack if its on unless we can only idle attack
-            if (!_character.adventure.autoattacking)
+            // Native Regular Attack unlocks from Basic Training row 0 at exactly 5,000. Manual
+            // combat is never inferred from row 1 (Strong Attack's training). Ordinary fights may
+            // fall back to idle while every manual attack is cooling down; Walderp and terminal
+            // Titans may not, because an autonomous hit would violate their reserved action state.
+            var manualUnlocked = ManualCombatUnlocked();
+            var constrainedActionState = IsTerminalTitanZone(zone) || IsCurrentWaldo();
+            if (!manualUnlocked)
             {
-                if (_character.training.attackTraining[1] == 0)
+                if (IsTerminalTitanZone(zone))
+                {
+                    RecoveryReason = "Holding terminal Titan: Regular Attack is not unlocked at row 0 level 5,000";
+                    if (_character.adventure.zone != -1) MoveToZone(-1);
+                    return;
+                }
+                if (IsCurrentWaldo())
+                {
+                    RecoveryReason = "Holding Walderp: manual response moves are not unlocked";
+                    _isFighting = false;
+                    MoveToZone(-1);
+                    return;
+                }
+                if (!_character.adventure.autoattacking)
                 {
                     _character.adventureController.idleAttackMove.setToggle();
                     return;
                 }
             }
-            else
+            else if (_character.adventure.autoattacking)
             {
-                if (_character.training.attackTraining[1] > 0)
+                if (_character.adventureController.currentEnemy == null
+                    || AnyOffensiveMoveReady() || constrainedActionState)
                 {
                     _character.adventureController.idleAttackMove.setToggle();
+                    return;
                 }
+            }
+            else if (_character.adventureController.currentEnemy != null
+                     && !AnyOffensiveMoveReady() && !constrainedActionState)
+            {
+                _character.adventureController.idleAttackMove.setToggle();
+                return;
             }
 
             var useBeastMode = beastMode && _character.adventureController.hasBeastMode();
@@ -569,7 +1071,7 @@ namespace NGUInjector.Managers
                                || ParryUnlocked() && !ParryActive();
             var readyPrecast = ChargeUnlocked() && !ChargeActive() && ChargeReady()
                                || ParryUnlocked() && !ParryActive() && ParryReady();
-            if (precastBuffs && canPrecast && needsPrecast
+            if (precastBuffs && !IsTerminalTitanZone(zone) && canPrecast && needsPrecast
                 && readyPrecast
                 && _character.adventureController.currentEnemy == null
                 && _character.adventure.zone != -1)
@@ -583,7 +1085,7 @@ namespace NGUInjector.Managers
             if (_character.adventure.zone == -1)
             {
                 var highRiskPrecast = precastBuffs && fastCombat;
-                if (precastBuffs)
+                if (precastBuffs && !IsTerminalTitanZone(zone))
                 {
                     if (ChargeUnlocked() && !ChargeActive())
                     {
@@ -631,6 +1133,9 @@ namespace NGUInjector.Managers
                     return;
                 }
                 RecoveryReason = string.Empty;
+
+                if (IsTerminalTitanZone(zone) && !TryPrepareTerminalAttack(zone))
+                    return;
             }
             
             //Move to the zone
@@ -646,6 +1151,7 @@ namespace NGUInjector.Managers
             {
                 if (_isFighting)
                 {
+                    _terminalReservation = null;
                     _isFighting = false;
                     var playerDied = _character.adventure.curHP <= 0.001f;
                     RecordObservedFight(playerDied);
@@ -693,6 +1199,8 @@ namespace NGUInjector.Managers
                     }
                 }
                 _fightTimer = 0;
+                if (IsTerminalTitanZone(zone) && _terminalReservation != null)
+                    return;
                 if (!precastBuffs && bossOnly)
                 {
                     if (!ChargeActive())
@@ -739,19 +1247,20 @@ namespace NGUInjector.Managers
 
             if (zone < 1000 && Settings.BlacklistedBosses.Contains(_character.adventureController.currentEnemy.spriteID))
             {
+                _terminalReservation = null;
+                _isFighting = false;
                 MoveToZone(-1);
-                MoveToZone(zone);
                 return;
             }
 
             //We have an enemy. Lets check if we're in bossOnly mode
             if (bossOnly && zone < 1000)
             {
-                var ec = _character.adventureController.currentEnemy.enemyType;
-                if (ec != enemyType.boss && !ec.ToString().Contains("bigBoss"))
+                if (!IsObjectiveEnemy(zone, true, _character.adventureController.currentEnemy))
                 {
+                    _terminalReservation = null;
+                    _isFighting = false;
                     MoveToZone(-1);
-                    MoveToZone(zone);
                     return;
                 }
             }
@@ -761,8 +1270,9 @@ namespace NGUInjector.Managers
                 _fightStartHP = _character.adventure.curHP;
                 _fightZone = zone;
                 var enemyTypeName = _character.adventureController.currentEnemy.enemyType.ToString();
-                _fightWasTitan = ZoneHelpers.ZoneIsTitan(zone)
-                                 && (enemyTypeName.Contains("bigBoss") || enemyTypeName.Contains("guardian"));
+                var titanId = TitanIdForZone(zone);
+                _fightWasTitan = titanId > 0 && TitanMechanics.IsTitanEnemyType(titanId,
+                    (int)_character.adventureController.currentEnemy.enemyType);
                 _fightSignature = PolicySignature(zone, bossOnly, fastCombat, beastMode) + "|enemy="
                                   + _character.adventureController.currentEnemy.spriteID + ":"
                                   + enemyTypeName + ":" + _character.adventureController.currentEnemy.name;
@@ -770,7 +1280,12 @@ namespace NGUInjector.Managers
             _isFighting = true;
             _enemyName = _character.adventureController.currentEnemy.name;
             //We have an enemy and we're ready to fight. Run through our combat routine
-            if (_character.training.attackTraining[1] > 0)
+            if (IsTerminalTitanZone(zone))
+            {
+                ExecuteTerminalAttackOrHold(zone);
+                return;
+            }
+            if (ManualCombatUnlocked())
                 DoCombat(fastCombat);
         }
 

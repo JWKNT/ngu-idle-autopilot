@@ -48,6 +48,17 @@ namespace NGUInjector.Autopilot
         public bool AllowQuirkSpending = false;
         public bool AllowEndSequence = false;
 
+        // Task-29 staged authority ceiling. These flags document the deployment boundary as data,
+        // but this wave deliberately normalizes every unproven live path back to false on load.
+        public bool AllowVerifiedReversibleActions = true;
+        public bool AllowGlobalSchedulerExecution = false;
+        public bool AllowPermanentPurchaseExecution = false;
+        public bool AllowMoneyPitExecution = false;
+        public bool AllowDifficultyExecution = false;
+        public bool AllowTitanOneThroughTwelveExecution = false;
+        public bool AllowTitanThirteenFourteenExecution = false;
+        public bool AllowMove69Execution = false;
+
         public long ExpReserve = 0;
         public long ApReserve = 0;
         public long PPReserve = 0;
@@ -62,12 +73,41 @@ namespace NGUInjector.Autopilot
             {
                 var loaded = JsonUtility.FromJson<AutopilotConfig>(File.ReadAllText(path));
                 if (loaded != null)
-                    return loaded;
+                    return ApplyDeploymentAuthorityCeiling(loaded);
             }
 
-            var config = new AutopilotConfig();
+            var config = ApplyDeploymentAuthorityCeiling(new AutopilotConfig());
             config.Save(path);
             return config;
+        }
+
+        internal static AutopilotConfig ApplyDeploymentAuthorityCeiling(
+            AutopilotConfig config)
+        {
+            if (config == null) throw new ArgumentNullException("config");
+            // These routes remain modeled/read-only until their named copied-save fixtures,
+            // build bindings, and backtests are explicitly completed in a later deployment.
+            config.AllowExpSpending = false;
+            config.AllowApSpending = false;
+            config.AllowPerkSpending = false;
+            config.AllowQuirkSpending = false;
+            config.AllowRebirths = false;
+            config.AllowChallenges = false;
+            config.AllowEndSequence = false;
+            config.ManageMoneyPit = false;
+            config.AllowGlobalSchedulerExecution = false;
+            config.AllowPermanentPurchaseExecution = false;
+            config.AllowMoneyPitExecution = false;
+            config.AllowDifficultyExecution = false;
+            config.AllowTitanOneThroughTwelveExecution = false;
+            config.AllowTitanThirteenFourteenExecution = false;
+            config.AllowMove69Execution = false;
+            return config;
+        }
+
+        internal bool GlobalSchedulerIsShadowOnly
+        {
+            get { return true; }
         }
 
         public void Save(string path)
@@ -113,7 +153,15 @@ namespace NGUInjector.Autopilot
                    + "|" + ManageBloodMagic + "|" + ManageBeards
                    + "|" + AllowExpSpending + "|" + AllowApSpending + "|" + AllowRebirths
                    + "|" + AllowChallenges + "|" + AllowCardYeeting + "|" + AllowPerkSpending
-                   + "|" + AllowQuirkSpending + "|" + AllowEndSequence;
+                   + "|" + AllowQuirkSpending + "|" + AllowEndSequence
+                   + "|" + AllowVerifiedReversibleActions
+                   + "|" + AllowGlobalSchedulerExecution
+                   + "|" + AllowPermanentPurchaseExecution
+                   + "|" + AllowMoneyPitExecution
+                   + "|" + AllowDifficultyExecution
+                   + "|" + AllowTitanOneThroughTwelveExecution
+                   + "|" + AllowTitanThirteenFourteenExecution
+                   + "|" + AllowMove69Execution;
         }
     }
 }

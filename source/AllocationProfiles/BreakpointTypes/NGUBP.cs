@@ -7,6 +7,8 @@ NGUBP allocates Energy or Magic to one NGU target using native cap/progress form
 targets. NGU levels are persistent but speed and resource opportunity cost are stage-dependent;
 the planner decides admission while this file validates and executes the chosen track.
 */
+using NGUInjector.Autopilot;
+
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
     internal class NGUBP : BaseBreakpoint
@@ -64,14 +66,16 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         private void AllocateMagic()
         {
             var alloc = CalculateNGUMagicCap();
-            SetInput(alloc);
+            if (alloc <= 0 || !SetInput(alloc))
+                return;
             Character.NGUController.NGUMagic[Index].add();
         }
 
         private void AllocateEnergy()
         {
             var alloc = CalculateNGUEnergyCap();
-            SetInput(alloc);
+            if (alloc <= 0 || !SetInput(alloc))
+                return;
             Character.NGUController.NGU[Index].add();
         }
 
@@ -80,12 +84,12 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Type == ResourceType.Energy || Type == ResourceType.Magic;
         }
 
-        private float CalculateNGUEnergyCap()
+        private long CalculateNGUEnergyCap()
         {
             return Math.Min(Character.NGUController.energyNGUCapAmount(Index), MaxAllocation);
         }
 
-        internal float CalculateNGUMagicCap()
+        internal long CalculateNGUMagicCap()
         {
             return Math.Min(Character.NGUController.magicNGUCapAmount(Index), MaxAllocation);
         }
@@ -115,13 +119,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 num3 = Character.hardCap();
 
             var num4 = num3 <= 1.0 ? 1L : (long)num3;
-            var num = (long)(num4 / (long)Math.Ceiling(num4 / (double)MaxAllocation) * 1.00000202655792);
-            if (num + 1L <= long.MaxValue)
-                ++num;
-            if (num > Character.idleEnergy)
-                num = Character.idleEnergy;
-            if (num < 0L)
-                num = 0;
+            var num = ExactResourceAllocator.CapAtTickBoundary(num4, MaxAllocation,
+                Character.idleEnergy);
 
             var ppt = (double)num / num4;
             ret.Num = num;
@@ -155,13 +154,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             if (num3 >= Character.hardCap())
                 num3 = Character.hardCap();
             var num4 = num3 <= 1.0 ? 1L : (long)num3;
-            var num = (long)(num4 / (long)Math.Ceiling(num4 / (double)MaxAllocation) * 1.00000202655792);
-            if (num + 1L <= long.MaxValue)
-                ++num;
-            if (num > Character.magic.idleMagic)
-                num = Character.magic.idleMagic;
-            if (num < 0L)
-                num = 0L;
+            var num = ExactResourceAllocator.CapAtTickBoundary(num4, MaxAllocation,
+                Character.magic.idleMagic);
 
             var ppt = (double)num / num4;
             ret.Num = num;

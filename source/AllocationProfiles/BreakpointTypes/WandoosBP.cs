@@ -43,14 +43,18 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         private void AllocateEnergy()
         {
             var cap = Character.wandoos98Controller.capAmountEnergy();
-            SetInput(Math.Min(cap, MaxAllocation));
+            var allocation = Math.Min(cap, MaxAllocation);
+            if (allocation <= 0 || !SetInput(allocation))
+                return;
             Character.wandoos98Controller.addEnergy();
         }
 
         private void AllocateMagic()
         {
             var cap = Character.wandoos98Controller.capAmountMagic();
-            SetInput(Math.Min(cap, MaxAllocation));
+            var allocation = Math.Min(cap, MaxAllocation);
+            if (allocation <= 0 || !SetInput(allocation))
+                return;
             Character.wandoos98Controller.addMagic();
         }
 

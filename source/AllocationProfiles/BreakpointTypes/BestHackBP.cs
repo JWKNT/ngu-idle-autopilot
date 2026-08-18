@@ -7,8 +7,9 @@ using System.Text;
 FILE PURPOSE
 
 BestHackBP specializes Hack allocation by selecting the best live permanent Hack target rather
-than a fixed index. It inherits native cap/allocation behavior from HackBP. Wish/NGU policy and
-Resource 3 budgeting remain outside this selector.
+than a fixed index. All installed IDs 0-15 participate, including terminal Hack 15, and milestone
+ETAs sum native one-completion-per-20ms event chunks rather than a continuous approximation. It
+inherits native allocation behavior from HackBP; Wish/NGU portfolio policy remains outside it.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -27,12 +28,14 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         }
 
         protected bool Unlocked(int id) { 
-            return id <= 14 && Character.buttons.hacks.interactable && !AtHardCap(id);
+            return Autopilot.ExactResourceAllocator.IsSupportedHackId(id,
+                       Character.hacks.hacks.Count)
+                   && Character.buttons.hacks.interactable && !AtHardCap(id);
         }
 
         protected override bool TargetMet()
         {
-            for (int i = 0; i < Character.hacks.hacks.Count && i <= 14; i++)
+            for (int i = 0; i < Character.hacks.hacks.Count && i <= 15; i++)
             {
                 if (!this.TargetMet(i))
                 {
@@ -99,7 +102,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 {
                     Character.hacksController.setToNextMilestone(bestHack);
                 }                        
-                Character.hacksController.addR3(bestHack, (long)alloc);
+                Character.hacksController.addR3(bestHack, alloc);
             }
             return true;
         }
@@ -114,24 +117,19 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Character.hacks.hacks[id].level >= Character.hacksController.hardCapLevel(id);
         }
 
-        private double TimeToNextMilestone(int id, float r3)
+        private double TimeToNextMilestone(int id, long r3)
         {
             if (r3 <= 0)
                 return double.PositiveInfinity;
-            var speed = r3 * Character.totalRes3Power() * Character.hacksController.totalHackSpeedBonus() * 50.0
-                        / Character.hacksController.properties[id].baseDivider;
-            if (speed <= 0)
+            var progressScalePerTick = r3 * Character.totalRes3Power()
+                                       * Character.hacksController.totalHackSpeedBonus()
+                                       / Character.hacksController.properties[id].baseDivider;
+            if (progressScalePerTick <= 0)
                 return double.PositiveInfinity;
             var hack = Character.hacks.hacks[id];
             var levels = Math.Max(1L, Character.hacksController.levelsToNextMilestone(id));
-            var target = hack.level + levels;
-            var total = 0.0;
-            for (var level = hack.level; level < target; level++)
-            {
-                var divider = Math.Pow(1.0078, level) * (level + 1.0);
-                total += divider / speed * (level == hack.level ? Math.Max(0.0, 1.0 - hack.progress) : 1.0);
-            }
-            return total;
+            return Autopilot.ExactResourceAllocator.HackMilestoneSeconds(hack.level, levels,
+                hack.progress, progressScalePerTick);
         }
 
         private double MilestoneValue(int id)
@@ -152,6 +150,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             else if (id == 1) relevance = 4.0; // Adventure/Titan stats
             else if (id == 13) relevance = 3.0; // Compounds all future hacks
             else if (id == 14 && Character.wishes.wishesOn) relevance = 2.5;
+            else if (id == 15) relevance = 3.0; // terminal/card progression dependency
             else if (id == 2 && Character.buttons.brokenTimeMachine.interactable) relevance = 2.0;
             return Math.Max(0.0, relative) * relevance;
         }

@@ -1,24 +1,38 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reflection;
-using System.Text;
-using NGUInjector.Autopilot;
-
 /*
 FILE PURPOSE
 
-MoneyPitManager decides when reset-local Gold can be safely tossed, chooses required special
-loadouts/diggers, invokes the native Pit/Spin controllers, and verifies cooldown/reward deltas.
-Because the Pit consumes all Gold, it consults ResourceHorizonModel's shared claim ledger and will
-not toss while an active Augment/Time-Machine charge or valued Blood target owns working capital.
-Cumulative permanent tiers are source-proven from native flags; a plan horizon, never the legacy
-AutoRebirth checkbox or a fictitious hour, decides whether a not-yet-funded tier is reachable.
+Purpose: MoneyPitManager preflights and, when separately authorized, executes the native all-Gold
+Money Pit toss. It also owns the unrelated safe daily-spin wrapper.
+
+Mechanism: The manager consults ResourceHorizonModel's chronological hard-event ledger, models Pit
+cumulative tiers with native float/log boundaries plus a saving margin, proves Looty's item-67
+filter and usable-slot delivery conditions through task-6 topology/capacity APIs, invokes the Pit
+through task-5's build-pinned adapter, and verifies exact Gold/toss/cumulative/tier deltas.
+
+Inputs and outputs: Inputs are live Pit time/count/flags/Gold, active plan horizon, inventory filters
+and ordinary topology, settings thresholds, and optional loadout locks. Outputs are HOLD/REJECTED or
+confirmed reward telemetry. No save/config/runtime file is touched.
+
+Invariants and safety: A toss consumes all current Gold and advances an ever-growing cooldown. It is
+never attempted while a hard chronological charge owns stock. A Looty-tier toss requires both
+filters open and one exact free slot inside [totalInvMergeSlots(), curSpaces()). Native reflection
+must be build-pinned, and normal return is not success without exact postconditions. Autonomous Pit
+authority remains off for this implementation wave until integration branch tests grant it.
+
+Extension points and non-goals: Task 29 may enable the authority constant after integration tests
+and wrap the typed call in the root coordinator. Global task 28 may rank toss-now versus wait. This
+manager does not assign stochastic Pit reward value or mutate Magic to chase the 1-in-5 high tier.
 */
+using System;
+using System.Linq;
+using NGUInjector.Autopilot;
+
 namespace NGUInjector.Managers
 {
     internal static class MoneyPitManager
     {
+        internal static readonly bool AutonomousTossAuthorityEnabled = false;
+        private const int LootyItemId = 67;
         private static string _lastHoldReason = string.Empty;
         private static DateTime _lastHoldLog = DateTime.MinValue;
 
@@ -29,6 +43,9 @@ namespace NGUInjector.Managers
 
         internal static void CheckMoneyPit(double reserve)
         {
+            if (Main.Character == null || Main.Character.settings == null
+                || Main.Character.pit == null || Main.Character.pitController == null)
+                return;
             if (!Main.Character.settings.pitUnlocked) return;
             if (Main.Character.pit.pitTime.totalseconds < Main.Character.pitController.currentPitTime()) return;
             if (Main.Character.realGold < reserve) return;
@@ -38,9 +55,9 @@ namespace NGUInjector.Managers
             {
                 var plan = Main.Autopilot.Plan;
                 var remaining = plan != null && !plan.RebirthExecutionHold
-                    ? (int)Math.Max(1.0, Math.Ceiling(plan.EffectiveAllocationTarget(Main.Character)
+                    ? (int)Math.Max(0.0, Math.Ceiling(plan.EffectiveAllocationTarget(Main.Character)
                                                      - Main.Character.rebirthTime.totalseconds))
-                    : 1;
+                    : 0;
                 var ledger = ResourceHorizonModel.EvaluateGold(Main.Character, remaining);
                 var protectedSpend = ledger.ProtectedSpendBefore(GoldClaimKind.MoneyPitPermanentTier);
                 if (protectedSpend > 0)
@@ -65,8 +82,20 @@ namespace NGUInjector.Managers
                 return;
             }
 
+            string preflightReason;
+            if (!TryPreflightDelivery(Main.Character, out preflightReason))
+            {
+                LogHold("Money Pit held before all-Gold debit: " + preflightReason);
+                return;
+            }
+            if (!AutonomousTossAuthorityEnabled)
+            {
+                LogHold("Money Pit branch is preflighted but autonomous toss authority remains "
+                        + "disabled pending integration branch tests");
+                return;
+            }
+
             var gearSwapped = false;
-            var diggersSwapped = false;
             if (Main.Settings.MoneyPitLoadout.Length > 0
                 || Main.AutopilotWants(x => x.ManageMoneyPit))
             {
@@ -75,31 +104,10 @@ namespace NGUInjector.Managers
             }
             try
             {
-                if (Main.Character.realGold >= 1e50 && Main.Settings.ManageMagic && Main.Character.wishes.wishes[4].level > 0)
-                {
-                    if (!DiggerManager.CanSwap())
-                    {
-                        Main.LogAction("REJECTED", "Money Pit postponed because digger state is locked");
-                        return;
-                    }
-                    Main.Character.removeMostMagic();
-                    for (var i = Main.Character.bloodMagic.ritual.Count - 1; i >= 0; i--)
-                        Main.Character.bloodMagicController.bloodMagics[i].cap();
-
-                    DiggerManager.SaveDiggers();
-                    diggersSwapped = true;
-                    if (!DiggerManager.EquipDiggers(new[] {10}))
-                    {
-                        Main.LogAction("REJECTED", "Money Pit postponed because the Blood Digger transaction rolled back");
-                        return;
-                    }
-                }
                 DoMoneyPit();
             }
             finally
             {
-                if (diggersSwapped)
-                    DiggerManager.RestoreDiggers();
                 if (gearSwapped)
                 {
                     if (LoadoutManager.RestoreGear())
@@ -132,7 +140,9 @@ namespace NGUInjector.Managers
             for (var i = 0; i < thresholds.Length; i++)
             {
                 if (claimed[i]) continue;
-                currentGoldRequired = Math.Max(1e5, thresholds[i] - Math.Max(0.0, c.pit.totalGold));
+                currentGoldRequired = Math.Max(1e5,
+                    GoldMechanics.SafePitThreshold(thresholds[i])
+                    - Math.Max(0.0, c.pit.totalGold));
                 label = labels[i];
                 return true;
             }
@@ -162,21 +172,83 @@ namespace NGUInjector.Managers
             _lastHoldLog = DateTime.UtcNow;
         }
 
+        internal static bool TryPreflightDelivery(Character c, out string reason)
+        {
+            reason = string.Empty;
+            if (c == null || c.pit == null || c.inventory == null
+                || c.inventory.itemList == null || c.settings == null)
+            {
+                reason = "Pit/inventory snapshot is incomplete";
+                return false;
+            }
+            var lootyDue = c.pit.tier1TRewarded && c.pit.tier2TRewarded
+                           && !c.pit.tier3TRewarded
+                           && GoldMechanics.NativePitTierReached(
+                               Math.Max(0.0, c.pit.totalGold) + Math.Max(0.0, c.realGold), 10);
+            var exactFilter = c.inventory.itemList.itemFiltered != null
+                              && c.inventory.itemList.itemFiltered.Count > LootyItemId
+                              && c.inventory.itemList.itemFiltered[LootyItemId];
+            var topology = InventoryManager.CaptureOrdinaryTopology(c);
+            var capacity = topology == null ? null : LootCapacity.ProveOrdinary(topology,
+                LootCapacityRequirement.ExactUniqueDelivery(
+                    "money-pit-looty-67", 0, 1, 0));
+            var preflight = MoneyPitDeliveryPreflight.Evaluate(lootyDue,
+                c.settings.filterAccessory, exactFilter,
+                capacity != null && capacity.Admitted);
+            reason = preflight.Reason;
+            return preflight.Admitted;
+        }
+
         private static void DoMoneyPit()
         {
             var controller = Main.Character.pitController;
             if (!controller.canToss())
                 return;
+            MutationLease tossLease;
+            string tossHold;
+            var tossOwner = ExecutionSafety.OwnerFor(MutationClass.MoneyPit);
+            if (!ExecutionSafety.TryAcquire(MutationClass.MoneyPit, MutationRisk.Irreversible,
+                    tossOwner, out tossLease, out tossHold) || !tossLease.IsCurrent)
+            {
+                LogHold("Money Pit native debit held: "
+                        + (string.IsNullOrEmpty(tossHold)
+                            ? "execution lease became stale" : tossHold));
+                return;
+            }
             var timerBefore = Main.Character.pit.pitTime.totalseconds;
             var goldBefore = Main.Character.realGold;
-            typeof(PitController).GetMethod("engage", BindingFlags.NonPublic | BindingFlags.Instance)
-                ?.Invoke(controller, null);
-            var confirmed = Main.Character.pit.pitTime.totalseconds < timerBefore
-                            || Main.Character.realGold < goldBefore;
+            var totalBefore = Main.Character.pit.totalGold;
+            var tossCountBefore = Main.Character.pit.tossCount;
+            var tier1FlagBefore = Main.Character.pit.tier1TRewarded;
+            var tier2FlagBefore = Main.Character.pit.tier2TRewarded;
+            var lootyFlagBefore = Main.Character.pit.tier3TRewarded;
+            var lootyCountBefore = Main.Character.inventory.inventory.Count(x =>
+                x != null && x.id == LootyItemId);
+            var native = NativeBindingRegistry.Create(typeof(Character).Assembly,
+                Main.GameAssemblySha256).CreateMutationAdapters();
+            var invocation = native.TossMoneyPit(controller);
+            var expectedTotal = totalBefore + goldBefore;
+            var totalTolerance = Math.Max(1e-6, Math.Abs(expectedTotal) * 1e-12);
+            var lootyWasDue = tier1FlagBefore && tier2FlagBefore && !lootyFlagBefore
+                              && GoldMechanics.NativePitTierReached(expectedTotal, 10);
+            var lootyDelivered = !lootyWasDue
+                                 || (Main.Character.pit.tier3TRewarded
+                                     && Main.Character.inventory.inventory.Count(x =>
+                                         x != null && x.id == LootyItemId) > lootyCountBefore);
+            var confirmed = invocation.ReturnedNormally
+                            && Main.Character.pit.tossCount == tossCountBefore + 1
+                            && Main.Character.pit.pitTime.totalseconds <= timerBefore
+                            && Math.Abs(Main.Character.pit.totalGold - expectedTotal)
+                               <= totalTolerance
+                            && Main.Character.realGold == 0.0
+                            && lootyDelivered;
             Main.LogAction(confirmed ? "REWARD" : "REJECTED",
                 confirmed
-                    ? "Money Pit: " + controller.pitText.text + " [confirmed by timer/gold delta]"
-                    : "Money Pit request produced no timer/gold transition");
+                    ? "Money Pit: " + controller.pitText.text
+                      + " [confirmed all-Gold debit, cumulative total, +1 toss/cooldown"
+                      + (lootyWasDue ? ", and Looty delivery" : string.Empty) + "]"
+                    : "Money Pit request failed exact postconditions; native binding status "
+                      + invocation.Status + ": " + invocation.Reason);
         }
 
         internal static void DoDailySpin()
