@@ -155,6 +155,8 @@ exposes no mutation endpoint.
     };
     const previewRatios = [optionalNumber(s.rebirthProjectedAttackMultiplier), optionalNumber(s.rebirthProjectedDefenseMultiplier)].filter((value) => value !== null);
     const challengeActive = String(s.stage || "").toLowerCase().includes("active challenge");
+    const challengeTargetBoss = optionalNumber(s.challengeTargetBoss);
+    const challengeTargetLevel = optionalNumber(s.challengeTargetLevel);
     return {
       rebirth: {
         action,
@@ -189,8 +191,8 @@ exposes no mutation endpoint.
         entryEtaSeconds: null,
         clearEtaSeconds: optionalNumber(s.nextChallengeEtaSeconds || s.challengeEtaSeconds),
         recoveryEtaSeconds: optionalNumber(s.challengeRecoveryEtaSeconds),
-        targetBoss: optionalNumber(s.challengeTargetBoss),
-        targetLevel: optionalNumber(s.challengeTargetLevel),
+        targetBoss: challengeTargetBoss !== null && challengeTargetBoss >= 0 ? challengeTargetBoss : null,
+        targetLevel: challengeTargetLevel !== null && challengeTargetLevel >= 0 ? challengeTargetLevel : null,
         reason: s.challengeEvidenceSummary || "The producer emitted no challenge-admission evidence.",
       },
       identity: {

@@ -81,6 +81,8 @@ class ObservabilityTests(unittest.TestCase):
                 "rebirthNextEvaluationEtaSeconds": 12,
                 "rebirthEtaReason": "next finite event candidate",
                 "challengeEvidenceSummary": "no same-type evidence yet",
+                "challengeTargetBoss": -1,
+                "challengeTargetLevel": -1,
             }
         )
         self.assertEqual(view["rebirth"]["action"], "hold")
@@ -93,6 +95,8 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(view["challenge"]["status"], "none-admitted")
         self.assertIsNone(view["challenge"]["entryEtaSeconds"])
         self.assertIsNone(view["challenge"]["clearEtaSeconds"])
+        self.assertIsNone(view["challenge"]["targetBoss"])
+        self.assertIsNone(view["challenge"]["targetLevel"])
         self.assertFalse(view["identity"]["verifiedEnvelope"])
 
     def test_no_rebirth_challenge_is_an_explicit_no_reset_policy(self) -> None:

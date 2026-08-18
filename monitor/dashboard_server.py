@@ -246,6 +246,10 @@ def build_observability(state: dict[str, Any]) -> dict[str, Any]:
     recovery_eta = first_seconds(state, "challengeRecoveryEtaSeconds")
     target_boss = finite_number(state.get("challengeTargetBoss"))
     target_level = finite_number(state.get("challengeTargetLevel"))
+    if target_boss is not None and target_boss < 0:
+        target_boss = None
+    if target_level is not None and target_level < 0:
+        target_level = None
     if parsed:
         if challenge_eta is None:
             challenge_eta = parsed["eta"]
