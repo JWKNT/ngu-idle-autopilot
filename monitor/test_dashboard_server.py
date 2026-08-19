@@ -9,6 +9,7 @@ filtering ordinary ability-button spam.
 Missing telemetry must remain unknown rather than turning into a false zero-second ETA. Challenge
 rebirth legality must come only from its explicit telemetry, and the browser shell must keep the
 current route beside the ranked priorities while showing the selected Boss as the headline value.
+An active Gold bootstrap must replace, rather than duplicate, the paused ITOPOD priority.
 The tests never contact the live bot, mutate telemetry, or turn a missing field into an admission,
 reset schedule, or deployment-verification claim.
 """
@@ -444,6 +445,9 @@ class DashboardMarkupTests(unittest.TestCase):
         self.assertIn('s.itopodModelLimitsClimb === false', source)
         self.assertIn('s.itopodRequiresFullHpOnEntry === true', source)
         self.assertIn('Heal before retrying ITOPOD', source)
+        self.assertIn('if (goldBootstrap)', source)
+        self.assertIn('Start Gold income for ${text(s.goldBootstrapSink', source)
+        self.assertIn('s.goldBootstrapActive ? s.goldBootstrapReason : s.goldDecision', source)
         self.assertIn('live fights decide the limit', source)
         self.assertIn('diagnostic only', source)
         self.assertNotIn('detail: `${text(s.itopodRouteReason', source)

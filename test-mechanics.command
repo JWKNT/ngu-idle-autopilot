@@ -121,6 +121,7 @@ compile_run GlobalSchedulerTests source/Autopilot/MechanicsEndgame.cs \
   source/Autopilot/GlobalEventScheduler.cs source/Autopilot/PlannerTrace.cs
 compile_run_define GoldEventLedgerTests GOLD_LEDGER_TESTS \
   source/Autopilot/ExactResourceAllocator.cs source/Autopilot/ResourceHorizonModel.cs
+compile_run GoldBootstrapTests source/Autopilot/GoldBootstrapPlanner.cs
 
 compile_run PermanentPurchaseTests source/Autopilot/ExecutionSafety.cs \
   source/Autopilot/MutationCoordinator.cs source/Autopilot/NativeBindingRegistry.cs \
@@ -156,4 +157,4 @@ compile_reflection_run ResetExecutionTests "$temporary_relative/NGUIdleAutopilot
 ./test-rebirth-policy.command
 ./tests/test_deployment_lifecycle.command
 
-print "PASS: aggregate regression runner completed 36 focused suites"
+print "PASS: aggregate regression runner completed 37 focused suites"

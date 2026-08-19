@@ -36,6 +36,7 @@ namespace NGUInjector.Managers
         TitanAutokill,
         Itopod,
         ResourceRefill,
+        GoldBootstrap,
         AdventureProgression,
         ContinuousAdventure
     }

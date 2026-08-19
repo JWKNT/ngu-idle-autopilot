@@ -9,12 +9,14 @@ using static NGUInjector.Main;
 FILE PURPOSE
 
 ProgressionLoadoutOptimizer selects the best physical equipment objects for the active boss,
-explicit Adventure route, major-unlock, ITOPOD, or resource-refill context, including ordered weapons and constrained
+explicit Adventure route, post-rebirth Gold bootstrap, major-unlock, ITOPOD, or resource-refill context, including ordered weapons and constrained
 accessories. One immutable objective/character snapshot feeds a Pareto branch-and-bound search over
 canonical accessory combinations; results report incumbent seconds, an admissible lower bound, and
 the remaining gap. Hard major-unlock combat uses target-enemy kill/survival math and excludes
 unrelated production bonuses; routine contexts may accept lower raw combat stats for a proven ETA
-improvement. ITOPOD record staging maximizes real combat capability and fixed farming retains a
+improvement. The Gold-bootstrap objective keeps the same survival proof but ranks complete sets by
+conservative ordinary-enemy Gold per fight-second, because that drop seeds liquid Gold and the Time
+Machine base record. ITOPOD record staging maximizes real combat capability and fixed farming retains a
 repeatable minimum-roll Regular-Attack one-hit requirement; live outcomes, rather than a modeled
 reach ceiling, decide whether a decade push remains open. A live ITOPOD route preempts stale selected-boss gear
 ownership because those systems use different combat objectives. Equal-time climb sets break ties
@@ -38,8 +40,9 @@ namespace NGUInjector.Managers
         private const int MetricMagicSpeed = 5;
         private const int MetricEnergyBar = 6;
         private const int MetricMagicBar = 7;
-        private const int MetricGeneral = 8;
-        private const int MetricCount = 9;
+        private const int MetricGold = 8;
+        private const int MetricGeneral = 9;
+        private const int MetricCount = 10;
         private const long TagApathy = 1L;
         private static int _lastFingerprint;
         private static double _lastRun;
@@ -62,6 +65,7 @@ namespace NGUInjector.Managers
         private static bool _routedAdventurePush;
         private static bool _routedAdventureValuesLoot;
         private static bool _routedAdventureBossOnly;
+        private static bool _routedAdventureGoldBootstrap;
         private static bool _probingBossLoadout;
         private static bool _cachedBossObjective;
         private static int _cachedBossId = int.MinValue;
@@ -102,18 +106,20 @@ namespace NGUInjector.Managers
         enemy-free frame evaluates the exact route selected by ControlAdventure.
         */
         internal static void SetAdventureRouteObjective(int zone, bool progressionPush,
-            bool valuesLoot, bool bossOnly)
+            bool valuesLoot, bool bossOnly, bool goldBootstrap)
         {
             zone = Math.Max(-1, zone);
             if (_routedAdventureZone == zone
                 && _routedAdventurePush == progressionPush
                 && _routedAdventureValuesLoot == valuesLoot
-                && _routedAdventureBossOnly == bossOnly)
+                && _routedAdventureBossOnly == bossOnly
+                && _routedAdventureGoldBootstrap == goldBootstrap)
                 return;
             _routedAdventureZone = zone;
             _routedAdventurePush = progressionPush;
             _routedAdventureValuesLoot = valuesLoot;
             _routedAdventureBossOnly = bossOnly;
+            _routedAdventureGoldBootstrap = goldBootstrap;
             if (_leaseKind == "routine") ClearObjectiveLease();
         }
 
@@ -205,6 +211,7 @@ namespace NGUInjector.Managers
             internal readonly double AdventureMaxHp;
             internal readonly double AdventureHpRegen;
             internal readonly double CurrentRespawnGear;
+            internal readonly double CurrentGoldGear;
             internal readonly int ItopodFloor;
             internal readonly bool ItopodClimbing;
             internal readonly bool ItopodManual;
@@ -245,6 +252,9 @@ namespace NGUInjector.Managers
                 AdventureMaxHp = Math.Max(0.0, c.totalAdvHP());
                 AdventureHpRegen = Math.Max(0.0, c.totalAdvHPRegen());
                 CurrentRespawnGear = Math.Max(0.0, controller.bonuses[specType.Respawn]);
+                CurrentGoldGear = Math.Max(0.0,
+                    controller.bonuses[specType.GoldDropAmount]
+                    + controller.bonuses[specType.GoldDrop2]);
                 ItopodFloor = itopodFloor;
                 ItopodClimbing = itopodClimbing;
                 ItopodManual = itopodManual;
@@ -348,6 +358,7 @@ namespace NGUInjector.Managers
             internal double MagicSpeedBonus;
             internal double EnergyBarBonus;
             internal double MagicBarBonus;
+            internal double GoldBonus;
             internal double General;
         }
 
@@ -738,11 +749,15 @@ namespace NGUInjector.Managers
                 valuesLoot = _routedAdventureValuesLoot;
                 if (ZoneStatHelper.UserOverrides != null)
                     ZoneStatHelper.UserOverrides.TryGetValue(targetZone, out targetStats);
-                kind = _routedAdventurePush ? LoadoutObjectiveKind.AdventureProgression
+                kind = _routedAdventureGoldBootstrap ? LoadoutObjectiveKind.GoldBootstrap
+                    : _routedAdventurePush ? LoadoutObjectiveKind.AdventureProgression
                     : LoadoutObjectiveKind.ContinuousAdventure;
                 id = "routine:routed-adventure:" + targetZone + ":push="
-                     + _routedAdventurePush + ":loot=" + valuesLoot + ":boss=" + bossOnly;
-                display = _routedAdventurePush
+                     + _routedAdventurePush + ":loot=" + valuesLoot + ":boss=" + bossOnly
+                     + ":gold=" + _routedAdventureGoldBootstrap;
+                display = _routedAdventureGoldBootstrap
+                    ? "post-rebirth Gold bootstrap in " + GameNames.Zone(c, targetZone)
+                    : _routedAdventurePush
                     ? "Adventure combat push into " + GameNames.Zone(c, targetZone)
                     : "easy Adventure farming in " + GameNames.Zone(c, targetZone);
             }
@@ -1201,6 +1216,9 @@ namespace NGUInjector.Managers
                  + controller.equipSpecBonus(specType.MagicPerBar2, item)
                  + controller.equipSpecBonus(specType.MagicPerBar3, item)
                  + controller.equipSpecBonus(specType.AllPerBar, item)) * slotFactor);
+            metrics[MetricGold] = Math.Max(0.0,
+                (controller.equipSpecBonus(specType.GoldDropAmount, item)
+                 + controller.equipSpecBonus(specType.GoldDrop2, item)) * slotFactor);
             metrics[MetricGeneral] = Math.Max(0.0,
                 SpecialUtility(c, item, slotFactor) + ProductionTrimUtility(c, item));
             return metrics;
@@ -1362,12 +1380,15 @@ namespace NGUInjector.Managers
                     return EvaluateItopod(objective, projection, totals.SetupSeconds);
                 case LoadoutObjectiveKind.ResourceRefill:
                     return EvaluateResourceRefill(objective, projection, totals.SetupSeconds);
+                case LoadoutObjectiveKind.GoldBootstrap:
+                    return EvaluateAdventureObjective(objective, projection,
+                        totals.SetupSeconds, false, true);
                 case LoadoutObjectiveKind.AdventureProgression:
                     return EvaluateAdventureObjective(objective, projection,
-                        totals.SetupSeconds, false);
+                        totals.SetupSeconds, false, false);
                 default:
                     return EvaluateAdventureObjective(objective, projection,
-                        totals.SetupSeconds, false);
+                        totals.SetupSeconds, false, false);
             }
         }
 
@@ -1415,7 +1436,7 @@ namespace NGUInjector.Managers
 
         private static LoadoutEvaluation EvaluateAdventureObjective(BoundObjective objective,
             CandidateProjection projection, double setupSeconds,
-            bool major)
+            bool major, bool goldBootstrap = false)
         {
             if (major && objective.Major != null && objective.Major.TitanIndex >= 5)
             {
@@ -1507,6 +1528,18 @@ namespace NGUInjector.Managers
                                 / Math.Max(1e-9,
                                     1.0 + objective.LiveLootBonus + objective.CubeLootBonus);
                 meanSeconds = trialSeconds / Math.Max(1e-9, lootRatio);
+                p90Seconds = meanSeconds;
+            }
+            else if (goldBootstrap)
+            {
+                // Loot Chance does not affect guaranteed Gold. Native totalGoldbonus multiplies
+                // the Adventure drop by (1 + GoldDropAmount + GoldDrop2), while every permanent
+                // factor is fixed inside this objective epoch. Dividing fight-cycle time by the
+                // exact candidate/current gear ratio therefore ranks conservative Gold per second.
+                var goldRatio = (1.0 + projection.GoldBonus)
+                                / Math.Max(1e-9,
+                                    1.0 + objective.Projection.CurrentGoldGear);
+                meanSeconds = trialSeconds / Math.Max(1e-9, goldRatio);
                 p90Seconds = meanSeconds;
             }
             var total = setupSeconds + meanSeconds;
@@ -1702,6 +1735,7 @@ namespace NGUInjector.Managers
                 MagicSpeedBonus = totals.Metric(MetricMagicSpeed),
                 EnergyBarBonus = totals.Metric(MetricEnergyBar),
                 MagicBarBonus = totals.Metric(MetricMagicBar),
+                GoldBonus = totals.Metric(MetricGold),
                 General = totals.Metric(MetricGeneral)
             };
         }
@@ -2397,9 +2431,9 @@ namespace NGUInjector.Managers
             utility += 20.0 * ((currentEnergyFill - candidateEnergyFill)
                                + (currentMagicFill - candidateMagicFill));
 
-            // Gold Drop specials affect Adventure enemy drops, not Character.grossGoldPerSecond(),
-            // whose native formula is entirely Time Machine and permanent multipliers. Do not equip
-            // a Gold Drop set to resolve a Blood/TM GPS shortfall; it has exactly zero modeled effect.
+            // Gold Drop specials do not multiply an already-established gross GPS stream. The
+            // separate GoldBootstrap objective values them only while an ordinary enemy drop is
+            // being collected to establish liquid Gold or the Time Machine base-Gold record.
 
             var currentLootBonus = controller.bonuses[specType.Looting]
                                    + controller.bonuses[specType.Looting2];

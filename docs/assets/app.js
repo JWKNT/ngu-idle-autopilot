@@ -9,7 +9,9 @@ optional fields stay visibly unavailable rather than becoming false zero values 
 reset legality comes only from an active challenge plus challengeAllowsRebirth, never a negative
 rebirth target. ITOPOD record pushes are explained from live combat outcomes; formula estimates are
 shown separately and never presented as climb gates. Held,
-Pending, and Quarantined are separate states. Local copies use their own origin. The client sends no commands, persists no game data, and
+Pending, and Quarantined are separate states. A live post-rebirth Gold bootstrap temporarily
+replaces the ITOPOD priority and explains its named sink, conservative drop, and ETA. Local copies
+use their own origin. The client sends no commands, persists no game data, and
 exposes no mutation endpoint.
 */
 (() => {
@@ -450,7 +452,8 @@ exposes no mutation endpoint.
     setText("metric-boss-note", `${bossNote} · target ETA ${optionalDuration(s.bossDefeatEtaSeconds, "unavailable")}`);
 
     setText("metric-adventure", s.adventureTargetName, "Selecting route");
-    const routeMode = number(s.adventureTargetZone, -1) >= 1000 || number(s.adventureZone, -1) >= 1000
+    const routeMode = s.goldBootstrapActive ? `Gold bootstrap · ${text(s.goldBootstrapMode, "ordinary Adventure")}`
+      : number(s.adventureTargetZone, -1) >= 1000 || number(s.adventureZone, -1) >= 1000
       ? `ITOPOD · ${text(s.itopodMode, "route selected")}`
       : s.majorUnlockActive ? `major unlock · ${s.majorUnlockName}`
       : s.collectionIsBackfill ? "MAXX backfill" : s.adventureBossOnlyForSet ? "boss-only collection" : "forward progression";
@@ -473,14 +476,19 @@ exposes no mutation endpoint.
       priorities.push({ score: 96, tone: "challenge", title: `Prepare ${text(challenge.label, "the next challenge")}`, detail: `${text(challenge.reason, "The route has admission evidence")} · clear ${optionalDuration(challenge.clearEtaSeconds)}.` });
     }
 
+    const goldBootstrap = Boolean(s.goldBootstrapActive);
+    if (goldBootstrap) {
+      priorities.push({ score: 95, tone: "purchase", title: `Start Gold income for ${text(s.goldBootstrapSink, "the next useful purchase")}`, detail: `${text(s.goldBootstrapReason, "Fight an ordinary enemy to restart the Gold loop")} · ${optionalDuration(s.goldBootstrapEtaSeconds)}.` });
+    }
+
     const itopodMode = text(s.itopodMode, "").toLowerCase();
-    if (number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm")) {
+    if (!goldBootstrap && (number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm"))) {
       const itopod = itopodPresentation(s);
       priorities.push({ score: itopod.climbing ? 94 : 80, tone: "itopod", title: itopod.recovering ? "Heal before retrying ITOPOD" : itopod.climbing ? `Claim ITOPOD floor ${itopod.target}` : "Farm ITOPOD efficiently", detail: `${itopod.decision} Current floor ${itopod.current === null ? "unavailable" : itopod.current}.` });
     }
 
     if (s.majorUnlockActive) priorities.push({ score: 91, tone: "route", title: `Unlock ${text(s.majorUnlockName, "the next system")}`, detail: text(s.majorUnlockReason || s.adventureControlReason, "Push the Adventure gate that opens the next mechanic.") });
-    else if (!(number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm"))) priorities.push({ score: 78, tone: "route", title: text(s.loadoutObjective || s.adventureTargetName, "Keep progressing Adventure"), detail: text(s.adventureControlReason || s.loadoutDecision, "Use the strongest useful loadout for the selected route.") });
+    else if (!goldBootstrap && !(number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm"))) priorities.push({ score: 78, tone: "route", title: text(s.loadoutObjective || s.adventureTargetName, "Keep progressing Adventure"), detail: text(s.adventureControlReason || s.loadoutDecision, "Use the strongest useful loadout for the selected route.") });
 
     if (!observability.rebirth.noResetHold && observability.rebirth.resetEtaSeconds !== null) {
       priorities.push({ score: 72, tone: "rebirth", title: "Rebirth at the selected checkpoint", detail: `${optionalDuration(observability.rebirth.resetEtaSeconds)} remaining · ${text(observability.rebirth.reason, "value checked at the boundary")}.` });
@@ -552,8 +560,10 @@ exposes no mutation endpoint.
     setText("ap-decision", sentence(s.apDecision));
     setText("ap-eta", `${shortNumber(s.apShortfall)} until ${purchaseName(s, "ap")}${number(s.apEtaSeconds, -1) >= 0 ? ` · ${duration(s.apEtaSeconds, true)}` : ""}`);
     setText("gold-balance", `${shortNumber(s.gold)} Gold`);
-    setText("gold-decision", sentence(s.goldDecision));
-    setText("gold-rate", `${shortNumber(s.goldIncomePerSecond)} net Gold/s`);
+    setText("gold-decision", sentence(s.goldBootstrapActive ? s.goldBootstrapReason : s.goldDecision));
+    setText("gold-rate", s.goldBootstrapActive
+      ? `at least ${shortNumber(s.goldBootstrapConservativeDrop)} next drop · ${optionalDuration(s.goldBootstrapEtaSeconds)}`
+      : `${shortNumber(s.goldIncomePerSecond)} net Gold/s · ${shortNumber(s.timeMachineBaseGoldRecord)} base record`);
 
     const stats = s.characterStats || {};
     const res3Unlocked = Boolean(stats.res3Unlocked);

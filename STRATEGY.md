@@ -277,7 +277,8 @@ sentinel must be fought. The live gear check therefore proves the hardest floor 
 be fought, which is one below the range end. The bot disables Lazy ITOPOD when it would overwrite an
 intentional range.
 
-Once a climb or farm begins, it stays in ITOPOD. It does not hop back to Safe Zone every time
+Except for the finite post-rebirth Gold bootstrap described below, once a climb or farm begins it
+stays in ITOPOD. It does not hop back to Safe Zone every time
 Charge or Parry becomes ready: re-entering at the saved range start resets the current ten-kill
 floor counter. Low health also cannot trigger a voluntary mid-floor exit. At the enemy-free boundary
 between floors the combat controller may use Heal or Hyper Regen in place; otherwise ordinary
@@ -317,6 +318,26 @@ charged by:
 - Money Pit tosses;
 - other named progression expenses.
 
+ITOPOD enemies do not drop Gold. This creates a special problem just after rebirth: the bot can
+have enough Energy and Magic to make useful Augments or Blood, but those systems cannot start their
+first bar because the Gold pool is empty. The Time Machine also cannot make passive Gold until an
+ordinary Adventure enemy has supplied its base-Gold record after the native Fight Boss gate.
+
+The live route fixes that loop in three steps:
+
+1. Find a specific Augment, Upgrade, or valued Blood ritual that can actually finish before the
+   selected rebirth. Zero Gold by itself is not a reason to leave ITOPOD.
+2. Fight ordinary enemies in the strongest currently safe regular zone. Before the Time Machine
+   record gate, stop as soon as the named purchase has enough liquid Gold. After the gate, one
+   successful enemy drop establishes the base record and positive passive Gold income.
+3. Return Adventure priority to ITOPOD as soon as the purchase is funded or passive Gold is
+   running. Later shortfalls wait for that passive income instead of repeatedly farming zones.
+
+Admission uses the guaranteed 4x lower end of the game's Gold-drop roll, not the 4.5x average. The
+temporary loadout also has its own objective: remain safe while maximizing guaranteed Gold per
+fight-second. Gold Drop gear affects the ordinary drop that seeds the Time Machine record; it does
+not multiply an already-running Time Machine GPS stream.
+
 An action that can be afforded eventually may still be wrong if it steals Gold from an earlier,
 more important charge. Money Pit may toss only when both its manager and separate irreversible
 permission are enabled, the chronological Gold ledger leaves no earlier named expense unfunded,
@@ -343,7 +364,9 @@ Adventure routing first checks for hard obligations:
 1. a quest that owns the current zone;
 2. a one-time major unlock or puzzle step;
 3. a due executable Titan commitment;
-4. the best-valued choice among progression push, boss-only gear sniping, full-zone collection,
+4. a short ordinary-zone Gold bootstrap when a named, finishable Augment or Blood purchase would
+   otherwise be stuck at zero Gold;
+5. the best-valued choice among progression push, boss-only gear sniping, full-zone collection,
    backfill, and ITOPOD.
 
 The collection planner tracks permanent Item List debt, but collection debt is not automatically a

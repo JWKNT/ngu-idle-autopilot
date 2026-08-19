@@ -29,6 +29,10 @@ frontier, diagnostic Regular-Attack reach, and empirical failure breaker separat
 and schedule the next record divisible by ten; repeated confirmed floor deaths pause that push. Continuous
 ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
 ten-kill floor counter; floor-boundary healing happens in place without erasing partial progress.
+After a rebirth, ordinary Adventure briefly preempts ITOPOD only when a source-proved Augment or
+Blood purchase can finish inside the run but has no Gold. Before the native Time Machine record
+gate this farms only the required liquid Gold; afterward one enemy drop seeds positive passive GPS.
+Once the purchase is funded or GPS is positive, ITOPOD immediately regains priority.
 */
 namespace NGUInjector.Autopilot
 {
@@ -45,6 +49,8 @@ namespace NGUInjector.Autopilot
         private ZoneTarget _adventureTarget;
         private AdventureCollectionTarget _collectionTarget;
         private MajorUnlockTarget _majorUnlockTarget;
+        private GoldBootstrapDecision _goldBootstrapDecision = GoldBootstrapDecision.Hold(
+            "Gold bootstrap has not been evaluated");
         private int _loggedAdventureZone = int.MinValue;
         private int _loggedAdventureFightType = int.MinValue;
         private bool _loggedTitanAutoKill;
@@ -1057,6 +1063,50 @@ namespace NGUInjector.Autopilot
                 CaptureRecovery(combat);
                 return true;
             }
+
+            // ITOPOD enemies deliberately provide no Gold. A fresh run can therefore deadlock at
+            // zero Gold: Augments/Blood cannot pay their first native bar charge, and the Time
+            // Machine has no base-drop record from which to produce GPS. Admit a regular-zone
+            // detour only for an exact finishable sink, and release it as soon as liquid funding or
+            // one eligible record-setting kill restores the Gold feedback loop.
+            var wasGoldBootstrap = _goldBootstrapDecision != null
+                                   && _goldBootstrapDecision.ShouldRoute;
+            _goldBootstrapDecision = EvaluateGoldBootstrap(Main.Character);
+            if (_goldBootstrapDecision.ShouldRoute)
+            {
+                _collectionTarget = null;
+                _adventureTarget = new ZoneTarget
+                {
+                    Zone = _goldBootstrapDecision.TargetZone,
+                    FightType = _goldBootstrapDecision.TargetFightType
+                };
+                ProgressionLoadoutOptimizer.SetAdventureRouteObjective(
+                    _goldBootstrapDecision.TargetZone, false, false, false, true);
+                if (_loggedAdventureZone != _goldBootstrapDecision.TargetZone
+                    || _loggedAdventureFightType != _goldBootstrapDecision.TargetFightType)
+                {
+                    Main.LogAction("GOLD", _goldBootstrapDecision.Reason + "; conservative drop "
+                        + _goldBootstrapDecision.ConservativeDrop.ToString("0")
+                        + ", ETA " + Math.Ceiling(_goldBootstrapDecision.EtaSeconds) + "s");
+                    _loggedAdventureZone = _goldBootstrapDecision.TargetZone;
+                    _loggedAdventureFightType = _goldBootstrapDecision.TargetFightType;
+                }
+                if (_goldBootstrapDecision.TargetFightType == 2)
+                    combat.ManualZone(_goldBootstrapDecision.TargetZone, false,
+                        true, false, true, true);
+                else
+                    combat.ManualZone(_goldBootstrapDecision.TargetZone, false,
+                        true, true, false, true);
+                CaptureRecovery(combat);
+                return true;
+            }
+            if (wasGoldBootstrap)
+            {
+                // Do not let the one-second ordinary-route cache or its loadout lease retain
+                // Adventure after the native Gold postcondition has become true.
+                _adventureTarget = null;
+                _lastAdventureDecision = DateTime.MinValue;
+            }
             if (_adventureTarget == null || (DateTime.Now - _lastAdventureDecision).TotalSeconds >= 1)
             {
                 _lastAdventureDecision = DateTime.Now;
@@ -1161,7 +1211,7 @@ namespace NGUInjector.Autopilot
                     if (best != null)
                         ProgressionLoadoutOptimizer.SetAdventureRouteObjective(best.Zone,
                             routePlan.Choice == AdventureRouteChoice.ProgressionPush,
-                            true, routePlan.Choice == AdventureRouteChoice.BossSnipe);
+                            true, routePlan.Choice == AdventureRouteChoice.BossSnipe, false);
                 }
                 else
                 {
@@ -1252,7 +1302,7 @@ namespace NGUInjector.Autopilot
                 var push = progressionFront != null && best.Zone == progressionFront.Zone
                            && best.FightType != 2;
                 ProgressionLoadoutOptimizer.SetAdventureRouteObjective(best.Zone, push,
-                    true, _collectionTarget != null && _collectionTarget.BossOnly);
+                    true, _collectionTarget != null && _collectionTarget.BossOnly, false);
             }
 
             if (best.Zone != _loggedAdventureZone || best.FightType != _loggedAdventureFightType)
@@ -1286,6 +1336,159 @@ namespace NGUInjector.Autopilot
         internal int CurrentAdventureFightType
         {
             get { return _adventureTarget == null ? -1 : _adventureTarget.FightType; }
+        }
+
+        private sealed class GoldBootstrapSink
+        {
+            internal string Name = string.Empty;
+            internal double Cost;
+            internal double Score;
+        }
+
+        private GoldBootstrapDecision EvaluateGoldBootstrap(Character c)
+        {
+            if (c == null || Plan == null || c.rebirthTime == null)
+                return GoldBootstrapDecision.Hold("Gold bootstrap is waiting for a live plan");
+            var remaining = Math.Max(0.0,
+                Plan.EffectiveAllocationTarget(c) - c.rebirthTime.totalseconds);
+            var sink = FindGoldBootstrapSink(c, remaining);
+            var zone = ZoneStatHelper.GetBestZone();
+            if (sink == null || zone == null)
+                return GoldBootstrapDecision.Hold(sink == null
+                    ? "No finishable Augment or valued Blood purchase needs Gold before rebirth"
+                    : "No safe ordinary Adventure zone is currently available for Gold");
+            var baseGold = GoldBootstrapPlanner.OrdinaryMobBaseGold(zone.Zone);
+            // ZoneStatHelper is a routing threshold, not an exact enemy-time proof. Charge the
+            // full bounded ordinary-fight horizon here; the loadout solver independently rejects
+            // any complete candidate whose captured enemy takes longer than 120 seconds.
+            var killCycle = 120.0 + Math.Max(0.0,
+                c.adventureController.respawnTime());
+            return GoldBootstrapPlanner.Evaluate(new GoldBootstrapSnapshot
+            {
+                CurrentGold = Math.Max(0.0, c.realGold),
+                SinkCost = sink.Cost,
+                SinkName = sink.Name,
+                SelectedBoss = c.bossID,
+                HighestBoss = c.highestBoss,
+                TimeMachineChallenge = c.challenges.timeMachineChallenge.inChallenge,
+                BaseGoldRecord = c.machine == null ? 0.0 : Math.Max(0.0, c.machine.realBaseGold),
+                GrossGoldPerSecond = Math.Max(0.0, c.grossGoldPerSecond()),
+                RemainingSeconds = remaining,
+                TargetZone = zone.Zone,
+                TargetFightType = zone.FightType,
+                TargetMobBaseGold = baseGold,
+                TotalGoldDropMultiplier = Math.Max(0.0, c.totalGoldbonus()),
+                KillCycleSeconds = killCycle
+            });
+        }
+
+        private GoldBootstrapSink FindGoldBootstrapSink(Character c, double remaining)
+        {
+            GoldBootstrapSink best = null;
+            try
+            {
+                // Only create an Augment demand while the active generated breakpoint really
+                // contains BestAug. Use the cap written by that breakpoint; an uncapped BestAug
+                // receives a conservative 20% of the current Energy pool after earlier priorities.
+                var active = Plan.Energy.Where(x => x.Time <= c.rebirthTime.totalseconds)
+                    .OrderBy(x => x.Time).LastOrDefault();
+                var augPercent = 0.0;
+                var augEnabled = false;
+                if (active != null && active.Priorities != null)
+                {
+                    foreach (var priority in active.Priorities)
+                    {
+                        if (string.Equals(priority, "BESTAUG", StringComparison.OrdinalIgnoreCase))
+                        {
+                            augEnabled = true;
+                            augPercent = Math.Max(augPercent, 20.0);
+                        }
+                        else if (priority != null && priority.StartsWith("CAPBESTAUG:",
+                                     StringComparison.OrdinalIgnoreCase))
+                        {
+                            double parsed;
+                            if (double.TryParse(priority.Substring("CAPBESTAUG:".Length),
+                                System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out parsed))
+                            {
+                                augEnabled = true;
+                                augPercent = Math.Max(augPercent, parsed);
+                            }
+                        }
+                    }
+                }
+                if (augEnabled && c.buttons.augmentation.interactable
+                    && !c.challenges.noAugsChallenge.inChallenge
+                    && c.augments != null && c.augmentsController != null)
+                {
+                    var energy = Math.Max(1L, (long)Math.Floor(
+                        Math.Max(0L, c.curEnergy) * Math.Max(0.0, augPercent) / 100.0));
+                    var count = Math.Min(c.augments.augs.Length,
+                        c.augmentsController.augments.Length);
+                    for (var i = 0; i < count; i++)
+                    {
+                        var state = c.augments.augs[i];
+                        var controller = c.augmentsController.augments[i];
+                        if (!controller.augLocked() && !controller.hitAugmentTarget()
+                            && state.augProgress <= 0.0)
+                        {
+                            var seconds = controller.AugTimeLeftEnergy(energy);
+                            if (GoldBootstrapPlanner.HasPayoffWindow(seconds, remaining))
+                            {
+                                var level = (double)state.augLevel;
+                                var upgrade = (double)state.upgradeLevel;
+                                var marginal = controller.baseBoost * (upgrade * upgrade + 1.0)
+                                    * (Math.Pow(level + 1.0, controller.augTierBonus())
+                                       - Math.Pow(level, controller.augTierBonus()));
+                                ConsiderGoldSink(ref best,
+                                    GameNames.Augment(c, i, false), controller.getAugCost(),
+                                    marginal / Math.Max(.0001, seconds));
+                            }
+                        }
+                        if (!controller.upgradeLocked() && !controller.hitUpgradeTarget()
+                            && state.augLevel > 0 && state.upgradeProgress <= 0.0)
+                        {
+                            var seconds = controller.UpgradeTimeLeftEnergy(energy);
+                            if (GoldBootstrapPlanner.HasPayoffWindow(seconds, remaining))
+                            {
+                                var level = (double)state.augLevel;
+                                var upgrade = (double)state.upgradeLevel;
+                                var marginal = controller.baseBoost * (2.0 * upgrade + 1.0)
+                                               * Math.Pow(level, controller.augTierBonus());
+                                ConsiderGoldSink(ref best,
+                                    GameNames.Augment(c, i, true), controller.getUpgradeCost(),
+                                    marginal / Math.Max(.0001, seconds));
+                            }
+                        }
+                    }
+                }
+
+                // BR publishes this only after proving a valued Blood target, sufficient Magic,
+                // native duration, and the same reset horizon. Prefer it when its exact charge is
+                // cheaper than the selected Augment, otherwise retain the higher marginal Augment.
+                var bloodShortfall = AllocationProfiles.BreakpointTypes.BR.LastGoldShortfall;
+                if (bloodShortfall > 0.0)
+                    ConsiderGoldSink(ref best, "valued Blood ritual",
+                        Math.Max(0.0, c.realGold) + bloodShortfall,
+                        best == null ? 1.0 : best.Score);
+            }
+            catch
+            {
+                return null;
+            }
+            return best;
+        }
+
+        private static void ConsiderGoldSink(ref GoldBootstrapSink best, string name,
+            double cost, double score)
+        {
+            if (string.IsNullOrEmpty(name) || cost <= 0.0 || double.IsNaN(cost)
+                || double.IsInfinity(cost) || score <= 0.0 || double.IsNaN(score)
+                || double.IsInfinity(score))
+                return;
+            if (best == null || score > best.Score + 1e-12
+                || Math.Abs(score - best.Score) <= 1e-12 && cost < best.Cost)
+                best = new GoldBootstrapSink {Name = name, Cost = cost, Score = score};
         }
 
         private static bool PrepareEndgameTitan12Version(CombatManager combat)
@@ -1589,7 +1792,10 @@ namespace NGUInjector.Autopilot
             var escapedAdventureTargetName = adventureTargetName.Replace("\\", "\\\\").Replace("\"", "\\\"");
             var adventureSafeZoneSeconds = adventureZone == -1 && _adventureSafeZoneSince != DateTime.MinValue
                 ? Math.Max(0, (int)Math.Floor((DateTime.UtcNow - _adventureSafeZoneSince).TotalSeconds)) : 0;
-            var adventureControlReason = adventureZone != -1 ? "engaged selected Adventure target"
+            var adventureControlReason = _goldBootstrapDecision != null
+                                         && _goldBootstrapDecision.ShouldRoute
+                ? _goldBootstrapDecision.Reason
+                : adventureZone != -1 ? "engaged selected Adventure target"
                 : !string.IsNullOrEmpty(_adventureRecoveryReason) ? _adventureRecoveryReason
                 : adventureTargetZone >= 0 ? "transiting from Safe Zone to " + adventureTargetName
                 : "waiting for the Adventure planner to select a target";
@@ -1826,6 +2032,15 @@ namespace NGUInjector.Autopilot
                        + "  \"adventureRecoveryTargetHP\": " + _adventureRecoveryTargetHP.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"adventureRecoveryEtaSeconds\": " + _adventureRecoveryEtaSeconds + ",\n"
                        + "  \"adventureControlReason\": \"" + EscapeJson(adventureControlReason) + "\",\n"
+                       + "  \"goldBootstrapActive\": " + (_goldBootstrapDecision != null && _goldBootstrapDecision.ShouldRoute).ToString().ToLowerInvariant() + ",\n"
+                       + "  \"goldBootstrapMode\": \"" + EscapeJson(_goldBootstrapDecision == null ? "None" : _goldBootstrapDecision.Mode.ToString()) + "\",\n"
+                       + "  \"goldBootstrapTargetZone\": " + (_goldBootstrapDecision == null ? -1 : _goldBootstrapDecision.TargetZone) + ",\n"
+                       + "  \"goldBootstrapSink\": \"" + EscapeJson(_goldBootstrapDecision == null ? string.Empty : _goldBootstrapDecision.SinkName) + "\",\n"
+                       + "  \"goldBootstrapSinkCost\": " + (_goldBootstrapDecision == null ? 0.0 : _goldBootstrapDecision.SinkCost).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"goldBootstrapConservativeDrop\": " + (_goldBootstrapDecision == null ? 0.0 : _goldBootstrapDecision.ConservativeDrop).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"goldBootstrapConservativeGps\": " + (_goldBootstrapDecision == null ? 0.0 : _goldBootstrapDecision.ConservativeGps).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"goldBootstrapEtaSeconds\": " + (_goldBootstrapDecision == null || double.IsInfinity(_goldBootstrapDecision.EtaSeconds) ? -1.0 : _goldBootstrapDecision.EtaSeconds).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"goldBootstrapReason\": \"" + EscapeJson(_goldBootstrapDecision == null ? string.Empty : _goldBootstrapDecision.Reason) + "\",\n"
                        + "  \"adventureSafeZoneSeconds\": " + adventureSafeZoneSeconds + ",\n"
                        + "  \"adventurePower\": " + c.totalAdvAttack().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"adventureToughness\": " + c.totalAdvDefense().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
@@ -1869,6 +2084,7 @@ namespace NGUInjector.Autopilot
                        + "  \"timeMachineCurrentMagicProgressPerTick\": " + c.timeMachineController.goldMultiProgressPerTick(c.machine.goldMultiMagic).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"timeMachineFullMagicProgressPerTick\": " + c.timeMachineController.goldMultiProgressPerTick(c.magic.curMagic).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"grossGoldPerSecond\": " + c.grossGoldPerSecond().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"timeMachineBaseGoldRecord\": " + (c.machine == null ? 0.0 : c.machine.realBaseGold).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"magicBloodAllocated\": " + (c.bloodMagic == null || c.bloodMagic.ritual == null ? 0L : c.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic))) + ",\n"
                        + "  \"magicWandoosAllocated\": " + c.wandoos98.wandoosMagic + ",\n"
                        + "  \"wandoosEnergyAllocated\": " + c.wandoos98.wandoosEnergy + ",\n"
