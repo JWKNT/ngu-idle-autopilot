@@ -16,7 +16,8 @@ files=()
 while IFS= read -r file; do
   files+=("$file")
 done < <(rg --files source monitor | rg '\.(cs|swift)$' | rg -v 'SettingsForm\.Designer\.cs$|SimpleJson\.cs$')
-files+=(run.command stop.command build.command status.command commentary-audit.command)
+files+=(run.command stop.command build.command status.command dashboard.command commentary-audit.command)
+files+=(monitor/run_dashboard_public_tunnel.command)
 files+=(test-mechanics.command test-rebirth-policy.command tests/test_deployment_lifecycle.command)
 while IFS= read -r file; do
   files+=("$file")

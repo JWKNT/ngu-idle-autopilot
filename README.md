@@ -27,7 +27,7 @@ This repository is source-first. It deliberately excludes game saves, live telem
 | `monitor/` | Separate macOS Swift status window and loopback dashboard bridge; both are read-only | Autopilot-specific code |
 | `docs/` | Static jehlp.net dashboard client and strategy documentation | Autopilot-specific code |
 | `build.command` | Compiles against the locally installed game's current managed assemblies | Local build tooling |
-| `run.command`, `stop.command`, `status.command` | Injection lifecycle and operator status scripts | Local runtime tooling |
+| `run.command`, `stop.command`, `status.command`, `dashboard.command` | Injection lifecycle, operator status, and dashboard reconnection scripts | Local runtime tooling |
 
 See [STRATEGY.md](STRATEGY.md) for a plain-language explanation of every major solver policy,
 [ARCHITECTURE.md](ARCHITECTURE.md) for the execution boundary,
@@ -64,7 +64,16 @@ The repository does not redistribute NGU Idle's `Assembly-CSharp.dll` or Unity a
 
 The public dashboard is published at [jehlp.net/ngu-idle-dashboard](https://jehlp.net/ngu-idle-dashboard/) from its independent [dashboard repository](https://github.com/JWKNT/ngu-idle-dashboard). This repository retains a local mirror because the loopback bridge must serve the identical client beside the running game. The dashboard follows the shared jehlp.net typography, color tokens, theme control, hairline structure, and content-first layout while presenting NGU-specific telemetry.
 
-`run.command` starts the bridge with the bot. The first viewport reports the calculated rebirth ETA, next modeled boss and ETA, current Adventure route, and the exact named EXP purchase and shortfall. Deeper sections explain allocations, resource holds, combat, equipment, inventory safety, rebirth candidates, Basic Training, and confirmed key events. The API is intentionally read-only; the bridge remains loopback-bound and `monitor/run_dashboard_public_tunnel.command` supplies the restart-safe public HTTPS transport.
+`run.command` starts or reconnects the local bridge with the bot, so the local dashboard normally
+needs no separate action. The installed public-tunnel supervisor verifies the public route and
+automatically replaces an expired Quick Tunnel. Run `./dashboard.command` at any time for a single
+freshness check and public reconnect; it prints both the public URL and local fallback without
+injecting the bot or changing the game. The first viewport reports the calculated rebirth ETA, next
+modeled boss and ETA, current Adventure route, and the exact named EXP purchase and shortfall.
+Deeper sections explain allocations, resource holds, combat, equipment, inventory safety, rebirth
+candidates, Basic Training, and confirmed key events. The API is intentionally read-only; the
+bridge remains loopback-bound and `monitor/run_dashboard_public_tunnel.command` supplies the
+health-checked public HTTPS transport.
 
 ## Build
 
