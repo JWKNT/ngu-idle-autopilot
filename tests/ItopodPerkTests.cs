@@ -88,6 +88,11 @@ internal static class ItopodPerkTests
             message + " (actual " + actual + ", expected " + expected + ")");
     }
 
+    private static int Count(string source, string value)
+    {
+        return source.Split(new[] {value}, StringSplitOptions.None).Length - 1;
+    }
+
     private static void Throws<T>(Action action, string message) where T : Exception
     {
         _assertions++;
@@ -652,6 +657,11 @@ internal static class ItopodPerkTests
 
     private static void TestLiveRouteWiring()
     {
+        Assert(ItopodEntryRecoveryPolicy.RequiresFullHp(0.0, 2000.0)
+               && ItopodEntryRecoveryPolicy.RequiresFullHp(1750.0, 2000.0)
+               && !ItopodEntryRecoveryPolicy.RequiresFullHp(1999.5, 2000.0)
+               && !ItopodEntryRecoveryPolicy.RequiresFullHp(2000.0, 2000.0),
+            "ITOPOD Safe-Zone entry waits for full HP with only a one-HP float tolerance");
         var manager = File.ReadAllText("source/Autopilot/AutopilotManager.cs");
         Assert(manager.Contains("if (Main.Character.settings.itopodOn)")
                && !manager.Contains("route.Climbing || Main.Character.adventure.titan4Kills > 0"),
@@ -672,6 +682,12 @@ internal static class ItopodPerkTests
                && combatManager.Contains("if (CastHeal()) return;")
                && combatManager.Contains("if (CastHyperRegen()) return;"),
             "ITOPOD recovery heals in place at a floor boundary and never takes a voluntary Safe-Zone hop");
+        Assert(Count(combatManager, "zone == 1000 && NeedsFullItopodRecovery()") == 2
+               && combatManager.Contains("Recovering to full Adventure HP before entering ITOPOD")
+               && combatManager.Contains("if (CastHeal()) return;")
+               && combatManager.Contains("if (CastHyperRegen()) return;")
+               && manager.Contains("\\\"itopodRequiresFullHpOnEntry\\\": true"),
+            "manual and idle ITOPOD retries hold Safe Zone for full HP and publish that exact policy");
         var loadout = File.ReadAllText("source/Managers/ProgressionLoadoutOptimizer.cs");
         Assert(loadout.Contains("if (itopodObjective)")
                && loadout.Contains("if (_leaseKind != \"itopod\") ClearObjectiveLease();")

@@ -28,6 +28,8 @@ loadout-lock completion signals.
 
 ITOPOD is a continuous native floor state: ordinary recovery never exits it because re-entry resets
 the ten-kill counter. Enemy-free floor boundaries may spend ready Heal/Hyper Regen moves in place.
+After native defeat has already forced Safe Zone, every manual or idle ITOPOD entry waits for full
+Adventure HP and may use a ready Heal/Hyper Regen move before retrying the saved range.
 An open-ended record attempt also exits when enemy HP has made no new low for a full minute; that is
 a failed combat attempt, not a healing loop, and it feeds the same empirical circuit breaker as death.
 
@@ -271,6 +273,19 @@ namespace NGUInjector.Managers
                 return false;
             }
             RecoveryReason = "Recovering only to the measured next-fight safety threshold";
+            return true;
+        }
+
+        private bool NeedsFullItopodRecovery()
+        {
+            _recoveryTargetHP = _character.totalAdvHP();
+            if (!ItopodEntryRecoveryPolicy.RequiresFullHp(
+                    _character.adventure.curHP, _recoveryTargetHP))
+            {
+                RecoveryReason = string.Empty;
+                return false;
+            }
+            RecoveryReason = "Recovering to full Adventure HP before entering ITOPOD";
             return true;
         }
 
@@ -927,8 +942,17 @@ namespace NGUInjector.Managers
                 return;
             }
 
-            if (_character.adventure.zone == -1 && recoverHealth && NeedsRecoveryForNextFight())
-                return;
+            if (_character.adventure.zone == -1 && recoverHealth)
+            {
+                if (zone == 1000 && NeedsFullItopodRecovery())
+                {
+                    if (CastHeal()) return;
+                    if (CastHyperRegen()) return;
+                    return;
+                }
+                if (zone != 1000 && NeedsRecoveryForNextFight())
+                    return;
+            }
 
             //Check if we're in not in the right zone and not in safe zone, if not move to safe zone first
             if (_character.adventure.zone != zone && _character.adventure.zone != -1)
@@ -1100,6 +1124,12 @@ namespace NGUInjector.Managers
             //If we're in safe zone, recover health if needed. Also precast buffs
             if (_character.adventure.zone == -1)
             {
+                if (recoverHealth && zone == 1000 && NeedsFullItopodRecovery())
+                {
+                    if (CastHeal()) return;
+                    if (CastHyperRegen()) return;
+                    return;
+                }
                 var highRiskPrecast = precastBuffs && fastCombat;
                 if (precastBuffs && !IsTerminalTitanZone(zone))
                 {

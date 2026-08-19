@@ -431,6 +431,7 @@ class DashboardMarkupTests(unittest.TestCase):
             "gear-glance-summary",
             "gear-glance-list",
             "itopod-evidence",
+            "itopod-retry-health",
             "itopod-farm",
             "itopod-estimates",
         ):
@@ -441,6 +442,8 @@ class DashboardMarkupTests(unittest.TestCase):
         self.assertIn("function renderActivity", source)
         self.assertIn("function itopodPresentation", source)
         self.assertIn('s.itopodModelLimitsClimb === false', source)
+        self.assertIn('s.itopodRequiresFullHpOnEntry === true', source)
+        self.assertIn('Heal before retrying ITOPOD', source)
         self.assertIn('live fights decide the limit', source)
         self.assertIn('diagnostic only', source)
         self.assertNotIn('detail: `${text(s.itopodRouteReason', source)

@@ -40,6 +40,14 @@ daycare/equipment ownership as ordinary inventory ownership.
 */
 namespace NGUInjector.Autopilot
 {
+    internal static class ItopodEntryRecoveryPolicy
+    {
+        internal static bool RequiresFullHp(double currentHp, double maxHp)
+        {
+            return maxHp > 0.0 && currentHp + 1.0 < maxHp;
+        }
+    }
+
     internal sealed class ItopodFloorCombatProof
     {
         internal readonly int Floor;

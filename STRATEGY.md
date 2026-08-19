@@ -283,6 +283,9 @@ floor counter. Low health also cannot trigger a voluntary mid-floor exit. At the
 between floors the combat controller may use Heal or Hyper Regen in place; otherwise ordinary
 in-fight moves keep the climb moving. Only an actual defeat may force Safe Zone recovery. A
 voluntary mid-floor Safe Zone visit is forbidden because it would repeatedly erase partial progress.
+Once a defeat has forced Safe Zone, the bot waits for full Adventure HP before entering ITOPOD
+again, using Heal or Hyper Regen when the native move is available. This applies to both manual and
+idle ITOPOD modes. It does not use the lower ordinary-zone “enough HP” threshold for a retry.
 
 Perks are bought one level at a time. The live buyer currently owns the source-audited early Normal
 sequence—one level in Newbie perks 0 through 4, two Instant Advanced Training levels, then balanced

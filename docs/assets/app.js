@@ -178,9 +178,18 @@ exposes no mutation endpoint.
     const shortFightFloor = optionalNumber(s.itopodFrontierFloor);
     const positiveDamageFloor = optionalNumber(s.itopodModeledPositiveDamageFloor);
     const liveOutcomesOwnLimit = s.itopodModelLimitsClimb === false;
+    const fullHpEntry = s.itopodRequiresFullHpOnEntry === true;
+    const recoveryReason = text(s.adventureRecoveryReason, "");
+    const recovering = fullHpEntry && number(s.adventureZone, -2) === -1
+      && recoveryReason.toLowerCase().includes("full adventure hp");
+    const currentHp = optionalNumber(s.adventureHP);
+    const maxHp = optionalNumber(s.adventureMaxHP);
+    const recoveryEta = optionalNumber(s.adventureRecoveryEtaSeconds);
 
     let route;
-    if (climbing) {
+    if (recovering) {
+      route = "Healing to full HP before the ITOPOD retry";
+    } else if (climbing) {
       route = target > 0 ? `Climbing to record ${target}` : "Climbing for the next PP record";
       if (liveOutcomesOwnLimit) route += " · live fights decide the limit";
     } else if (blockedFloor !== null && blockedFloor >= 0) {
@@ -212,13 +221,18 @@ exposes no mutation endpoint.
     const farm = farmFloor !== null && farmFloor >= 0
       ? `Floor ${farmFloor} · minimum-roll Regular Attack one-shot`
       : "Repeatable farm floor unavailable";
-    const decision = climbing
+    const retryHealth = recovering
+      ? `Safe Zone recovery ${currentHp === null ? "?" : shortNumber(currentHp)} / ${maxHp === null ? "?" : shortNumber(maxHp)} HP${recoveryEta !== null && recoveryEta > 0 ? ` · ${duration(recoveryEta, true)} remaining` : ""}`
+      : fullHpEntry ? "Full Adventure HP required before every entry from Safe Zone" : "Retry-health policy unavailable";
+    const decision = recovering
+      ? `Waiting in Safe Zone for full Adventure HP before retrying record ${target}.`
+      : climbing
       ? `Pushing toward record ${target} for first-clear PP. Live fights—not formulas—decide when to pause.`
       : blockedFloor !== null && blockedFloor >= 0
         ? `Farming efficiently until total Adventure capability improves enough to retry floor ${blockedFloor}.`
         : "Farming for steady PP while the next record push is re-evaluated.";
 
-    return { mode, climbing, target, current, record, route, evidence, estimates, farm, decision };
+    return { mode, climbing, recovering, target, current, record, route, evidence, estimates, farm, retryHealth, decision };
   }
 
   function fallbackObservability(s) {
@@ -462,7 +476,7 @@ exposes no mutation endpoint.
     const itopodMode = text(s.itopodMode, "").toLowerCase();
     if (number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm")) {
       const itopod = itopodPresentation(s);
-      priorities.push({ score: itopod.climbing ? 94 : 80, tone: "itopod", title: itopod.climbing ? `Claim ITOPOD floor ${itopod.target}` : "Farm ITOPOD efficiently", detail: `${itopod.decision} Current floor ${itopod.current === null ? "unavailable" : itopod.current}.` });
+      priorities.push({ score: itopod.climbing ? 94 : 80, tone: "itopod", title: itopod.recovering ? "Heal before retrying ITOPOD" : itopod.climbing ? `Claim ITOPOD floor ${itopod.target}` : "Farm ITOPOD efficiently", detail: `${itopod.decision} Current floor ${itopod.current === null ? "unavailable" : itopod.current}.` });
     }
 
     if (s.majorUnlockActive) priorities.push({ score: 91, tone: "route", title: `Unlock ${text(s.majorUnlockName, "the next system")}`, detail: text(s.majorUnlockReason || s.adventureControlReason, "Push the Adventure gate that opens the next mechanic.") });
@@ -672,6 +686,7 @@ exposes no mutation endpoint.
     setText("itopod-floor", s.itopodRouteConfirmed ? `${number(s.itopodCurrentFloor)} / ${number(s.itopodHighestFloor)}` : "Not yet confirmed");
     setText("itopod-range", `${number(s.itopodRangeStart)}–${number(s.itopodRangeEnd)}`);
     setText("itopod-evidence", itopod.evidence);
+    setText("itopod-retry-health", itopod.retryHealth);
     setText("itopod-farm", itopod.farm);
     setText("itopod-estimates", itopod.estimates);
     setText("itopod-pp", `${shortNumber(s.itopodPointProgress)} / ${shortNumber(s.itopodPointThreshold)} · ${number(s.itopodKillsOnFloor)} kills on floor`);

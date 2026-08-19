@@ -1771,6 +1771,7 @@ namespace NGUInjector.Autopilot
                        + "  \"itopodModeledPositiveDamageFloor\": "
                        + itopodRoute.ModeledPositiveDamageFloor + ",\n"
                        + "  \"itopodModelLimitsClimb\": false,\n"
+                       + "  \"itopodRequiresFullHpOnEntry\": true,\n"
                        + "  \"itopodClimbAdmissionPolicy\": \"live-outcomes-no-formula-ceiling\",\n"
                        + "  \"itopodFailureLimit\": "
                        + ItopodClimbTrialController.FailureStreakLimit + ",\n"
