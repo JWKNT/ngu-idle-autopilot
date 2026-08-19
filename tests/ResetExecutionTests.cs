@@ -4,14 +4,16 @@ FILE PURPOSE
 ResetExecutionTests is task 17's isolated copied-state suite. It loads a temporary bot DLL and
 proves the exact Normal-to-Evil/Evil-to-Sadistic gate tables, selector/start sequencing, feature
 holds, +1/timer reset rule, all eleven hard-versus-Laser challenge proofs, wrong/multiple-flag
-quarantine inputs, target-difficulty/Number=1 postconditions, and the typed hard-reset persistence
-transform. Optional source-root input adds static anti-bypass checks. It never loads Unity state,
-invokes a native method, injects a process, or reads/writes a save.
+quarantine inputs, target-difficulty/Number=1 postconditions, the typed hard-reset persistence
+transform, and the narrower first-wave root executor authority/reset-loss boundary. Optional
+source-root input adds static anti-bypass checks. It never loads Unity state, invokes a native
+method, injects a process, or reads/writes a save.
 */
 using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
 
 internal static class ResetExecutionTests
@@ -37,6 +39,9 @@ internal static class ResetExecutionTests
         Run("typed target-difficulty hard reset transforms", DifficultyTransforms);
         Run("selector, second gate, start, and epoch sequencing", ExecutorSequence);
         Run("feature authority remains closed", FeatureAuthority);
+        Run("first-wave challenge and difficulty authority", FirstWaveAuthority);
+        Run("typed reset-loss boundary matrix", ResetBoundaryMatrix);
+        Run("typed irreversible intent contracts", TypedIntentContracts);
         if (args.Length == 2) Run("static anti-bypass contracts", () => StaticContracts(args[1]));
         Console.WriteLine(_failures == 0
             ? "PASS: " + _assertions + " reset execution assertions"
@@ -298,12 +303,85 @@ internal static class ResetExecutionTests
         Equal(0, Convert.ToInt32(Field(boundary, "StartCalls")), "feature hold makes zero start calls");
     }
 
+    private static void FirstWaveAuthority()
+    {
+        var safe = new[] {"Basic", "NoAug", "NoEquip", "Blind", "NoNGU", "NoTimeMachine"};
+        var held = new[] {"TwentyFourHour", "OneHundredLC", "Troll", "NoRebirth", "LaserSword"};
+        foreach (var name in safe)
+            True((bool)Call("NGUInjector.Autopilot.ResetProgressionAuthority",
+                    "SafeNormalChallenge", EnumValue(
+                        "NGUInjector.AllocationProfiles.RebirthStuff.ChallengeType", name)),
+                name + " is in the first Normal batch");
+        foreach (var name in held)
+            False((bool)Call("NGUInjector.Autopilot.ResetProgressionAuthority",
+                    "SafeNormalChallenge", EnumValue(
+                        "NGUInjector.AllocationProfiles.RebirthStuff.ChallengeType", name)),
+                name + " remains outside first-wave authority");
+        True((bool)Call("NGUInjector.Autopilot.ResetProgressionAuthority", "SafeDifficulty",
+                EnumValue("NGUInjector.Autopilot.DifficultyTransitionKind", "NormalToEvil")),
+            "Normal-to-Evil is the only first-wave difficulty transition");
+        False((bool)Call("NGUInjector.Autopilot.ResetProgressionAuthority", "SafeDifficulty",
+                EnumValue("NGUInjector.Autopilot.DifficultyTransitionKind", "EvilToSadistic")),
+            "Evil-to-Sadistic remains outside first-wave authority");
+    }
+
+    private static void ResetBoundaryMatrix()
+    {
+        var allClear = New("NGUInjector.Autopilot.ResetBoundarySnapshot");
+        Set(allClear, "GameplaySynchronized", true);
+        Set(allClear, "RootLeaseCurrent", true);
+        Set(allClear, "TitanBoundaryClear", true);
+        Set(allClear, "FruitBoundaryClear", true);
+        Set(allClear, "BloodBoundaryClear", true);
+        True((bool)Field(Call("NGUInjector.Autopilot.ResetBoundaryGate", "Evaluate", allClear),
+            "Clear"), "complete root/Titan/fruit/Blood boundary passes");
+
+        foreach (var field in new[] {"GameplaySynchronized", "RootLeaseCurrent",
+                     "TitanBoundaryClear", "FruitBoundaryClear", "BloodBoundaryClear"})
+        {
+            var changed = New("NGUInjector.Autopilot.ResetBoundarySnapshot");
+            Set(changed, "GameplaySynchronized", true);
+            Set(changed, "RootLeaseCurrent", true);
+            Set(changed, "TitanBoundaryClear", true);
+            Set(changed, "FruitBoundaryClear", true);
+            Set(changed, "BloodBoundaryClear", true);
+            Set(changed, field, false);
+            False((bool)Field(Call("NGUInjector.Autopilot.ResetBoundaryGate", "Evaluate", changed),
+                "Clear"), field + " independently holds every reset-like action");
+        }
+    }
+
+    private static void TypedIntentContracts()
+    {
+        foreach (var typeName in new[] {"NGUInjector.Autopilot.ChallengeEntryMutationIntent",
+                     "NGUInjector.Autopilot.NormalToEvilMutationIntent"})
+        {
+            var intent = FormatterServices.GetUninitializedObject(Type(typeName));
+            True((bool)Property(intent, "CreatesNewEpoch"),
+                typeName + " creates and closes a run epoch");
+            True((bool)Property(intent, "Required"),
+                typeName + " is a required root child");
+            False((bool)Property(intent, "CanCompensate"),
+                typeName + " never claims an inverse for reset state");
+            Equal(2, EnumIndex(Property(intent, "Risk")),
+                typeName + " is explicitly irreversible");
+        }
+        Equal("Challenge", Property(FormatterServices.GetUninitializedObject(Type(
+                "NGUInjector.Autopilot.ChallengeEntryMutationIntent")), "Class").ToString(),
+            "challenge intent uses the Challenge lease class");
+        Equal("Difficulty", Property(FormatterServices.GetUninitializedObject(Type(
+                "NGUInjector.Autopilot.NormalToEvilMutationIntent")), "Class").ToString(),
+            "difficulty intent uses the Difficulty lease class");
+    }
+
     private static void StaticContracts(string root)
     {
         var baseSource = File.ReadAllText(Path.Combine(root,
             "source/AllocationProfiles/RebirthStuff/BaseRebirth.cs"));
         var executor = File.ReadAllText(Path.Combine(root,
             "source/Autopilot/DifficultyTransitionExecutor.cs"));
+        var typed = File.ReadAllText(Path.Combine(root,
+            "source/Autopilot/ResetProgressionTransaction.cs"));
         True(executor.Contains("Rebirth.setEvilNextRebirth")
              && executor.Contains("Rebirth.setSadisticNextRebirth"),
             "both source-exact gated selectors are named");
@@ -327,6 +405,27 @@ internal static class ResetExecutionTests
         True(baseSource.Contains("AllowChallenges")
              && executor.Contains("featureAuthority"),
             "challenge and difficulty authority have explicit feature gates");
+        True(typed.Contains("RootTransaction root")
+             && typed.Contains("CreatesNewEpoch { get { return true; }"),
+            "first-wave challenge/difficulty actions require a root and create a successor epoch");
+        True(typed.Contains("ChallengeStrategyPlanner.Recommend")
+             && typed.Contains("ResetPostconditions.VerifyChallenge")
+             && typed.Contains("ResetPostconditions.VerifyDifficulty"),
+            "typed executor reuses exact admission and postcondition proofs");
+        True(typed.Contains("before.Admission.Opportunity")
+             && typed.Contains("winning same-state opportunity proof"),
+            "challenge mutation requires the planner's same-state opportunity proof again");
+        True(typed.Contains("TitanBoundaryClear") && typed.Contains("FruitBoundaryClear")
+             && typed.Contains("BloodBoundaryClear"),
+            "every first-wave reset shares Titan, fruit, and Blood boundaries");
+        False(typed.Contains("new RebirthBloodSpendIntent"),
+            "hard challenge entry never burns Blood on a NUMBER effect it resets to one");
+        False(typed.Contains("NativeDifficultyCall.Sadistic")
+              || typed.Contains("NativeChallengeCall.Troll")
+              || typed.Contains("NativeChallengeCall.LaserSword"),
+            "special challenges and Sadistic native execution remain absent");
+        False(typed.Contains("Move69") || typed.Contains("EndSequence"),
+            "MOVE69 and final END execution remain outside first-wave runtime authority");
     }
 
     private static object LegalGate(string difficulty)

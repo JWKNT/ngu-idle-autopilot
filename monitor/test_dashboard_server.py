@@ -4,8 +4,11 @@ FILE PURPOSE
 These unit tests pin the dashboard's consequential-event definition and normalized observability
 contract. Routine catch-up traffic and reset-local milestones must stay out of the public ledger,
 while records, permanent progression, irreversible safety failures, and resets remain visible.
-Missing telemetry must remain unknown rather than turning into a false zero-second ETA, challenge
-admission, reset schedule, or deployment verification claim.
+Missing telemetry must remain unknown rather than turning into a false zero-second ETA. Challenge
+rebirth legality must come only from its explicit telemetry, and the browser shell must keep
+machine diagnostics collapsed while showing the currently selected Boss as the headline value.
+The tests never contact the live bot, mutate telemetry, or turn a missing field into an admission,
+reset schedule, or deployment-verification claim.
 """
 
 import tempfile
@@ -140,12 +143,63 @@ class ObservabilityTests(unittest.TestCase):
                 "rebirthSeconds": -1,
                 "rebirthElapsed": 125,
                 "rebirthReason": "No Rebirth challenge forbids resets",
+                "challengeAllowsRebirth": False,
+                "challengeRulesSummary": "Boss kills do not permit a rebirth in this challenge.",
+                "challengeRebirthPolicy": "Rebirth disabled until challenge completion",
             }
         )
         self.assertEqual(view["rebirth"]["action"], "no-reset-challenge")
         self.assertIsNone(view["rebirth"]["targetRunAgeSeconds"])
         self.assertIsNone(view["rebirth"]["resetEtaSeconds"])
         self.assertEqual(view["challenge"]["status"], "active")
+        self.assertFalse(view["challenge"]["allowsRebirth"])
+        self.assertEqual(
+            view["challenge"]["rebirthPolicy"],
+            "Rebirth disabled until challenge completion",
+        )
+        self.assertIn("Boss kills", view["challenge"]["rulesSummary"])
+
+    def test_negative_rebirth_target_alone_never_invents_a_challenge_rule(self) -> None:
+        missing_policy = build_observability(
+            {
+                "stage": "Normal / active challenge",
+                "rebirthSeconds": -1,
+                "rebirthElapsed": 125,
+                "rebirthExecutionEnabled": True,
+            }
+        )
+        explicit_allowed = build_observability(
+            {
+                "stage": "Normal / active challenge",
+                "rebirthSeconds": -1,
+                "rebirthElapsed": 125,
+                "rebirthExecutionEnabled": True,
+                "challengeAllowsRebirth": True,
+                "challengeRebirthPolicy": "Ordinary rebirth is allowed",
+            }
+        )
+        self.assertEqual(missing_policy["rebirth"]["action"], "unknown")
+        self.assertFalse(missing_policy["rebirth"]["noResetHold"])
+        self.assertIsNone(missing_policy["challenge"]["allowsRebirth"])
+        self.assertEqual(explicit_allowed["rebirth"]["action"], "unknown")
+        self.assertFalse(explicit_allowed["rebirth"]["noResetHold"])
+        self.assertTrue(explicit_allowed["challenge"]["allowsRebirth"])
+
+    def test_future_no_rebirth_candidate_does_not_freeze_an_ordinary_run(self) -> None:
+        view = build_observability(
+            {
+                "challengeActive": False,
+                "challengeAllowsRebirth": False,
+                "challengeRebirthPolicy": "A future No Rebirth candidate forbids rebirth",
+                "rebirthSeconds": 600,
+                "rebirthElapsed": 100,
+                "rebirthExecutionEnabled": True,
+            }
+        )
+        self.assertEqual(view["rebirth"]["action"], "reset-at-checkpoint")
+        self.assertFalse(view["rebirth"]["noResetHold"])
+        self.assertEqual(view["rebirth"]["resetEtaSeconds"], 500)
+        self.assertEqual(view["challenge"]["status"], "none-admitted")
 
     def test_challenge_admission_summary_yields_clear_and_entry_etas(self) -> None:
         view = build_observability(
@@ -316,6 +370,58 @@ class ObservabilityTests(unittest.TestCase):
         self.assertFalse(view["identity"]["verifiedEnvelope"])
         self.assertFalse(view["identity"]["deploymentDecisionMatch"])
         self.assertEqual(view["identity"]["joinStatus"], "Quarantined")
+
+
+class DashboardMarkupTests(unittest.TestCase):
+    def test_machine_diagnostics_share_one_collapsed_disclosure(self) -> None:
+        html = Path("docs/index.html").read_text(encoding="utf-8")
+        marker = '<details id="technical-diagnostics" class="technical-diagnostics">'
+        self.assertIn(marker, html)
+        start = html.index(marker)
+        end = html.index("</details>", start)
+        disclosure = html[start:end]
+        self.assertNotIn(" open", marker)
+        for element_id in (
+            "fact-snapshot",
+            "fact-build",
+            "fact-disk",
+            "fact-game",
+            "fact-producer",
+            "fact-identity",
+            "transaction-card",
+            "scheduler-card",
+            "authority-list",
+        ):
+            self.assertIn(f'id="{element_id}"', disclosure, element_id)
+            self.assertEqual(html.count(f'id="{element_id}"'), 1, element_id)
+        self.assertIn("What the bot is doing", html)
+        self.assertIn("What can happen next", html)
+        self.assertIn("Recent errors and blocked actions", html)
+        self.assertNotIn("<details open", html)
+
+    def test_rebirth_model_is_collapsed_but_policy_and_challenge_rules_are_visible(self) -> None:
+        html = Path("docs/index.html").read_text(encoding="utf-8")
+        marker = '<details class="rebirth-details">'
+        self.assertIn(marker, html)
+        start = html.index(marker)
+        end = html.index("</details>", start)
+        disclosure = html[start:end]
+        self.assertIn("Why this rebirth timing?", disclosure)
+        self.assertIn('id="rebirth-current"', disclosure)
+        self.assertIn('id="rebirth-candidates"', disclosure)
+        self.assertLess(html.index('id="rebirth-policy"'), start)
+        self.assertLess(html.index('id="rebirth-next-action"'), start)
+        self.assertLess(html.index('id="rebirth-reset-eta"'), start)
+        self.assertGreater(html.index('id="challenge-rebirth-policy"'), end)
+        self.assertGreater(html.index('id="challenge-rules"'), end)
+
+    def test_browser_fallback_uses_explicit_challenge_policy_and_selected_boss(self) -> None:
+        source = Path("docs/assets/app.js").read_text(encoding="utf-8")
+        self.assertIn('challengeActive && challengeAllowsRebirth === false', source)
+        self.assertNotIn('target !== null && target < 0 ? "no-reset-challenge"', source)
+        self.assertIn('const selectedBoss = optionalNumber(s.bossSelectedId);', source)
+        self.assertIn('setText("metric-boss", selectedBoss === null', source)
+        self.assertNotIn('const boss = number(s.bossRecordTargetId || s.nextBoss);', source)
 
 
 class ActionErrorTests(unittest.TestCase):

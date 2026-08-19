@@ -38,6 +38,17 @@ Never shorten a purpose block merely to reduce line count. Update it in the same
 patch whenever behavior changes. A stale authoritative comment is worse than a
 missing one.
 
+# Plain-language strategy contract
+
+`STRATEGY.md` is the player-readable authority for what the solver values and why.
+Update it in the same patch whenever a change materially alters stage goals,
+resource/currency priorities, scoring or event selection, Adventure/ITOPOD/Titan/
+rebirth behavior, inventory policy, execution authority, or an irreversible safety
+rule. Do not churn it for renames, formatting, test-only changes, or refactors that
+provably leave decisions unchanged. The explanation must remain understandable to
+an educated middle-school reader and must distinguish modeled, executable, and
+deployment-disabled behavior.
+
 # Live-bot safety contract
 
 - Use native NGU Idle controller calls and verify the resulting state delta.
@@ -52,6 +63,8 @@ missing one.
 
 # Verification
 
-Run `./build.command`, `git diff --check`, and `./commentary-audit.command` after
-changes. For live behavior, verify `runtime/decision.json`, recent confirmed action
+Run `./build.command` first, then `./test-mechanics.command`, `git diff --check`, and
+`./commentary-audit.command` after changes. The aggregate's reflection suites intentionally inspect
+the DLL built by the first step, so reversing or skipping that order can test a stale artifact. For
+live behavior, verify `runtime/decision.json`, recent confirmed action
 logs, and exactly one game/monitor process.

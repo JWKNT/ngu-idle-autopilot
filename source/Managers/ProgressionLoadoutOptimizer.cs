@@ -9,12 +9,15 @@ using static NGUInjector.Main;
 FILE PURPOSE
 
 ProgressionLoadoutOptimizer selects the best physical equipment objects for the active boss,
-Adventure, major-unlock, or resource-refill context, including ordered weapons and constrained
+explicit Adventure route, major-unlock, ITOPOD, or resource-refill context, including ordered weapons and constrained
 accessories. One immutable objective/character snapshot feeds a Pareto branch-and-bound search over
 canonical accessory combinations; results report incumbent seconds, an admissible lower bound, and
 the remaining gap. Hard major-unlock combat uses target-enemy kill/survival math and excludes
 unrelated production bonuses; routine contexts may accept lower raw combat stats for a proven ETA
-improvement. It executes reference-identity native swap transactions, reclaims allocations before
+improvement. ITOPOD record staging uses a short finite-clear/survival frontier while fixed farming
+remains on the guaranteed one-hit plateau, and a live ITOPOD route preempts stale selected-boss gear
+ownership because those systems use different combat objectives. Equal-time climb sets break ties
+on worst-case combat reserve and raw Adventure strength, never production bonuses. It executes reference-identity native swap transactions, reclaims allocations before
 cap-lowering gear, verifies the final layout, and rolls back on failure. ID-only equality and direct
 field assignment are unsafe because duplicate copies and saved loadouts have physical identity.
 */
@@ -54,6 +57,10 @@ namespace NGUInjector.Managers
         private static string _pendingContext = string.Empty;
         private static MajorUnlockTarget _scoreMajorUnlock;
         private static bool _scoreItopod;
+        private static int _routedAdventureZone = -1;
+        private static bool _routedAdventurePush;
+        private static bool _routedAdventureValuesLoot;
+        private static bool _routedAdventureBossOnly;
         private static bool _probingBossLoadout;
         private static bool _cachedBossObjective;
         private static int _cachedBossId = int.MinValue;
@@ -81,6 +88,32 @@ namespace NGUInjector.Managers
         {
             return item != null && (_authoritativePlan != null && UsesReference(_authoritativePlan, item)
                                     || _pendingPlan != null && UsesReference(_pendingPlan, item));
+        }
+
+        /*
+        ROUTER-BOUND ORDINARY ADVENTURE OBJECTIVE
+
+        AdventureCollectionPlanner may deliberately backfill an easy set while the generic zone
+        oracle still exposes a harder progression frontier.  Without this handoff the optimizer
+        equips frontier combat gear during easy farming and loses Drop/respawn/resource throughput.
+        Conversely, a true push must not let production specials displace the owned combat set
+        which crosses its target.  A changed route invalidates the short routine lease so the next
+        enemy-free frame evaluates the exact route selected by ControlAdventure.
+        */
+        internal static void SetAdventureRouteObjective(int zone, bool progressionPush,
+            bool valuesLoot, bool bossOnly)
+        {
+            zone = Math.Max(-1, zone);
+            if (_routedAdventureZone == zone
+                && _routedAdventurePush == progressionPush
+                && _routedAdventureValuesLoot == valuesLoot
+                && _routedAdventureBossOnly == bossOnly)
+                return;
+            _routedAdventureZone = zone;
+            _routedAdventurePush = progressionPush;
+            _routedAdventureValuesLoot = valuesLoot;
+            _routedAdventureBossOnly = bossOnly;
+            if (_leaseKind == "routine") ClearObjectiveLease();
         }
 
         private sealed class Plan
@@ -163,6 +196,7 @@ namespace NGUInjector.Managers
             internal readonly double AdventureAttackBase;
             internal readonly double AdventureDefenseBase;
             internal readonly double AdventureMaxHpBase;
+            internal readonly double AdventureHpRegenBase;
             internal readonly double CubePower;
             internal readonly double CubeToughness;
             internal readonly double AdventureAttack;
@@ -174,6 +208,8 @@ namespace NGUInjector.Managers
             internal readonly bool ItopodClimbing;
             internal readonly bool ItopodManual;
             internal readonly double ItopodAttackCadence;
+            internal readonly double ItopodTargetAttackFactor;
+            internal readonly double ItopodIncomingBeastFactor;
             internal readonly double EnergySpeed;
             internal readonly double MagicSpeed;
             internal readonly double EnergyBar;
@@ -200,6 +236,7 @@ namespace NGUInjector.Managers
                 AdventureAttackBase = c.adventure.attack;
                 AdventureDefenseBase = c.adventure.defense;
                 AdventureMaxHpBase = c.adventure.maxHP;
+                AdventureHpRegenBase = c.adventure.regen;
                 CubePower = controller.cubePower();
                 CubeToughness = controller.cubeToughness();
                 AdventureAttack = Math.Max(0.0, c.totalAdvAttack());
@@ -211,6 +248,14 @@ namespace NGUInjector.Managers
                 ItopodClimbing = itopodClimbing;
                 ItopodManual = itopodManual;
                 ItopodAttackCadence = Math.Max(.02, itopodAttackCadence);
+                // Staging runs in Safe Zone before CombatManager toggles the requested Beast
+                // state.  Freeze the same live-to-target normalization used by the route oracle
+                // so the immutable candidate evaluator and the admission ceiling prove the same
+                // farm-one-hit or bounded-climb floor.
+                ItopodTargetAttackFactor = ZoneHelpers.ItopodTargetAttackFactor();
+                ItopodIncomingBeastFactor = Main.Settings.ITOPODBeastMode
+                                             && c.adventureController.hasBeastMode()
+                    ? 3.0 : 1.0;
                 EnergySpeed = c.energySpeed;
                 MagicSpeed = c.magic.magicBarSpeed;
                 EnergyBar = c.totalEnergyBar();
@@ -437,7 +482,8 @@ namespace NGUInjector.Managers
                 : currentSeconds - bestSeconds;
             var materialGain = 0.02; // explicit model/transaction uncertainty after setup is priced
             if (SameLayout(best, current)
-                || !(bestSeconds + materialGain < currentSeconds))
+                || !MateriallyBetterForObjective(boundObjective, currentEvaluation,
+                    bestEvaluation, materialGain))
             {
                 _authoritativePlan = current.Clone();
                 _authoritativeObjective = objective;
@@ -488,6 +534,20 @@ namespace NGUInjector.Managers
                 : c.settings.rebirthDifficulty == difficulty.evil ? c.highestHardBoss
                 : c.highestSadisticBoss;
             var catchupBoss = c.bossID < highest;
+
+            // An active Adventure route owns the physical Adventure gear. A stale selected-boss
+            // catch-up lease previously overrode a live ITOPOD climb, even though Fight Boss and
+            // Adventure are different combat systems. That could repeatedly restore production
+            // armor (for example Forest Chestplate) while the route proof had selected stronger
+            // Adventure armor. Do not let an idle selected-boss objective steal the live route.
+            if (itopodObjective)
+            {
+                if (_leaseKind != "itopod") ClearObjectiveLease();
+                _leaseKind = "itopod";
+                bossObjective = false;
+                majorUnlock = null;
+                return;
+            }
 
             if (_leaseKind == "boss" && c.bossID == _leasedBossId
                 && highest == _leasedHighestBoss)
@@ -644,8 +704,10 @@ namespace NGUInjector.Managers
                 itopodClimbing = route.Climbing;
                 itopodFloor = Math.Max(0, Math.Min(1600,
                     route.Climbing ? route.End - 1 : route.FarmFloor));
-                itopodManual = route.Climbing && Main.Settings.ITOPODCombatMode != 1
-                                && c.training.attackTraining[0] >= 5000;
+                var attackTraining = c.training.attackTraining;
+                itopodManual = Main.Settings.ITOPODCombatMode != 1
+                                && attackTraining != null && attackTraining.Length > 0
+                                && attackTraining[0] >= 5000;
                 itopodAttackCadence = itopodManual ? .8 : Math.Max(.02, c.adventure.attackSpeed);
                 id = "itopod:" + route.Start + ":" + route.End + ":" + route.FarmFloor
                      + ":climb=" + route.Climbing;
@@ -667,6 +729,21 @@ namespace NGUInjector.Managers
                 dropChance = Math.Max(0.0, Math.Min(1.0, major.DropChance));
                 if (ZoneStatHelper.UserOverrides != null)
                     ZoneStatHelper.UserOverrides.TryGetValue(targetZone, out targetStats);
+            }
+            else if (_routedAdventureZone >= 0)
+            {
+                targetZone = _routedAdventureZone;
+                bossOnly = _routedAdventureBossOnly;
+                valuesLoot = _routedAdventureValuesLoot;
+                if (ZoneStatHelper.UserOverrides != null)
+                    ZoneStatHelper.UserOverrides.TryGetValue(targetZone, out targetStats);
+                kind = _routedAdventurePush ? LoadoutObjectiveKind.AdventureProgression
+                    : LoadoutObjectiveKind.ContinuousAdventure;
+                id = "routine:routed-adventure:" + targetZone + ":push="
+                     + _routedAdventurePush + ":loot=" + valuesLoot + ":boss=" + bossOnly;
+                display = _routedAdventurePush
+                    ? "Adventure combat push into " + GameNames.Zone(c, targetZone)
+                    : "easy Adventure farming in " + GameNames.Zone(c, targetZone);
             }
             else
             {
@@ -835,10 +912,37 @@ namespace NGUInjector.Managers
                 SnapshotPlanTotals(c, current, 0.0));
             var best = Optimize(c, all, boundObjective);
             var bestEvaluation = _lastSearchResult == null ? null : _lastSearchResult.Evaluation;
+            // A bounded Pareto search can exhaust its node budget before it reaches a
+            // feasible accessory pair.  ITOPOD entry must not then sit in Safe Zone
+            // forever while merely *describing* the current infeasible set as verified.
+            // The lexicographic fallback is deliberately narrow: maximize native
+            // Adventure Attack in every legal physical slot, then accept it only if
+            // the same immutable farm/frontier evaluator proves the requested floor.
+            if (bestEvaluation == null || !bestEvaluation.Feasible)
+            {
+                var strongest = StrongestAdventureAttackPlan(c, all);
+                var strongestEvaluation = EvaluateTotals(boundObjective,
+                    SnapshotPlanTotals(c, strongest, 0.0));
+                // Preserve the fallback's exact failure reason as well as its success.  Leaving
+                // the exhausted search's null evaluation here made live telemetry claim that no
+                // candidate had been evaluated even after the strongest set was checked.
+                bestEvaluation = strongestEvaluation;
+                if (strongestEvaluation != null && strongestEvaluation.Feasible)
+                {
+                    best = strongest;
+                }
+            }
+            if (bestEvaluation == null || !bestEvaluation.Feasible)
+            {
+                LastDecision = "No owned physical set proves the configured ITOPOD combat floor: "
+                               + (bestEvaluation == null
+                                   ? "candidate evaluation is unavailable"
+                                   : bestEvaluation.Reason);
+                return false;
+            }
             if (!SameLayout(best, current)
-                && bestEvaluation != null && bestEvaluation.Feasible
-                && (currentEvaluation == null || !currentEvaluation.Feasible
-                    || bestEvaluation.TotalSeconds + 0.02 < currentEvaluation.TotalSeconds))
+                && MateriallyBetterForObjective(boundObjective, currentEvaluation,
+                    bestEvaluation, 0.02))
                 ApplyChosenPlan(c, best, now, "Staged");
             else
             {
@@ -852,8 +956,52 @@ namespace NGUInjector.Managers
             }
             var route = ZoneHelpers.LastItopodRoute;
             var targetFloor = route.Climbing
-                ? Math.Max(1, c.adventure.highestItopodLevel) : Math.Max(0, route.FarmFloor);
-            return ZoneHelpers.CalculateBestItopodLevel() >= targetFloor;
+                ? Math.Max(0, route.End - 1) : Math.Max(0, route.FarmFloor);
+            var liveReach = route.Climbing
+                ? ZoneHelpers.CalculateBestItopodFrontierLevel()
+                : ZoneHelpers.CalculateBestItopodLevel();
+            if (liveReach < targetFloor)
+            {
+                LastDecision = "The staged ITOPOD set failed its live "
+                               + (route.Climbing ? "bounded frontier" : "one-hit farm")
+                               + " check: floor "
+                               + targetFloor + " requested, floor " + liveReach + " proved";
+                return false;
+            }
+            return true;
+        }
+
+        private static Plan StrongestAdventureAttackPlan(Character c,
+            IEnumerable<Equipment> items)
+        {
+            var controller = c.inventoryController;
+            var pool = DistinctReferences((items ?? Enumerable.Empty<Equipment>())
+                .Where(x => x != null && x.id > 0 && x.isEquipment()));
+            var usedIds = new HashSet<int>();
+            Func<part, Equipment> takePart = delegate(part expected)
+            {
+                var item = pool.Where(x => x.type == expected && !usedIds.Contains(x.id))
+                    .OrderByDescending(controller.equipAttackBonus)
+                    .ThenByDescending(controller.equipDefenseBonus)
+                    .ThenBy(x => x.id).FirstOrDefault();
+                if (item != null) usedIds.Add(item.id);
+                return item;
+            };
+            var result = new Plan
+            {
+                Head = takePart(part.Head),
+                Chest = takePart(part.Chest),
+                Legs = takePart(part.Legs),
+                Boots = takePart(part.Boots),
+                Weapon = takePart(part.Weapon)
+            };
+            if (controller.weapon2Unlocked())
+                result.Weapon2 = takePart(part.Weapon);
+            var spaces = Math.Min(c.inventory.accs.Count,
+                Math.Max(0, controller.accessorySpaces()));
+            for (var i = 0; i < spaces; i++)
+                result.Accessories.Add(takePart(part.Accessory));
+            return result;
         }
 
         private static void ApplyChosenPlan(Character c, Plan best, double now, string action)
@@ -1389,23 +1537,63 @@ namespace NGUInjector.Managers
         private static LoadoutEvaluation EvaluateItopod(BoundObjective objective,
             CandidateProjection projection, double setupSeconds)
         {
-            var scale = Math.Pow(1.05, objective.Projection.ItopodFloor);
-            var hp = 600.0 * scale * 1.02;
-            var defense = 10.0 * scale * 1.02;
-            var damage = .8 * Math.Max(0.0,
-                projection.AdventureAttack - defense / 2.0)
-                         * (objective.Projection.ItopodManual
-                             ? objective.RegularAttackPower : objective.IdleAttackPower);
-            if (damage < hp)
-                return LoadoutEvaluation.Infeasible("candidate does not retain the guaranteed ITOPOD one-hit plateau");
+            var targetAttack = projection.AdventureAttack
+                               * objective.Projection.ItopodTargetAttackFactor;
+            var combat = ItopodCombatOracle.EvaluateFloor(
+                objective.Projection.ItopodFloor, targetAttack,
+                projection.AdventureDefense, projection.AdventureCurrentHp,
+                objective.Projection.ItopodManual
+                    ? objective.RegularAttackPower : objective.IdleAttackPower,
+                objective.Projection.ItopodAttackCadence,
+                objective.Projection.ItopodIncomingBeastFactor);
+            var admitted = objective.Projection.ItopodClimbing
+                ? combat.FrontierClear : combat.OneHit;
+            if (!admitted)
+                return LoadoutEvaluation.Infeasible(objective.Projection.ItopodClimbing
+                    ? "candidate does not retain the bounded ITOPOD multi-hit frontier: "
+                      + combat.Reason
+                    : "candidate does not retain the guaranteed ITOPOD one-hit farm plateau");
             var respawn = objective.LiveRespawnSeconds
                           * Math.Max(.2, 1.0 - projection.RespawnBonus)
                           / Math.Max(.2, 1.0 - objective.Projection.CurrentRespawnGear);
-            var action = objective.Projection.ItopodAttackCadence
+            var action = combat.KillSeconds
                          + Math.Max(0.0, respawn);
-            return new LoadoutEvaluation(true, setupSeconds + action, setupSeconds, 0.0,
-                action, setupSeconds + action, -projection.General,
-                "ITOPOD one-hit cycle seconds including native respawn special");
+            // A climb is a progression fight, not a production loadout. When two physical sets
+            // have the same discrete kill/respawn time, prefer the larger worst-case HP reserve,
+            // then raw Adventure strength. This makes a strictly stronger Gouda chest beat Forest
+            // production bonuses without disrupting the deliberate easy-farm downgear policy.
+            var survivalReserve = Math.Max(0.0,
+                projection.AdventureCurrentHp - combat.WorstIncomingDamage);
+            var combatTieBreaker = -(survivalReserve * 1000000.0
+                + projection.AdventureAttack + projection.AdventureDefense
+                + projection.AdventureMaxHp / 3.0);
+            // The physical swap is a one-time 20ms operation while a first-clear range contains
+            // many fights. Charging that setup cost against one representative kill made the
+            // incumbent production chest win before the combat tie-breaker was consulted. Keep
+            // setup visible, but rank climb sets on their recurring cycle and combat reserve.
+            var rankedTotal = objective.Projection.ItopodClimbing
+                ? action : setupSeconds + action;
+            return new LoadoutEvaluation(true, rankedTotal, setupSeconds, 0.0,
+                action, rankedTotal,
+                objective.Projection.ItopodClimbing ? combatTieBreaker : -projection.General,
+                (objective.Projection.ItopodClimbing
+                    ? "bounded ITOPOD frontier cycle" : "ITOPOD one-hit farm cycle")
+                + " seconds including native respawn special");
+        }
+
+        private static bool MateriallyBetterForObjective(BoundObjective objective,
+            LoadoutEvaluation current, LoadoutEvaluation candidate, double secondsMargin)
+        {
+            if (candidate == null || !candidate.Feasible) return false;
+            if (current == null || !current.Feasible) return true;
+            if (candidate.TotalSeconds + Math.Max(0.0, secondsMargin) < current.TotalSeconds)
+                return true;
+            return objective != null && objective.Projection != null
+                   && objective.Objective.Kind == LoadoutObjectiveKind.Itopod
+                   && objective.Projection.ItopodClimbing
+                   && Math.Abs(candidate.TotalSeconds - current.TotalSeconds)
+                      <= Math.Max(0.0, secondsMargin)
+                   && candidate.TieBreaker + 1e-6 < current.TieBreaker;
         }
 
         private static LoadoutEvaluation EvaluateResourceRefill(BoundObjective objective,
@@ -1482,9 +1670,17 @@ namespace NGUInjector.Managers
                 + snapshot.CubeToughness + snapshot.CurrentDefenseItems);
             var hpNumerator = Math.Max(1e-9, snapshot.AdventureMaxHpBase
                 + 3.0 * (snapshot.CubePower + snapshot.CurrentAttackItems));
+            // Native totalAdvHPRegen's equipment term is three percent of item Defense and Cube
+            // Toughness before every later multiplier.  Freezing live regen here made defensive
+            // candidates look unable to cross T4-T12 regen gates and distorted survival recovery.
+            var regenNumerator = Math.Max(1e-9, snapshot.AdventureHpRegenBase
+                + .03 * (snapshot.CubeToughness + snapshot.CurrentDefenseItems));
             var maxHp = Math.Max(0.0, snapshot.AdventureMaxHp
                 * (snapshot.AdventureMaxHpBase + 3.0 * (snapshot.CubePower + attackItems))
                 / hpNumerator);
+            var hpRegen = Math.Max(.1, Math.Min(1e36, snapshot.AdventureHpRegen
+                * (snapshot.AdventureHpRegenBase
+                   + .03 * (snapshot.CubeToughness + defenseItems)) / regenNumerator));
             return new CandidateProjection
             {
                 FightAttack = Math.Max(0.0, snapshot.FightAttack
@@ -1503,7 +1699,7 @@ namespace NGUInjector.Managers
                     / advDefenseNumerator),
                 AdventureMaxHp = maxHp,
                 AdventureCurrentHp = Math.Min(objective.Objective.LiveAdventureHp, maxHp),
-                AdventureHpRegen = snapshot.AdventureHpRegen,
+                AdventureHpRegen = hpRegen,
                 LootBonus = totals.Metric(MetricLoot),
                 RespawnBonus = totals.Metric(MetricRespawn),
                 EnergySpeedBonus = totals.Metric(MetricEnergySpeed),
@@ -1599,41 +1795,68 @@ namespace NGUInjector.Managers
                     projected.spec2Cur = BoostCap(projected.spec2Cap, projected.level);
                     projected.spec3Cur = BoostCap(projected.spec3Cap, projected.level);
                 }
-                var current = CurrentPlan(c, true);
-                var baseline = Score(c, current);
-                var best = baseline;
-                if (e.type == part.Head) { var p = current.Clone(); p.Head = projected; best = Math.Max(best, Score(c, p)); }
-                else if (e.type == part.Chest) { var p = current.Clone(); p.Chest = projected; best = Math.Max(best, Score(c, p)); }
-                else if (e.type == part.Legs) { var p = current.Clone(); p.Legs = projected; best = Math.Max(best, Score(c, p)); }
-                else if (e.type == part.Boots) { var p = current.Clone(); p.Boots = projected; best = Math.Max(best, Score(c, p)); }
-                else if (e.type == part.Weapon)
-                {
-                    if (!PlanContainsIdOutside(current, e.id, current.Weapon))
-                    {
-                        var p = current.Clone(); p.Weapon = projected; best = Math.Max(best, Score(c, p));
-                    }
-                    if (c.inventoryController.weapon2Unlocked()
-                        && !PlanContainsIdOutside(current, e.id, current.Weapon2))
-                    {
-                        var p = current.Clone(); p.Weapon2 = projected; best = Math.Max(best, Score(c, p));
-                    }
-                }
-                else if (e.type == part.Accessory)
-                {
-                    for (var i = 0; i < current.Accessories.Count; i++)
-                    {
-                        if (PlanContainsIdOutside(current, e.id, current.Accessories[i])) continue;
-                        var p = current.Clone();
-                        p.Accessories[i] = projected;
-                        best = Math.Max(best, Score(c, p));
-                    }
-                }
-                return Math.Max(0.0, best - baseline);
+                return ProjectedLoadoutGain(c, e, projected);
             }
             catch
             {
                 return 0.0;
             }
+        }
+
+        internal static double MaxxedFullyBoostedLoadoutGain(Character c, Equipment e)
+        {
+            if (c == null || e == null || e.id <= 0 || MemberwiseCloneMethod == null)
+                return 0.0;
+            try
+            {
+                var projected = (Equipment)MemberwiseCloneMethod.Invoke(e, null);
+                projected.level = 100;
+                projected.curAttack = BoostCap(projected.capAttack, 100);
+                projected.curDefense = BoostCap(projected.capDefense, 100);
+                projected.spec1Cur = BoostCap(projected.spec1Cap, 100);
+                projected.spec2Cur = BoostCap(projected.spec2Cap, 100);
+                projected.spec3Cur = BoostCap(projected.spec3Cap, 100);
+                return ProjectedLoadoutGain(c, e, projected);
+            }
+            catch
+            {
+                return 0.0;
+            }
+        }
+
+        private static double ProjectedLoadoutGain(Character c, Equipment source,
+            Equipment projected)
+        {
+            var current = CurrentPlan(c, true);
+            var baseline = Score(c, current);
+            var best = baseline;
+            if (source.type == part.Head) { var p = current.Clone(); p.Head = projected; best = Math.Max(best, Score(c, p)); }
+            else if (source.type == part.Chest) { var p = current.Clone(); p.Chest = projected; best = Math.Max(best, Score(c, p)); }
+            else if (source.type == part.Legs) { var p = current.Clone(); p.Legs = projected; best = Math.Max(best, Score(c, p)); }
+            else if (source.type == part.Boots) { var p = current.Clone(); p.Boots = projected; best = Math.Max(best, Score(c, p)); }
+            else if (source.type == part.Weapon)
+            {
+                if (!PlanContainsIdOutside(current, source.id, current.Weapon))
+                {
+                    var p = current.Clone(); p.Weapon = projected; best = Math.Max(best, Score(c, p));
+                }
+                if (c.inventoryController.weapon2Unlocked()
+                    && !PlanContainsIdOutside(current, source.id, current.Weapon2))
+                {
+                    var p = current.Clone(); p.Weapon2 = projected; best = Math.Max(best, Score(c, p));
+                }
+            }
+            else if (source.type == part.Accessory)
+            {
+                for (var i = 0; i < current.Accessories.Count; i++)
+                {
+                    if (PlanContainsIdOutside(current, source.id, current.Accessories[i])) continue;
+                    var p = current.Clone();
+                    p.Accessories[i] = projected;
+                    best = Math.Max(best, Score(c, p));
+                }
+            }
+            return Math.Max(0.0, best - baseline);
         }
 
         /*
@@ -1836,7 +2059,8 @@ namespace NGUInjector.Managers
             // combat stats and may not displace an item that shortens the target
             // fight or makes it survivable. RNG-gated unlock loot is valued inside
             // MajorUnlockUtility only after the combat constraint is satisfied.
-            if (majorUnlock == null && !itopodObjective)
+            if (ShouldValueProductionInDevelopment(bossObjective, itopodObjective,
+                    majorUnlock != null))
             {
                 score += ProductionRateUtility(c, plan);
                 foreach (var item in scoringItems) score += SpecialUtility(c, item, 1.0);
@@ -1844,6 +2068,12 @@ namespace NGUInjector.Managers
                     score += SpecialUtility(c, plan.Weapon2, weapon2Factor);
             }
             return score;
+        }
+
+        internal static bool ShouldValueProductionInDevelopment(bool bossObjective,
+            bool itopodObjective, bool majorUnlockObjective)
+        {
+            return !bossObjective && !itopodObjective && !majorUnlockObjective;
         }
 
         private static bool UseBossObjective(Character c)
@@ -2006,8 +2236,9 @@ namespace NGUInjector.Managers
 
         ITOPOD Drop Chance is fixed, so ordinary Looting gear has zero value there.  Equipment can
         improve rewards only by crossing a hit-count/survival plateau or shortening native respawn.
-        Evaluate those quantities jointly at the configured farm/climb floor.  A one-shot candidate
-        receives no Toughness value; a multi-hit candidate must survive the expected enemy attacks.
+        Evaluate those quantities jointly at the configured farm/climb floor. Fixed farming requires
+        the guaranteed one-hit plateau; first-clear climbing may use only the bounded pre-escalation
+        multi-hit proof shared with ZoneHelpers.
         */
         private static double ItopodThroughputUtility(Character c, Plan plan, double attack,
             double defense, double maxHP)
@@ -2016,22 +2247,19 @@ namespace NGUInjector.Managers
             if (fixedObjective == null
                 || fixedObjective.Objective.Kind != LoadoutObjectiveKind.Itopod)
                 return -1000000000.0;
-            var floor = fixedObjective.Projection.ItopodFloor;
-            var scale = Math.Pow(1.05, floor);
-            // Native spawn independently rolls HP/Defense in [0.98,1.02] and the
-            // player hit in [0.8,1.2]. Optimize the guaranteed one-hit plateau so
-            // poison/charger/paralyze/rapid/grower AI never receives an action.
-            var enemyHP = 600.0 * scale * 1.02;
-            var enemyDefense = 10.0 * scale * 1.02;
             var attackPower = fixedObjective.Projection.ItopodManual
                 ? fixedObjective.RegularAttackPower : fixedObjective.IdleAttackPower;
-            var damage = 0.8 * Math.Max(0.0, attack - enemyDefense / 2.0) * attackPower;
-            if (damage <= 0.0) return -1000000000.0;
-            var hits = Math.Max(1.0, Math.Ceiling(enemyHP / damage));
-            var attackInterval = fixedObjective.Projection.ItopodAttackCadence;
-            var killSeconds = hits * attackInterval;
-            if (hits > 1.0)
-                return -500000000.0 - 1000000.0 * hits;
+            var floor = fixedObjective.Projection.ItopodFloor;
+            var combat = ItopodCombatOracle.EvaluateFloor(floor, attack, defense,
+                Math.Min(Math.Max(0.0, c.adventure.curHP), Math.Max(0.0, maxHP)),
+                attackPower, fixedObjective.Projection.ItopodAttackCadence,
+                fixedObjective.Projection.ItopodIncomingBeastFactor);
+            var viable = fixedObjective.Projection.ItopodClimbing
+                ? combat.FrontierClear : combat.OneHit;
+            if (!viable)
+                return -500000000.0 - 1000000.0 * Math.Max(1, combat.Hits);
+            var hits = Math.Max(1, combat.Hits);
+            var killSeconds = combat.KillSeconds;
 
             var controller = c.inventoryController;
             var candidateRespawnGear = Math.Max(0.0, PlanBonus(controller, plan, specType.Respawn));
@@ -2045,12 +2273,8 @@ namespace NGUInjector.Managers
                 : c.settings.rebirthDifficulty == difficulty.evil ? 700.0 : 2000.0) + floor;
             // First-clear climbing is a discrete permanent award, so reaching the requested floor
             // dominates small farm-rate differences.  Farming maximizes exact cycle throughput.
-            // First-clear routing is justified by a one-shot proof. Preserve that
-            // constraint lexicographically; respawn bonuses may optimize only among
-            // candidate plans that retain it.
-            var viableClimb = !fixedObjective.Projection.ItopodClimbing || damage >= enemyHP;
-            if (!viableClimb)
-                return -1000000000.0 + 1000.0 / hits;
+            // Admission is lexicographic: respawn bonuses may optimize only among
+            // candidate plans that retain the route's farm or frontier proof.
             return (fixedObjective.Projection.ItopodClimbing ? 200000000.0 : 0.0)
                    + 10000000.0 * progress / cycle
                    - 1000.0 * hits;

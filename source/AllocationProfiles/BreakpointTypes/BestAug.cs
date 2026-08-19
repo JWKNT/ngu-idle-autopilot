@@ -82,9 +82,10 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                         var marginal = aug.baseBoost * (upgrade * upgrade + 1.0)
                                        * (Math.Pow(level + 1.0, aug.augTierBonus())
                                           - Math.Pow(level, aug.augTierBonus()));
-                        // Completing already-paid progress dominates starting another
-                        // partial level that will be erased at rebirth.
-                        var score = marginal / time * (state.augProgress > 0 ? 4.0 : 1.0);
+                        // AugTimeLeftEnergy already prices the exact remaining progress.  Applying
+                        // another arbitrary multiplier to a nonzero bar double-counts sunk work and
+                        // can displace a track with greater native marginal gain per remaining second.
+                        var score = marginal / time;
                         if (score > bestScore)
                         {
                             bestScore = score;
@@ -104,7 +105,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                         var upgrade = (double)state.upgradeLevel;
                         var marginal = aug.baseBoost * (2.0 * upgrade + 1.0)
                                        * Math.Pow(level, aug.augTierBonus());
-                        var score = marginal / time * (state.upgradeProgress > 0 ? 4.0 : 1.0);
+                        // UpgradeTimeLeftEnergy already contains the partial-bar advantage exactly.
+                        var score = marginal / time;
                         if (score > bestScore)
                         {
                             bestScore = score;

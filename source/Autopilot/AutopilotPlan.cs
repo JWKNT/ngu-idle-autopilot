@@ -79,6 +79,13 @@ namespace NGUInjector.Autopilot
         internal double RebirthExpectedCatchupExpPerHour;
         internal double RebirthMinimumNumberRatio;
         internal bool RebirthExecutionHold;
+        // The optimizer may select a profitable checkpoint that the final live gate cannot yet
+        // execute (for example, record recovery has no finite reset-route ETA).  Keep that
+        // boundary hold separate from the optimizer's no-reset decision: it must extend the
+        // reset-local allocation horizon without rewriting the selected checkpoint or claiming
+        // that the optimizer preferred continuation.
+        internal bool RebirthBoundaryHold;
+        internal string RebirthBoundaryReason = string.Empty;
         internal int RebirthNextPositiveEtaSeconds = -1;
         internal int RebirthNextEvaluationEtaSeconds = -1;
         internal string RebirthEtaReason = string.Empty;
@@ -92,6 +99,9 @@ namespace NGUInjector.Autopilot
         internal bool ChallengeActive;
         internal bool ChallengeAdmitted;
         internal string ChallengeName = string.Empty;
+        internal bool ChallengeAllowsRebirth;
+        internal string ChallengeRulesSummary = string.Empty;
+        internal string ChallengeRebirthPolicy = string.Empty;
         internal int ChallengeClearEtaSeconds = -1;
         internal int ChallengeRecoveryEtaSeconds = -1;
         internal int ChallengeTargetBoss = -1;
@@ -146,10 +156,12 @@ namespace NGUInjector.Autopilot
                    + TitanThirteenFourteenAuthorized + "|" + Move69Authorized + "|"
                    + EndSequenceAuthorized + "|"
                    + Stage + "|" + Objective + "|" + rebirthSignature + "|" + RebirthReason + "|"
-                   + RebirthExecutionHold + "|"
+                   + RebirthExecutionHold + "|" + RebirthBoundaryHold + "|"
                    + EndgameObjective + "|" + EndgameMissingSummary + "|"
                    + Titan12VersionTarget + "|" + EndgameReadyToTrigger + "|"
                    + ChallengeActive + "|" + ChallengeAdmitted + "|" + ChallengeName + "|"
+                   + ChallengeAllowsRebirth + "|" + ChallengeRulesSummary + "|"
+                   + ChallengeRebirthPolicy + "|"
                    + string.Join(";", NGUDifficulties.Select(x => x.Time + ":" + x.Value).ToArray()) + "|" + WandoosOS
                    + "|" + string.Join(",", Diggers.Select(x => x.ToString()).ToArray())
                    + "|" + string.Join(",", Challenges.ToArray()) + "|" + BreakpointSignature(Energy) + "|" + BreakpointSignature(Magic) + "|" + BreakpointSignature(R3);
@@ -184,8 +196,24 @@ namespace NGUInjector.Autopilot
         */
         internal double EffectiveAllocationTarget(Character c)
         {
-            if (!RebirthExecutionHold || c == null) return RebirthSeconds;
-            return Math.Max(RebirthSeconds, c.rebirthTime.totalseconds + 3600.0);
+            return EffectiveAllocationTargetFor(RebirthSeconds, RebirthExecutionHold,
+                RebirthBoundaryHold,
+                c == null || c.rebirthTime == null ? double.NaN : c.rebirthTime.totalseconds);
+        }
+
+        internal static double EffectiveAllocationTargetFor(int targetSeconds,
+            bool optimizerHold, bool boundaryHold, double elapsedSeconds)
+        {
+            if ((!optimizerHold && !boundaryHold) || double.IsNaN(elapsedSeconds)
+                || double.IsInfinity(elapsedSeconds) || elapsedSeconds < 0.0)
+                return targetSeconds;
+            return Math.Max(targetSeconds, elapsedSeconds + 3600.0);
+        }
+
+        internal void SetRebirthBoundaryHold(bool held, string reason)
+        {
+            RebirthBoundaryHold = held;
+            RebirthBoundaryReason = held ? reason ?? string.Empty : string.Empty;
         }
 
         private static string BreakpointSignature(IEnumerable<PlanBreakpoint> points)

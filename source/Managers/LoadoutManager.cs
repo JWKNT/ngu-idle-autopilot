@@ -429,11 +429,14 @@ namespace NGUInjector.Managers
             if (desired == null)
                 return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
                     resolveReason);
-            string preflightReason;
-            if (!TitanCandidatePreflight(target, desired, MutationOwner.Autopilot,
-                    out preflightReason))
-                return new TitanLoadoutStageResult(false, string.Empty, string.Empty,
-                    preflightReason);
+            // The typed Titan controller deliberately stages the strongest legal loadout before
+            // it asks the live native autokill predicate whether the due Titan is executable.
+            // Applying the ordinary unattended-fight ETA admission here prevents that proof from
+            // ever being observed: a weak pre-stage loadout rejects the staging atom, the root is
+            // marked failed, and the same commitment retries forever.  Resolution above is exact
+            // and requireStrongest=true; after this reversible swap, TitanExecutionManager either
+            // executes a source-proven native kill or restores immediately and abandons the
+            // commitment so a reset can proceed with the clock loss made explicit.
             if (!TryContextSwap(LockType.Titan, desired,
                     "Titan execution prestage", MutationOwner.Autopilot))
                 return new TitanLoadoutStageResult(false, string.Empty, string.Empty,

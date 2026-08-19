@@ -14,11 +14,18 @@ FILE PURPOSE
 AutopilotManager is the task-29 integration surface: it reloads and installs pure plans, exposes the
 single GameEpoch-bound MutationCoordinator root used by Main, invokes only typed child-intent
 managers, emits exact shadow/transaction/native-binding telemetry, and records sparse verified
-progression events. Planning is separate from mutation execution. The build-pinned early EXP atom
-subset is live; AP purchases, Money Pit, challenge/difficulty, T13/T14, MOVE69, ordinary rebirth,
-END, and the global scheduler remain fail-closed for this deploy. Legacy direct mutation helpers
-are not called; staged authority can expand only through typed postconditions and copied-save/
-backtest evidence.
+progression events. Planning is separate from mutation execution. Build-pinned EXP atoms, PP perk
+purchases, T1-T12 execution, and ordinary rebirth are live behind explicit authority and fresh
+postconditions. PP execution buys only the audited early sequence or terminal item; later PP is
+saved until typed downstream-time quotes replace name/effect heuristics. Exact Money Pit and the
+audited Normal challenge subset are also live behind their
+separate explicit flags; AP/QP purchases, difficulty, T13/T14, MOVE69, END, and the global scheduler
+remain fail-closed for this deploy. Legacy direct mutation helpers are not called; staged authority
+can expand only through typed postconditions and copied-save/backtest evidence.
+ITOPOD telemetry and valuation report the one-hit farm ceiling separately from the bounded
+multi-hit first-clear frontier; only the latter may price or schedule a record climb. Continuous
+ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
+ten-kill floor counter; its bounded frontier proof is computed without requiring that pre-cast.
 */
 namespace NGUInjector.Autopilot
 {
@@ -136,6 +143,7 @@ namespace NGUInjector.Autopilot
         internal void ExecutePlannedMutations(RootTransaction root)
         {
             if (root == null || root.IsClosed || !CanExecuteSafe || Plan == null) return;
+            RefreshRebirthBoundaryHold();
             if (Config.ManageCards)
                 CardCookingManager.ManageCards(Main.Character, Config,
                     CanExecuteIrreversible, root);
@@ -144,8 +152,30 @@ namespace NGUInjector.Autopilot
                     CanExecuteIrreversible, root);
             if (!root.IsClosed && CanExecuteIrreversible && Config.AllowExpSpending)
                 ExecuteOneExpPurchase(root);
+            if (!root.IsClosed && CanExecuteIrreversible && Config.AllowPerkSpending)
+                ExecuteOnePerkPurchase(root);
             // AP Hearts/late AP atoms, Move69, difficulty/challenge executors, terminal
             // transactions, and T13/T14 retain their separate fail-closed gates.
+        }
+
+        private void RefreshRebirthBoundaryHold()
+        {
+            if (Plan == null || Config == null || Main.Character == null
+                || Main.Character.rebirthTime == null)
+                return;
+            var due = !Plan.RebirthExecutionHold && Plan.RebirthSeconds >= 0
+                      && Main.Character.rebirthTime.totalseconds >= Plan.RebirthSeconds;
+            if (!due)
+            {
+                Plan.SetRebirthBoundaryHold(false, string.Empty);
+                return;
+            }
+            // This runs only after the epoch-bound root is open, so EvaluateLive observes the
+            // same synchronization/Titan/fruit/Blood/preview/policy facts as the final reset child.
+            // A blocked due checkpoint must keep reset-local allocations on a rolling horizon;
+            // it must not be mislabeled as the optimizer preferring continuation.
+            var gate = OrdinaryRebirthTransaction.EvaluateLive(Main.Character, Plan, Config, true);
+            Plan.SetRebirthBoundaryHold(!gate.Ready, gate.Reason);
         }
 
         /*
@@ -189,6 +219,22 @@ namespace NGUInjector.Autopilot
             }
         }
 
+        private void ExecuteOnePerkPurchase(RootTransaction root)
+        {
+            var c = Main.Character;
+            var spendable = c == null || c.adventure == null || c.adventure.itopod == null
+                ? 0L : c.adventure.itopod.perkPoints - Math.Max(0L, Config.PPReserve);
+            var id = SelectAffordablePerkTarget(c, spendable);
+            if (id < 0) return;
+            var result = root.ExecuteChild(new PerkPurchaseIntent(c, id,
+                Math.Max(0L, Config.PPReserve)));
+            if (result.Kind != MutationResultKind.Committed
+                && result.Kind != MutationResultKind.NoOpVerified
+                && result.Kind != MutationResultKind.Held)
+                Main.LogAction("REJECTED", "Perk purchase intent " + result.Kind
+                    + ": " + result.Reason);
+        }
+
         private bool TrySelectLiveExpPurchase(Character c, out PurchaseDescriptor descriptor,
             out object controller, out PurchaseCostState costState, out string reason)
         {
@@ -207,9 +253,16 @@ namespace NGUInjector.Autopilot
                        && TryMapFixedExpTarget(gate, out descriptor, out controller,
                            out costState, out reason);
 
-            // The pre-50 speed path includes one-off native flags which are not yet represented by
-            // the exact state-vector adapter. Do not spend a different atom under that policy.
-            if (c.energySpeed < 49.91f) return false;
+            if (c.energySpeed < 49.91f)
+            {
+                if (!TryGetEnergySpeedPurchase(c, out descriptor, out costState, out reason))
+                    return false;
+                controller = c.energyPurchases;
+                long exactCost;
+                try { exactCost = descriptor.Cost.Evaluate(costState); }
+                catch { return false; }
+                return exactCost <= c.realExp - Config.ExpReserve;
+            }
 
             var permanent = GetStrategicPermanentExpTarget(c);
             if (permanent != null && ShouldReserveForPermanentExpTarget(c, permanent))
@@ -222,7 +275,19 @@ namespace NGUInjector.Autopilot
             string magicReason;
             if (MagicSpeedOutranksMarginalGrowth(c, out magicSteps, out magicRate,
                     out magicReason))
-                return false;
+            {
+                if (!TryReadPositiveIntField(c.magicPurchases, "magicSpeed10Cost",
+                        out var magicAtomCost)
+                    || magicSteps <= 0 || magicAtomCost > long.MaxValue / magicSteps
+                    || magicAtomCost * magicSteps > c.realExp - Config.ExpReserve
+                    || !PurchaseDescriptorCatalog.TryGet("exp.magic.speed10", out descriptor))
+                    return false;
+                controller = c.magicPurchases;
+                costState = PurchaseCostState.Live(magicAtomCost);
+                reason = "fully funded " + magicSteps + "-atom discrete Magic-rate breakpoint; "
+                         + "buying one exact +0.1 atom this root; " + magicReason;
+                return true;
+            }
 
             var qol = GetQolExpTarget(c);
             if (qol != null && ShouldReserveForPermanentExpTarget(c, qol))
@@ -250,6 +315,59 @@ namespace NGUInjector.Autopilot
             if (sealedCost != marginal.Cost) return false;
             reason = marginal.Reason;
             return true;
+        }
+
+        private bool TryGetEnergySpeedPurchase(Character c, out PurchaseDescriptor descriptor,
+            out PurchaseCostState costState, out string reason)
+        {
+            descriptor = null;
+            costState = null;
+            reason = string.Empty;
+            if (c == null || c.energyPurchases == null) return false;
+            long special1;
+            long special2;
+            long special3;
+            if (!TryReadPositiveIntField(c.energyPurchases, "energySpecial1Cost", out special1)
+                || !TryReadPositiveIntField(c.energyPurchases, "energySpecial2Cost", out special2)
+                || !TryReadPositiveIntField(c.energyPurchases, "energySpecial3Cost", out special3))
+                return false;
+            var spendable = Math.Max(0L, c.realExp - Config.ExpReserve);
+            var choice = ExpPurchasePolicy.ChoosePre50EnergySpeed(c.energySpeed,
+                c.settings.special1Bought, c.settings.special2Bought,
+                c.settings.special3Bought, special1, special2, special3,
+                c.energyPurchases.energySpeed10Cost(),
+                c.energyPurchases.energySpeed100Cost(), spendable);
+            if (choice == null
+                || !PurchaseDescriptorCatalog.TryGet(choice.DescriptorKey, out descriptor))
+                return false;
+            costState = descriptor.Cost.Kind == PurchaseCostKind.LiveSerialized
+                ? PurchaseCostState.Live(choice.ExactCost)
+                : PurchaseCostState.WithScalar(c.energySpeed);
+            long sealedCost;
+            try { sealedCost = descriptor.Cost.Evaluate(costState); }
+            catch { return false; }
+            if (sealedCost != choice.ExactCost) return false;
+            reason = "pre-50 productive speed ROI: +"
+                     + (choice.DeltaHundredths / 100.0).ToString("0.0")
+                     + " base speed, productive gain " + choice.ProductiveGain.ToString("0.0")
+                     + " for " + choice.ExactCost + " exact EXP";
+            return true;
+        }
+
+        private static bool TryReadPositiveIntField(object controller, string fieldName,
+            out long value)
+        {
+            value = 0L;
+            if (controller == null || string.IsNullOrEmpty(fieldName)) return false;
+            try
+            {
+                var field = controller.GetType().GetField(fieldName,
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                if (field == null) return false;
+                value = Convert.ToInt64(field.GetValue(controller));
+                return value > 0L;
+            }
+            catch { return false; }
         }
 
         private static bool TryMapFixedExpTarget(PermanentExpTarget target,
@@ -847,7 +965,8 @@ namespace NGUInjector.Autopilot
                 _adventureTarget = null;
                 _lastAdventureDecision = DateTime.MinValue;
             }
-            if (!Main.Character.settings.autoKillTitans)
+            var typedTitanExecutionOwnsAdventure = Config.AllowTitanOneThroughTwelveExecution;
+            if (!typedTitanExecutionOwnsAdventure && !Main.Character.settings.autoKillTitans)
             {
                 Main.Character.settings.autoKillTitans = true;
                 if (!_loggedTitanAutoKill)
@@ -894,7 +1013,11 @@ namespace NGUInjector.Autopilot
                 return true;
             }
 
-            var titanZone = ZoneHelpers.HighestAvailableTitan();
+            // When typed Titan execution is enabled its synchronous runtime owns the temporary
+            // manageFight/zone commitment and requires native auto-kill to remain persistently off.
+            // Ordinary Adventure must neither force the setting back on nor race the same Titan.
+            var titanZone = typedTitanExecutionOwnsAdventure
+                ? -1 : ZoneHelpers.HighestAvailableTitan();
             if (titanZone >= 0)
             {
                 if (_loggedAdventureZone != titanZone || _loggedAdventureFightType != 2)
@@ -950,13 +1073,87 @@ namespace NGUInjector.Autopilot
             var best = _adventureTarget;
             var terminalItopodDropMissing = Main.Character.settings.rebirthDifficulty == difficulty.sadistic
                                             && !EndgameDependencyModel.IsOwned(Main.Character, 491);
-            if (Main.Character.settings.itopodOn
-                && (terminalItopodDropMissing || best == null
-                    || _collectionTarget != null && _collectionTarget.IncompleteZones == 0))
+            AdventureRoutePlan routePlan = null;
+            if (Main.Character.settings.itopodOn)
             {
                 var route = ZoneHelpers.ConfigureITOPOD();
                 if (!route.Confirmed)
                     return false;
+                long nextPerkCost;
+                double nextPerkGain;
+                NextStrategicPerkGate(Main.Character, out nextPerkCost, out nextPerkGain);
+                // Optional Item List debt stays protected, but it owns Adventure only when its
+                // set transition, boost route, or completed physical item has a proven progression
+                // payoff. This prevents rare unequipped Sky accessories from blocking steady
+                // ITOPOD PP/EXP/AP/boost income merely because their catalog level is below 100.
+                var collectionDebt = _collectionTarget != null
+                                     && _collectionTarget.StrategicDebt;
+                var currentProgressionFront = ZoneStatHelper.GetBestZone();
+                var progressionPush = _collectionTarget == null
+                                      || _collectionTarget.Target == null
+                                      || !_collectionTarget.IsBackfill
+                                      && currentProgressionFront != null
+                                      && _collectionTarget.Target.Zone == currentProgressionFront.Zone
+                                      && _collectionTarget.Target.FightType != 2;
+                var attackCadence = route.Climbing
+                                    && Main.Settings.ITOPODCombatMode != 1
+                                    && Main.Character.training.attackTraining[0] >= 5000
+                    ? .8 : Math.Max(.02, Main.Character.adventure.attackSpeed);
+                var targetCombatSeconds = route.Climbing
+                                          && !double.IsNaN(route.TargetKillSeconds)
+                                          && !double.IsInfinity(route.TargetKillSeconds)
+                                          && route.TargetKillSeconds > 0.0
+                    ? route.TargetKillSeconds : attackCadence;
+                var killCycleSeconds = targetCombatSeconds + Math.Max(0.0,
+                    Main.Character.adventureController.respawnTime());
+                var ordinaryPpPerSecond = 0.0;
+                try
+                {
+                    ordinaryPpPerSecond = Math.Max(0.0,
+                        Main.Character.adventureController.itopod.progressGained(
+                            Math.Max(0, route.Climbing ? route.End - 1 : route.FarmFloor)))
+                        / (double)Math.Max(1,
+                            Main.Character.adventureController.itopod.pointThreshold())
+                        / Math.Max(.02, killCycleSeconds);
+                }
+                catch { ordinaryPpPerSecond = 0.0; }
+                var optionalOnly = _collectionTarget != null
+                                   && _collectionTarget.Target != null
+                                   && _collectionTarget.SetRewardNativeMagnitude <= 0.0
+                                   && _collectionTarget.UsefulBoostGain <= 0.0
+                                   && _collectionTarget.OptionalProgressionGain > 0.0;
+                routePlan = ItopodPerkPlanner.ChooseAdventureRoute(
+                    Math.Max(1, Main.Character.adventure.highestItopodLevel),
+                    route.FrontierFloor,
+                    killCycleSeconds,
+                    Main.Character.adventure.itopod.perkPoints,
+                    Math.Max(0L, Config.PPReserve), nextPerkCost, nextPerkGain,
+                    collectionDebt,
+                    _collectionTarget != null && _collectionTarget.BossOnly,
+                    _collectionTarget != null && _collectionTarget.IsBackfill,
+                    _collectionTarget == null ? -1.0
+                        : _collectionTarget.ExpectedTargetDropSeconds,
+                    _collectionTarget == null ? 0.0
+                        : Math.Max(_collectionTarget.SetRewardNativeMagnitude,
+                            _collectionTarget.OptionalProgressionGain),
+                    progressionPush, terminalItopodDropMissing,
+                    Main.Character.adventure.zone >= 1000
+                        ? Main.Character.adventureController.itopodLevel : -1,
+                    Main.Character.adventureController.itopodKillCount,
+                    Main.Character.adventure.itopodStart,
+                    Main.Character.adventure.itopodEnd,
+                    ordinaryPpPerSecond, optionalOnly);
+                var chooseItopod = routePlan.Choice == AdventureRouteChoice.ItopodFrontier
+                                   || routePlan.Choice == AdventureRouteChoice.ItopodFarm;
+                if (!chooseItopod)
+                {
+                    if (best != null)
+                        ProgressionLoadoutOptimizer.SetAdventureRouteObjective(best.Zone,
+                            routePlan.Choice == AdventureRouteChoice.ProgressionPush,
+                            true, routePlan.Choice == AdventureRouteChoice.BossSnipe);
+                }
+                else
+                {
                 if (route.RequiresZoneReset && Main.Character.adventure.zone >= 1000)
                 {
                     Main.LogAction("ITOPOD", "Resetting the live sentinel floor through Safe Zone before the next spawn");
@@ -964,40 +1161,69 @@ namespace NGUInjector.Autopilot
                     CaptureRecovery(combat);
                     return true;
                 }
-                // Before T4, ambient PP progress is negligible. Enter only while a new record
-                // is one-hit viable; otherwise the best ordinary zone supplies useful boosts/EXP.
-                if (route.Climbing || Main.Character.adventure.titan4Kills > 0)
+                // The native itopodOn unlock is authoritative. Requiring a T4 kill for a fixed
+                // farm stranded early saves that legitimately unlocked ITOPOD through another
+                // route: the selector chose permanent PP/EXP/AP/boost income, then execution
+                // silently fell through to an irrelevant ordinary zone. A confirmed unlocked
+                // route therefore executes whether it is climbing or farming.
+                if (Main.Character.settings.itopodOn)
                 {
-                    // A reach proof may depend on an owned combat set that is not
-                    // currently equipped. Stage and verify it before crossing the
-                    // zone boundary; otherwise a weak production set can deadlock
-                    // before the optimizer ever sees an enemy-free ITOPOD frame.
-                    if (Main.Character.adventure.zone != 1000
-                        && !ProgressionLoadoutOptimizer.PrepareItopodRoute())
-                        return false;
                     var move69Pending = Main.Character.adventure.move69Unlocked
                                         && Main.Character.adventure.move69Used < 69
                                         && !EndgameDependencyModel.IsOwned(Main.Character, 481);
-                    var fightType = move69Pending
-                                    || route.Climbing && Main.Settings.ITOPODCombatMode != 1 ? 2 : 0;
+                    var attackTraining = Main.Character.training.attackTraining;
+                    var manualItopod = Main.Settings.ITOPODCombatMode != 1
+                                       && attackTraining != null && attackTraining.Length > 0
+                                       && attackTraining[0] >= 5000;
+                    var fightType = move69Pending || manualItopod ? 2 : 0;
+                    // Loadout staging and a native zone change may require adjacent enemy-free
+                    // frames. Publish the final ITOPOD target before staging so the typed outer
+                    // Adventure intent can verify this Safe-Zone/preparation step instead of
+                    // misclassifying useful progress as a missing route and quarantining the class.
+                    _adventureTarget = new ZoneTarget {Zone = 1000, FightType = fightType};
+                    // A reach proof may depend on an owned combat set that is not
+                    // currently equipped. Deliberately leave an ordinary zone before
+                    // staging it. Waiting for the brief natural gap between enemy
+                    // spawns is not live: this controller runs once per second, so an
+                    // idle fight can hide every such gap forever.
+                    if (Main.Character.adventure.zone != 1000)
+                    {
+                        if (Main.Character.adventure.zone != -1)
+                        {
+                            combat.MoveToZone(-1);
+                            CaptureRecovery(combat);
+                            return true;
+                        }
+                        if (!ProgressionLoadoutOptimizer.PrepareItopodRoute())
+                            return true;
+                    }
                     if (_loggedAdventureZone != 1000 || _loggedAdventureFightType != fightType)
                     {
                         Main.LogAction("ADVENTURE", (route.Climbing
                             ? "Climbing ITOPOD range " + route.Start + "-" + route.End
-                              + " for the next first-clear PP award"
+                              + " for globally valued first-clear PP"
                             : "Farming ITOPOD floor " + route.FarmFloor
                               + (terminalItopodDropMissing ? " for END item 491" : string.Empty))
-                            + " after completing the current ordinary-zone set");
+                            + "; " + routePlan.Reason);
                         _loggedAdventureZone = 1000;
                         _loggedAdventureFightType = fightType;
                     }
-                    _adventureTarget = new ZoneTarget {Zone = 1000, FightType = fightType};
                     if (fightType == 2)
-                        combat.ManualZone(1000, false, true, true, true, Main.Settings.ITOPODBeastMode);
+                    {
+                        // Leaving ITOPOD and re-entering at the configured range start resets the
+                        // native ten-kill floor counter. Charge/Parry recycling previously caused
+                        // a Safe-Zone hop roughly every cooldown, so a floor needing ten kills
+                        // could remain at its start forever despite two-second victories. The
+                        // frontier oracle admits only a set that survives without a pre-cast;
+                        // keep the stream continuous and let ordinary in-fight moves do the work.
+                        combat.ManualZone(1000, false, true, false, true,
+                            Main.Settings.ITOPODBeastMode);
+                    }
                     else
                         combat.IdleZone(1000, false, true, Main.Settings.ITOPODBeastMode);
                     CaptureRecovery(combat);
                     return true;
+                }
                 }
                 if (_collectionTarget != null && _collectionTarget.Target != null)
                 {
@@ -1008,6 +1234,15 @@ namespace NGUInjector.Autopilot
 
             if (best == null)
                 return false;
+
+            if (routePlan == null)
+            {
+                var progressionFront = ZoneStatHelper.GetBestZone();
+                var push = progressionFront != null && best.Zone == progressionFront.Zone
+                           && best.FightType != 2;
+                ProgressionLoadoutOptimizer.SetAdventureRouteObjective(best.Zone, push,
+                    true, _collectionTarget != null && _collectionTarget.BossOnly);
+            }
 
             if (best.Zone != _loggedAdventureZone || best.FightType != _loggedAdventureFightType)
             {
@@ -1216,7 +1451,9 @@ namespace NGUInjector.Autopilot
             // breakpoint until a mathematically valid execution target exists.
             File.WriteAllText(_profilePath, Plan.ToProfileJson(CanExecuteIrreversible
                 && Config.AllowRebirths && !Plan.RebirthExecutionHold,
-                CanExecuteIrreversible && Config.AllowChallenges));
+                // Typed ResetProgressionTransaction is the sole challenge-entry writer. Never
+                // emit BaseRebirth's direct legacy path into the generated allocation profile.
+                false));
             Profile = new CustomAllocation(_profilesDir, "autopilot.generated");
             Profile.ReloadAllocation();
         }
@@ -1291,29 +1528,29 @@ namespace NGUInjector.Autopilot
                                     && !double.IsNaN(projectedDefenseMultiplier)
                                     && !double.IsInfinity(projectedAttackMultiplier)
                                     && !double.IsInfinity(projectedDefenseMultiplier);
-            var recoveryResetEta = -1;
+            var recoveryResetEta = Plan.RebirthRecoveryEtaSeconds;
             var recoveryContinueEta = -1;
-            var recoveryRouteReason = string.Empty;
             var recoveryMode = c.settings.rebirthDifficulty == difficulty.normal && c.bossID < c.highestBoss;
-            // Native rebirth replaces Number rather than compounding the same projected/current
-            // ratio across replay cycles. Publish the aggregate-score gate here; a geometric
-            // recovery route would be false precision and formerly disagreed with the final gate.
-            var recoveryResetEfficient = !Plan.RebirthExecutionHold
-                                         && Plan.RebirthSelectedScorePerHour > 0.0;
-            if (recoveryMode)
-            {
-                recoveryRouteReason = "native rebirth replaces Number; no geometric repeated-cycle ETA is published, so the aggregate one-run score controls";
-            }
-            else
+            // Mirror the irreversible admission kernel in telemetry. Aggregate one-run score is
+            // necessary but not sufficient below the Boss record; unknown exact replay ETA must be
+            // published as a hold instead of claiming that reset is recovery-efficient.
+            var recoveryPolicy = RebirthOptimizer.EvaluateMutationPolicy(
+                Plan.RebirthSelectedScorePerHour, true,
+                Math.Min(projectedAttackMultiplier, projectedDefenseMultiplier), recoveryMode,
+                recoveryResetEta, recoveryContinueEta);
+            var recoveryResetEfficient = recoveryPolicy.Authorized;
+            var recoveryRouteReason = recoveryPolicy.Reason;
+            if (!recoveryMode)
             {
                 recoveryResetEta = -1;
                 recoveryContinueEta = -1;
-                recoveryRouteReason = "boss record already caught up; normal checkpoint objective applies";
             }
             var rebirthSafetyBlockReason = !Config.AllowRebirths
                 ? "rebirth execution is disabled in autopilot settings"
                 : Plan.RebirthExecutionHold
                     ? "the event-driven planner has not admitted a valid finite mutation boundary"
+                    : recoveryMode && !recoveryPolicy.Authorized
+                        ? recoveryPolicy.Reason
                     : string.Empty;
             var projectedRebirthAp = MechanicsProgression.TimeAp(Plan.RebirthSeconds);
             var questEta = -1;
@@ -1423,6 +1660,9 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthCandidateSummary\": \"" + EscapeJson(Plan.RebirthCandidateSummary) + "\",\n"
                        + "  \"challengeEvidenceSummary\": \"" + EscapeJson(Plan.ChallengeEvidenceSummary) + "\",\n"
                        + "  \"challengeActive\": " + Plan.ChallengeActive.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"challengeAllowsRebirth\": " + Plan.ChallengeAllowsRebirth.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"challengeRulesSummary\": \"" + EscapeJson(Plan.ChallengeRulesSummary) + "\",\n"
+                       + "  \"challengeRebirthPolicy\": \"" + EscapeJson(Plan.ChallengeRebirthPolicy) + "\",\n"
                        + "  \"nextChallengeAdmitted\": " + Plan.ChallengeAdmitted.ToString().ToLowerInvariant() + ",\n"
                        + "  \"nextChallengeName\": \"" + EscapeJson(Plan.ChallengeName) + "\",\n"
                        + "  \"nextChallengeEtaSeconds\": " + Plan.ChallengeClearEtaSeconds + ",\n"
@@ -1515,6 +1755,7 @@ namespace NGUInjector.Autopilot
                        + "  \"itopodCurrentFloor\": " + c.adventureController.itopodLevel + ",\n"
                        + "  \"itopodHighestFloor\": " + c.adventure.highestItopodLevel + ",\n"
                        + "  \"itopodReachableOneHitFloor\": " + itopodRoute.ReachableFloor + ",\n"
+                       + "  \"itopodFrontierFloor\": " + itopodRoute.FrontierFloor + ",\n"
                        + "  \"itopodRangeStart\": " + c.adventure.itopodStart + ",\n"
                        + "  \"itopodRangeEnd\": " + c.adventure.itopodEnd + ",\n"
                        + "  \"itopodKillsOnFloor\": " + c.adventureController.itopodKillCount + ",\n"
@@ -1542,6 +1783,9 @@ namespace NGUInjector.Autopilot
                        + "  \"collectionUsefulBoostDebt\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.UsefulBoostDebt).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"collectionUsefulBoostGain\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.UsefulBoostGain).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"collectionUsefulBoostTarget\": \"" + EscapeJson(_collectionTarget == null ? string.Empty : _collectionTarget.UsefulBoostTarget) + "\",\n"
+                       + "  \"collectionStrategicDebt\": " + (_collectionTarget != null && _collectionTarget.StrategicDebt).ToString().ToLowerInvariant() + ",\n"
+                       + "  \"collectionOptionalProgressionGain\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.OptionalProgressionGain).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionOptionalProgressionTarget\": \"" + EscapeJson(_collectionTarget == null ? string.Empty : _collectionTarget.OptionalProgressionTarget) + "\",\n"
                        + "  \"collectionSetReward\": \"" + EscapeJson(collectionSetReward) + "\",\n"
                        + "  \"collectionReason\": \"" + EscapeJson(collectionReason) + "\",\n"
                        + "  \"collectionMissingSummary\": \"" + EscapeJson(collectionMissing) + "\",\n"
@@ -1604,6 +1848,7 @@ namespace NGUInjector.Autopilot
                        + "  \"loadoutSearchExact\": " + ProgressionLoadoutOptimizer.LastSearchExact.ToString().ToLowerInvariant() + ",\n"
                        + "  \"loadoutScoreGain\": " + ProgressionLoadoutOptimizer.LastScoreGain.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"boostDecision\": \"" + EscapeJson(InventoryManager.LastBoostDecision) + "\",\n"
+                       + "  \"transformDecision\": \"" + EscapeJson(InventoryManager.LastTransformDecision) + "\",\n"
                        + "  \"trashDecision\": \"" + EscapeJson(InventoryManager.LastTrashDecision) + "\",\n"
                        + "  \"filterDecision\": \"" + EscapeJson(InventoryManager.LastFilterDecision) + "\",\n"
                        + "  \"yggSeedDecision\": \"" + EscapeJson(YggdrasilManager.LastSeedDecision) + "\",\n"
@@ -2236,16 +2481,25 @@ namespace NGUInjector.Autopilot
                 return ExpTargetStatus(c, gate, "progression gate");
             if (c.energySpeed < 49.91f)
             {
-                var speedCost = !c.settings.special1Bought ? 1
-                    : !c.settings.special2Bought ? 2
-                    : !c.settings.special3Bought ? 3
-                    : c.energyPurchases.energySpeed10Cost();
+                PurchaseDescriptor speedDescriptor;
+                PurchaseCostState speedState;
+                string speedReason;
+                if (!TryGetEnergySpeedPurchase(c, out speedDescriptor, out speedState,
+                        out speedReason))
+                    return new ResourceStatus
+                    {
+                        TargetName = "Energy Speed",
+                        Decision = "Held because the build-pinned Energy Speed cost/effect state is unavailable",
+                        Target = 0,
+                        EtaSeconds = -1
+                    };
+                var speedCost = speedDescriptor.Cost.Evaluate(speedState);
                 return new ResourceStatus
                 {
-                    TargetName = "Energy Speed",
+                    TargetName = speedDescriptor.DisplayName,
                     Decision = speedCost <= c.realExp - Config.ExpReserve
-                        ? "Buying the highest-return unowned Energy-speed step toward the effective 50 cap"
-                        : "Saving EXP for the next highest-return Energy-speed step toward 50",
+                        ? "Buying one build-pinned exact Energy Speed atom now: " + speedReason
+                        : "Saving EXP for the exact Energy Speed atom: " + speedReason,
                     Target = speedCost + Config.ExpReserve,
                     EtaSeconds = ResourceEta(c.realExp, speedCost + Config.ExpReserve, _expPerSecond)
                 };
@@ -2282,14 +2536,26 @@ namespace NGUInjector.Autopilot
             if (MagicSpeedOutranksMarginalGrowth(c, out magicSpeedSteps, out magicRateAfter,
                     out magicRoiReason))
             {
-                var cost = 3L * magicSpeedSteps;
+                long atomCost;
+                if (!TryReadPositiveIntField(c.magicPurchases, "magicSpeed10Cost", out atomCost)
+                    || magicSpeedSteps <= 0 || atomCost > long.MaxValue / magicSpeedSteps)
+                    return new ResourceStatus
+                    {
+                        TargetName = "Magic Speed discrete breakpoint",
+                        Decision = "Held because the build-pinned Magic Speed cost is unavailable",
+                        Target = 0,
+                        EtaSeconds = -1
+                    };
+                var cost = atomCost * magicSpeedSteps;
                 return new ResourceStatus
                 {
                     TargetName = "Magic Speed " + c.magic.magicBarSpeed.ToString("0.0")
                                  + " -> " + (c.magic.magicBarSpeed + .1f * magicSpeedSteps).ToString("0.0"),
                     Decision = cost <= c.realExp - Config.ExpReserve
-                        ? "Buying the cross-resource ROI winner now: " + magicRoiReason
-                        : "Saving briefly for the cross-resource ROI winner: " + magicRoiReason,
+                        ? "Breakpoint bundle is fully funded; buying one exact +0.1 atom this root ("
+                          + magicSpeedSteps + " atom(s) currently required): " + magicRoiReason
+                        : "Saving the full " + magicSpeedSteps
+                          + "-atom bundle before starting the discrete breakpoint: " + magicRoiReason,
                     Target = cost + Config.ExpReserve,
                     EtaSeconds = ResourceEta(c.realExp, cost + Config.ExpReserve, _expPerSecond)
                 };
@@ -3231,9 +3497,10 @@ namespace NGUInjector.Autopilot
                         + "s to " + Math.Ceiling(projectedEta) + "s, repaying faster than its EXP funding delay");
             }
 
-            // Fight-Boss percentage stats are normally worse than resource growth.
-            // Promote one only if the native discrete combat model changes from a
-            // loss to a <=120-second win immediately, including death-before-hit.
+            // Fight-Boss percentage stats are normally worse than resource growth. A one-atom
+            // immediate win is still insufficient: it must be the next persistent record, have a
+            // finite frozen-allocation rollout ETA, and beat the best permanent P/C/B atom on
+            // per-EXP time value. This prevents repeatedly buying direct stats for an old Boss.
             if (c.statBoostPurchases != null && c.bossController != null
                 && !c.bossController.isFighting && !c.bossController.nukeBoss)
             {
@@ -3255,16 +3522,46 @@ namespace NGUInjector.Autopilot
                     var defenseWins = CombatHelpers.EvaluateFixedBossFight(c, c.attack, boostedDefense,
                         Math.Max(c.curHP, c.maxHP), c.bossCurHP,
                         out defenseKill, out defenseSurvival) && defenseKill <= 120.0;
+                    var chosenKill = -1.0;
+                    string method = null;
+                    string label = null;
+                    Func<double> state = null;
                     if (attackWins && (!defenseWins || attackKill <= defenseKill))
-                        return new PermanentExpTarget(c.statBoostPurchases, "buyAttack10",
-                            "Fight Boss Attack +10%", 30, () => c.attackBoost,
-                            "the discrete combat projection changes from a loss to a "
-                            + Math.Ceiling(attackKill) + "s win against selected Boss " + (c.bossID + 1));
-                    if (defenseWins)
-                        return new PermanentExpTarget(c.statBoostPurchases, "buyDefense10",
-                            "Fight Boss Defense +10%", 30, () => c.defenseBoost,
-                            "the discrete combat projection changes from a loss to a "
-                            + Math.Ceiling(defenseKill) + "s win against selected Boss " + (c.bossID + 1));
+                    {
+                        chosenKill = attackKill;
+                        method = "buyAttack10";
+                        label = "Fight Boss Attack +10%";
+                        state = () => c.attackBoost;
+                    }
+                    else if (defenseWins)
+                    {
+                        chosenKill = defenseKill;
+                        method = "buyDefense10";
+                        label = "Fight Boss Defense +10%";
+                        state = () => c.defenseBoost;
+                    }
+                    if (method != null)
+                    {
+                        var activeHighest = c.settings.rebirthDifficulty == difficulty.normal
+                            ? c.highestBoss : c.settings.rebirthDifficulty == difficulty.evil
+                                ? c.highestHardBoss : c.highestSadisticBoss;
+                        var rollout = RawSelectedBossDefeatEta(c, 604800);
+                        var competing = BestMarginalExpCandidate(c);
+                        double gateScore;
+                        double permanentScore;
+                        if (ExpPurchasePolicy.FightBossGateOutranksPermanent(
+                                c.bossID == activeHighest, rollout, chosenKill, 30,
+                                competing == null ? 0.0 : competing.NormalizedLevel,
+                                competing == null ? 0.0 : competing.NormalizedStep,
+                                competing == null ? 0L : competing.Cost,
+                                out gateScore, out permanentScore))
+                            return new PermanentExpTarget(c.statBoostPurchases, method, label, 30,
+                                state, "one exact atom opens new-record Boss " + (c.bossID + 1)
+                                       + " now instead of the source-modeled " + rollout
+                                       + "s rollout; forward-gate ROI "
+                                       + gateScore.ToString("0.000000") + "/EXP beats permanent growth "
+                                       + permanentScore.ToString("0.000000") + "/EXP");
+                    }
                 }
             }
             return null;
@@ -3391,18 +3688,9 @@ namespace NGUInjector.Autopilot
 
             var baseSpeed = Math.Max(.1, c.magic.magicBarSpeed);
             var totalSpeed = Math.Max(.1, c.totalMagicSpeed());
-            var speedMultiplier = totalSpeed / baseSpeed;
             var bars = Math.Max(1L, c.totalMagicBar());
-            for (var n = 1; n <= 10 && baseSpeed + .1 * n <= 50.001; n++)
-            {
-                var futureSpeed = Math.Min(50.0, totalSpeed + .1 * n * speedMultiplier);
-                var futureRate = 50.0 / Math.Ceiling(50.0 / futureSpeed) * bars;
-                if (futureRate <= currentRate + 1e-6) continue;
-                steps = n;
-                projectedRate = futureRate;
-                return true;
-            }
-            return false;
+            return ExpPurchasePolicy.TryMagicDiscreteBreakpoint(baseSpeed, totalSpeed,
+                bars, currentRate, 10, out steps, out projectedRate);
         }
 
         private PermanentExpTarget GetQolExpTarget(Character c)
@@ -3972,6 +4260,31 @@ namespace NGUInjector.Autopilot
             "fib", "spawn", "welcome", "bank", "slot"
         };
 
+        private static int SelectAffordablePerkTarget(Character c, long spendable)
+        {
+            if (c == null || spendable <= 0L || c.adventureController == null
+                || c.adventureController.itopod == null || c.adventure == null
+                || c.adventure.itopod == null)
+                return -1;
+            var controller = c.adventureController.itopod;
+            var levels = c.adventure.itopod.perkLevel;
+            if (c.settings.rebirthDifficulty == difficulty.sadistic
+                && !EndgameDependencyModel.IsOwned(c, 482)
+                && levels.Count > 231 && levels[231] < 1)
+            {
+                if (!HasEmptyOrdinaryInventorySlot(c)) return -1;
+                var terminal = controller.perkCost(231);
+                return terminal > 0L && terminal <= spendable ? 231 : -1;
+            }
+            var early = EarlyNormalPerkTarget(c, controller, levels, spendable);
+            if (early >= 0) return early;
+            // After the audited early sequence, local name/effect weights are not a common
+            // time-to-progression unit. Saving PP is safer than spending a permanent currency on
+            // a plausible-looking tooltip. Later purchases remain held until ChoosePerk receives
+            // admission-grade downstream-seconds candidates from the global quote producer.
+            return -1;
+        }
+
         private void SpendBestPerk()
         {
             var c = Main.Character;
@@ -4024,6 +4337,46 @@ namespace NGUInjector.Autopilot
                 confirmed
                     ? "Bought perk " + controller.perkName[best] + " [confirmed by PP/level delta]"
                     : "Perk purchase for " + controller.perkName[best] + " produced no state transition");
+        }
+
+        private static void NextStrategicPerkGate(Character c, out long cost,
+            out double marginalLogGain)
+        {
+            cost = 0L;
+            marginalLogGain = 0.0;
+            if (c == null || c.adventureController == null
+                || c.adventureController.itopod == null || c.adventure == null
+                || c.adventure.itopod == null)
+                return;
+            var controller = c.adventureController.itopod;
+            var levels = c.adventure.itopod.perkLevel;
+            var id = -1;
+            if (c.settings.rebirthDifficulty == difficulty.sadistic
+                && !EndgameDependencyModel.IsOwned(c, 482)
+                && levels.Count > 231 && levels[231] < 1)
+                id = 231;
+            else if (c.settings.rebirthDifficulty == difficulty.normal)
+            {
+                var ordered = new[]
+                {
+                    new[] {0, 1}, new[] {1, 1}, new[] {2, 1}, new[] {3, 1},
+                    new[] {4, 1}, new[] {18, 2}
+                };
+                foreach (var target in ordered)
+                    if (target[0] < levels.Count && levels[target[0]] < target[1])
+                    {
+                        id = target[0];
+                        break;
+                    }
+                if (id < 0 && c.adventure.titan4Kills <= 0 && levels.Count > 8)
+                    id = levels[6] <= levels[8] ? 6 : 8;
+            }
+            // Do not feed the ITOPOD frontier score a later perk value derived only from names or
+            // serialized effect magnitudes. Ordinary ITOPOD PP/EXP/AP/boost rates remain live,
+            // while the discrete next-perk bonus waits for a typed downstream-seconds quote.
+            if (id < 0) return;
+            cost = Math.Max(0L, controller.perkCost(id));
+            marginalLogGain = Math.Max(0.0, PerkMarginalValue(c, controller, id));
         }
 
         private static int EarlyNormalPerkTarget(Character c, ItopodPerkController controller,

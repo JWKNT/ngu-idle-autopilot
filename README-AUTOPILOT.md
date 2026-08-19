@@ -31,20 +31,15 @@ Use `stop.command` to unload. Restarting the game also unloads injected code. Do
 - `assist`: requests the verified-reversible authority stage. The deployment ceiling and typed root still decide which managers receive an executable child intent.
 - `full`: requests enabled finite-resource managers, but it cannot override the compiled deployment ceiling or a missing native binding/proof.
 
-The reconciled deployment currently opens one nonzero, epoch-fenced root per automation tick. Only the typed Card/Cooking/Yggdrasil/Quest integrations receive that root, and their own state/config gates still apply. Legacy allocation, Adventure, inventory, Titan, Blood, permanent-purchase, Money Pit, challenge, difficulty, rebirth, MOVE69, and END mutation paths are held. The global scheduler is telemetry-only `ShadowOnly` and has no execution path.
+The reconciled deployment opens one nonzero, epoch-fenced root per automation tick. Typed children now cover resource allocation, Fight Boss, Adventure, inventory, Wandoos, Daycare, Beards, Diggers, Yggdrasil, Quests, Cards, Cooking, Daily Spin, Money Pit, exact EXP atoms, the audited PP sequence, Titans 1–12, permanent Blood spells, END-Blood item delivery, rebirth-boundary Blood NUMBER, audited Normal challenge entry, and ordinary rebirth. Their own state, config, binding, and postcondition gates still apply. Later PP, AP/QP spending, difficulty transitions, T13/T14, MOVE69, final END, and challenges without a complete same-state route proof remain held or deployment-disabled. The global scheduler is telemetry-only `ShadowOnly` and has no execution path. See [STRATEGY.md](STRATEGY.md) for the full plain-language policy and authority table.
 
-These configuration keys exist, but the current build normalizes every unproven irreversible route back to false even if a retained file says true:
+These configuration keys exist, but the current build preserves only the routes with a proven typed executor. Operator permission still does not bypass fresh live preconditions:
 
-- `AllowExpSpending`
-- `AllowApSpending`
-- `AllowRebirths`
-- `AllowChallenges` (also requires rebirths)
-- `AllowCardYeeting`
-- `AllowPerkSpending`
-- `AllowQuirkSpending`
-- `AllowEndSequence` (requires all sixteen END pieces in their canonical slots; placement is transactional and defaults off)
+- `AllowExpSpending`, `AllowPerkSpending`, `AllowRebirths`, `AllowChallenges`, `ManageMoneyPit`, and `AllowMoneyPitExecution` may be preserved and executed by their exact typed paths.
+- `AllowApSpending`, `AllowQuirkSpending`, and `AllowEndSequence` are normalized false in this deployment.
+- `AllowCardYeeting` remains separately opt-in and is bounded by the typed Card policy.
 
-The additional staged-authority fields for permanent purchases, Money Pit, difficulty, Titans 1–12, Titans 13–14, and MOVE69 are likewise hard false in this deployment. Treat `runtime/decision.json` → `authorityStage` and `stagedAuthority` as the effective authority, not the requested configuration.
+The additional staged-authority fields for difficulty, Titans 13–14, and MOVE69 are hard false. Money Pit, permanent EXP purchases, Titans 1–12, and the audited Normal challenge subset may execute when explicitly enabled; AP/QP do not inherit that permission. Treat `runtime/decision.json` → `authorityStage` and `stagedAuthority` as the effective authority, not the requested configuration.
 
 Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam Cloud/save backups enabled, and test assist mode on a copied save before enabling rebirths or challenges.
 
@@ -52,9 +47,9 @@ Set `ExpReserve`, `PPReserve`, and `QPReserve` to protect currency. Keep Steam C
 
 - Normal pre-NGU: event-scored rebirths across exact Number breakpoints, projected boss kills, persistent Basic Training events, AP ticks, and Titan windows; Basic Training caps, boss EXP, best reachable gear, and only Augment/Time Machine work that pays before the selected reset.
 - Resource decisions use separate current-run and persistent ledgers. Basic Training can reserve Energy for cap compression with a short multi-run payback; EXP/AP can wait for a higher-return permanent purchase instead of draining into a cheaper runner-up. Magic refill ROI is compared against permanent P/C/B gain per EXP, while Time Machine allocation requires a named Gold shortfall that can be spent before rebirth.
-- Boosts go to active/explicit gear first, then the always-on Infinity Cube up to its native full-value softcaps, then speculative locked gear. The Cube is not an equippable item.
+- Boosts are ranked by immediate complete-loadout gain and level-100/fully-boosted combat potential per compatible point; during hard combat, unrelated production specials do not beat a stronger combat item. The Infinity Cube receives boosts that have no better proven gear target. The Cube is not an equippable item.
 - Inventory cleanup runs proactively. The native trash recovery slot is intentionally rolling; only MAXXED same-ID dominated copies or no-special fixed armor with an all-future same-slot dominance proof are overwritten there.
-- Adventure collection keeps a permanent MAXX-debt queue. It snipes the strongest fightable set first, then deliberately backtracks for older incomplete sets, known zone Bonus Accessories, and already-discovered equipment entries before falling through to optional ITOPOD farming. Inventory-space AP purchases move ahead of convenience upgrades when the live free-slot reserve is smaller than projected merge/drop pressure.
+- Adventure collection keeps a permanent MAXX-debt queue, but optional entries own combat time only when their completed item has a proven equipped/set/progression payoff. A rare item such as Looty remains protected without forcing Sky farming when its MAXXED form would still lose to ITOPOD. Inventory-space AP purchases move ahead of convenience upgrades when the live free-slot reserve is smaller than projected merge/drop pressure.
 - Normal post-NGU: longer runs emphasizing Adventure/Drop NGUs, Yggdrasil, beards, PP and Titan gear.
 - Early Evil: boss climb via TM then augments; later switch to Normal NGUs/Advanced Training and finish with Evil NGUs.
 - Mature Evil: 24-hour beard cycles with Adventure NGUs, hacks, wishes and quests.

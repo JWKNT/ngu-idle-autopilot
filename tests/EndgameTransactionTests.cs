@@ -1,6 +1,7 @@
 #define ENDGAME_TRANSACTION_TEST_STUBS
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using NGUInjector.Autopilot;
 
@@ -15,10 +16,11 @@ filters, a protected END Card, six Mayo balances, Blood, ambient swaps, and END 
 MutationCoordinator executes production intents. Fault injection can throw before or after every
 individual sparse swap; every case must finish with the original object reference in every slot.
 
-Inputs and outputs: In-memory topologies and explicit native-call modes are the inputs. Assertions
+Inputs and outputs: In-memory topologies, explicit native-call modes, and a read-only Main source
+integration check are the inputs. Assertions
 cover task-6 capacity, filter restoration, exact debits/credits, cross-rebirth Blood commitment,
-typed quarantine, sparse rollback, and panel postconditions. A success line with assertion count is
-the only output.
+typed quarantine, sparse rollback, panel postconditions, and END-Blood-before-rebirth wiring. A
+success line with assertion count is the only output.
 
 Invariants and safety: Tests never call Character/controllers, mutate runtime configuration, enable
 the checked-in AllowEndSequence default, inject a DLL, steer RNG, or restart the game. Test-local
@@ -99,6 +101,7 @@ namespace NGUInjector.Autopilot
         internal bool AllowCardYeeting = true;
         internal bool AllowRebirths = true;
         internal bool AllowChallenges = true;
+        internal bool AllowDifficultyExecution;
         internal bool AllowEndSequence;
 
         internal bool IsDryRun { get { return Mode != "assist" && Mode != "full"; } }
@@ -663,6 +666,22 @@ internal static class EndgameTransactionTests
             "default gate leaves inventory identities unchanged");
     }
 
+    private static void TestLiveEndBloodBridgePrecedesOrdinaryRebirth()
+    {
+        var main = File.ReadAllText("source/Main.cs");
+        var create = main.IndexOf("new CharacterEndgameTransactionPort(Character",
+            StringComparison.Ordinal);
+        var deliver = main.IndexOf("_endgameTransactions.TryDeliverEndBlood(mutationRoot)",
+            StringComparison.Ordinal);
+        var rebirth = main.IndexOf("Autopilot.ExecuteOrdinaryRebirth(mutationRoot)",
+            StringComparison.Ordinal);
+        Assert(create >= 0 && deliver > create && rebirth > deliver,
+            "live root constructs the exact END port and settles item 494 before ordinary rebirth");
+        Assert(main.Contains("Character.bloodMagic.bloodPoints >= MechanicsEndgame.EndBloodCost")
+               && main.Contains("END Blood item delivery failed"),
+            "live END-Blood bridge opens only when fully funded and propagates failed settlement");
+    }
+
     public static int Main()
     {
         TestEveryUniqueDeliveryUsesPhysicalCapacity();
@@ -674,6 +693,7 @@ internal static class EndgameTransactionTests
         TestPartialPanelQuarantinesButInventoryStillRollsBack();
         TestExactPanelPostconditionLatches();
         TestDefaultEndGateMakesNoMutation();
+        TestLiveEndBloodBridgePrecedesOrdinaryRebirth();
         Console.WriteLine("PASS EndgameTransactionTests assertions=" + _assertions);
         return 0;
     }

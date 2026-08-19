@@ -8,24 +8,39 @@ using NGUInjector.Managers;
 /*
 FILE PURPOSE
 
-Restore the two progression mutations that must precede higher-level strategy: generated resource
-allocation and Fight Boss recovery. Both execute as children of the one-second, epoch-bound root.
-The allocation child invokes only Energy/Magic/R3 allocation (never gear, diggers, Wandoos,
-purchases, or Adventure) and proves exact capacity/idle bounds. The Boss child uses the source-
-exact combat oracle and proves either an active native fight or synchronous Boss progression.
+Own the typed progression mutations that must precede higher-level strategy: generated
+Energy/Magic/R3 allocation, Fight Boss recovery, persistent all-difficulty Adventure routing,
+one exact permanent inventory consumable, exact one-level PP/perk purchases, and conservative
+inventory maintenance. All execute as children of the one-second, epoch-bound root. The resource
+allocation child owns only Energy/Magic/R3 allocation and seals every native target after its
+resource-specific phase; commit requires full-vector equality plus conservation, while a partial
+settlement replays the exact before-vector through native controllers or quarantines Allocation. It
+does not own gear, diggers, purchases, or Adventure (Wandoos quantities are included only as part
+of the complete resource proof). The Boss child uses
+the source-exact combat oracle and proves either an active native fight or synchronous progression.
+Permanent consumables and perk purchases each prove their exact finite-resource debit and native
+effect before commit; aggregate inventory maintenance cannot conceal either irreversible action.
+Adventure settlement includes the native ITOPOD start/end range and Lazy-ITOPOD ownership fields,
+so an accepted route cannot hide a rejected range or an automatic range overwrite.
+Fight Boss and Adventure are mutually exclusive within a root: once the Boss child starts a native
+fight, Adventure holds until the next root instead of mistaking the unchanged zone for a rejection.
 */
 namespace NGUInjector.Autopilot
 {
     internal sealed class CriticalProgressionOutcome
     {
         internal MutationResult Allocation;
+        internal MutationResult Wandoos;
         internal MutationResult Boss;
         internal MutationResult Adventure;
+        internal MutationResult ProgressionConsumable;
         internal MutationResult Inventory;
 
         internal bool Failed
         {
-            get { return IsFailure(Allocation) || IsFailure(Boss) || IsFailure(Adventure)
+            get { return IsFailure(Wandoos) || IsFailure(Allocation)
+                         || IsFailure(Boss) || IsFailure(Adventure)
+                         || IsFailure(ProgressionConsumable)
                          || IsFailure(Inventory); }
         }
 
@@ -33,9 +48,12 @@ namespace NGUInjector.Autopilot
         {
             get
             {
+                if (IsFailure(Wandoos)) return "Wandoos OS: " + Wandoos.Reason;
                 if (IsFailure(Allocation)) return "allocation: " + Allocation.Reason;
                 if (IsFailure(Boss)) return "Fight Boss: " + Boss.Reason;
                 if (IsFailure(Adventure)) return "Adventure: " + Adventure.Reason;
+                if (IsFailure(ProgressionConsumable))
+                    return "progression consumable: " + ProgressionConsumable.Reason;
                 return IsFailure(Inventory) ? "Inventory: " + Inventory.Reason : string.Empty;
             }
         }
@@ -43,7 +61,8 @@ namespace NGUInjector.Autopilot
         private static bool IsFailure(MutationResult result)
         {
             if (result == null) return false;
-            return result.Kind == MutationResultKind.RejectedUnchanged
+            return result.Kind == MutationResultKind.CommittedWithException
+                   || result.Kind == MutationResultKind.RejectedUnchanged
                    || result.Kind == MutationResultKind.Compensated
                    || result.Kind == MutationResultKind.Quarantined
                    || result.Kind == MutationResultKind.Indeterminate;
@@ -60,6 +79,12 @@ namespace NGUInjector.Autopilot
             var outcome = new CriticalProgressionOutcome();
             if (root == null || root.IsClosed || character == null || config == null)
                 return outcome;
+            // OS changes erase run-local Wandoos levels/progress, so settle the planner's typed
+            // OS transition before the resource vector is reclaimed and reapplied. Permanent
+            // installation disks remain a separate inventory child later in this bundle; a newly
+            // installed OS therefore becomes eligible on the next one-second root.
+            if (config.ManageAllocations && autopilot != null)
+                outcome.Wandoos = WandoosRunManager.Manage(root, autopilot.Plan);
             if (config.ManageAllocations && allocation != null)
                 outcome.Allocation = root.ExecuteChild(
                     new ResourceAllocationIntent(character, allocation));
@@ -69,12 +94,18 @@ namespace NGUInjector.Autopilot
             if (!root.IsClosed && EarlyAdventureIntent.IsEligible(character, config, quests))
                 outcome.Adventure = root.ExecuteChild(
                     new EarlyAdventureIntent(character, config, autopilot, combat, quests));
+            if (!root.IsClosed && config.ManageInventory && inventory != null
+                && inventory.HasProgressionConsumable())
+                outcome.ProgressionConsumable = root.ExecuteChild(
+                    new ProgressionConsumableIntent(character, inventory));
             if (!root.IsClosed && config.ManageInventory && inventory != null)
                 outcome.Inventory = root.ExecuteChild(
                     new InventoryMaintenanceIntent(character, inventory));
+            LogNonSuccess("Wandoos OS", outcome.Wandoos);
             LogNonSuccess("resource allocation", outcome.Allocation);
             LogNonSuccess("Fight Boss", outcome.Boss);
             LogNonSuccess("Adventure", outcome.Adventure);
+            LogNonSuccess("progression consumable", outcome.ProgressionConsumable);
             LogNonSuccess("Inventory", outcome.Inventory);
             return outcome;
         }
@@ -86,6 +117,311 @@ namespace NGUInjector.Autopilot
                 || result.Kind == MutationResultKind.Held)
                 return;
             Main.LogAction("REJECTED", label + " intent " + result.Kind + ": " + result.Reason);
+        }
+    }
+
+    internal sealed class ProgressionConsumableState
+    {
+        internal ProgressionConsumableKind Kind;
+        internal Equipment Identity;
+        internal int Slot;
+        internal int ItemId;
+        internal int Level;
+        internal bool IdentityPresent;
+        internal bool Removable;
+        internal bool YggdrasilOn;
+        internal long Seeds;
+        internal long GoldFruitTier;
+        internal bool WandoosOn;
+        internal long OsLevel;
+        internal long XlLevel;
+    }
+
+    internal sealed class PerkPurchaseState
+    {
+        internal int PerkId;
+        internal long Points;
+        internal long Level;
+        internal long Cost;
+        internal bool TerminalItemOwned;
+    }
+
+    internal sealed class PerkPurchaseIntent :
+        IMutationIntent<PerkPurchaseState, bool, PerkPurchaseState>
+    {
+        private readonly Character _character;
+        private readonly int _perkId;
+        private readonly long _reserve;
+
+        internal PerkPurchaseIntent(Character character, int perkId, long reserve)
+        {
+            _character = character;
+            _perkId = perkId;
+            _reserve = Math.Max(0L, reserve);
+        }
+
+        public string Id { get { return "progression.perk-purchase." + _perkId; } }
+        public MutationClass Class { get { return MutationClass.PermanentSpend; } }
+        public MutationRisk Risk { get { return MutationRisk.Irreversible; } }
+        public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
+        public string BindingId { get { return "ItopodPerkController.tryLevelUp(int)/public-exact"; } }
+        public bool Required { get { return false; } }
+        public bool CanCompensate { get { return false; } }
+        public bool CreatesNewEpoch { get { return false; } }
+        public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
+
+        public PerkPurchaseState CaptureBefore(MutationContext context) { return Capture(); }
+
+        public PreconditionResult CheckPreconditions(MutationContext context,
+            PerkPurchaseState before)
+        {
+            if (!Main.IsAutomationReady)
+                return PreconditionResult.Hold("gameplay synchronization is not current");
+            if (before == null || before.PerkId < 0 || before.Cost <= 0L)
+                return PreconditionResult.Hold("perk ID/cost state is unavailable");
+            if (before.Points - before.Cost < _reserve)
+                return PreconditionResult.Hold("exact PP reserve would be crossed");
+            if (_perkId == ItopodPerkPlanner.Perk231Id && before.TerminalItemOwned)
+                return PreconditionResult.Hold("terminal perk item is already owned");
+            return PreconditionResult.Ready();
+        }
+
+        public bool Apply(MutationContext context, RootTransactionToken token,
+            PerkPurchaseState before)
+        {
+            _character.adventureController.itopod.tryLevelUp(_perkId);
+            return true;
+        }
+
+        public VerificationResult<PerkPurchaseState> Verify(MutationContext context,
+            PerkPurchaseState before, MutationApplyObservation<bool> apply)
+        {
+            var after = Capture();
+            var confirmed = apply.ReturnedNormally && apply.Value && after != null
+                            && after.Level == before.Level + 1L
+                            && after.Points == before.Points - before.Cost
+                            && (_perkId != ItopodPerkPlanner.Perk231Id
+                                || !before.TerminalItemOwned && after.TerminalItemOwned);
+            if (!confirmed)
+                return VerificationResult<PerkPurchaseState>.Failed(
+                    "perk purchase lacked exact PP debit, level increment, or terminal delivery");
+            Main.LogAction("PURCHASE", "Bought perk " + _perkId + " for " + before.Cost
+                + " PP [confirmed by exact debit/level delta]");
+            return VerificationResult<PerkPurchaseState>.Satisfied(after,
+                "exact PP debit and one perk level confirmed");
+        }
+
+        public CompensationResult Compensate(MutationContext context, RecoveryToken token,
+            PerkPurchaseState before, MutationApplyObservation<bool> apply)
+        {
+            return CompensationResult.NotSupported("a permanent perk purchase has no safe inverse");
+        }
+
+        public bool BeforeStateMatches(PerkPurchaseState a, PerkPurchaseState b)
+        {
+            return a != null && b != null && a.PerkId == b.PerkId
+                   && a.Points == b.Points && a.Level == b.Level && a.Cost == b.Cost
+                   && a.TerminalItemOwned == b.TerminalItemOwned;
+        }
+
+        public string FingerprintBefore(PerkPurchaseState state) { return Fingerprint(state); }
+        public string FingerprintAfter(PerkPurchaseState state) { return Fingerprint(state); }
+
+        private PerkPurchaseState Capture()
+        {
+            if (_character == null || _character.adventure == null
+                || _character.adventure.itopod == null
+                || _character.adventureController == null
+                || _character.adventureController.itopod == null
+                || _perkId < 0
+                || _perkId >= _character.adventure.itopod.perkLevel.Count)
+                return null;
+            return new PerkPurchaseState
+            {
+                PerkId = _perkId,
+                Points = _character.adventure.itopod.perkPoints,
+                Level = _character.adventure.itopod.perkLevel[_perkId],
+                Cost = _character.adventureController.itopod.perkCost(_perkId),
+                TerminalItemOwned = EndgameDependencyModel.IsOwned(_character,
+                    ItopodPerkPlanner.Perk231ItemId)
+            };
+        }
+
+        private static string Fingerprint(PerkPurchaseState state)
+        {
+            return state == null ? "missing" : state.PerkId + ":" + state.Points + ":"
+                + state.Level + ":" + state.Cost + ":" + state.TerminalItemOwned;
+        }
+    }
+
+    /*
+    VERIFIED ONE-ITEM PROGRESSION CONSUMPTION
+
+    IDs 66/92/163 are permanent-state upgrades, not ordinary inventory maintenance. Native
+    consumeItem can delete them with no benefit when level/cap/install predicates are wrong, so
+    InventoryManager admits one exact removable identity and this irreversible child proves its
+    source-specific debit plus OS/Ygg transition. One item per root bounds any partial native
+    failure; no field rewrite or compensating duplicate consumption is attempted.
+    */
+    internal sealed class ProgressionConsumableIntent :
+        IMutationIntent<ProgressionConsumableState, bool, ProgressionConsumableState>
+    {
+        private readonly Character _character;
+        private readonly InventoryManager _inventory;
+        private ProgressionConsumableCandidate _selected;
+
+        internal ProgressionConsumableIntent(Character character, InventoryManager inventory)
+        {
+            _character = character;
+            _inventory = inventory;
+        }
+
+        public string Id { get { return "progression.inventory-consumable"; } }
+        public MutationClass Class { get { return MutationClass.Inventory; } }
+        public MutationRisk Risk { get { return MutationRisk.Irreversible; } }
+        public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
+        public string BindingId { get { return NativeBindingKeys.ItemConsume; } }
+        public bool Required { get { return false; } }
+        public bool CanCompensate { get { return false; } }
+        public bool CreatesNewEpoch { get { return false; } }
+        public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
+
+        public ProgressionConsumableState CaptureBefore(MutationContext context)
+        {
+            if (!_inventory.TrySelectProgressionConsumable(out _selected)) return null;
+            return Capture(_selected);
+        }
+
+        public PreconditionResult CheckPreconditions(MutationContext context,
+            ProgressionConsumableState before)
+        {
+            if (!Main.IsAutomationReady)
+                return PreconditionResult.Hold("gameplay synchronization is not current");
+            if (before == null || _selected == null || !before.IdentityPresent
+                || !before.Removable)
+                return PreconditionResult.Hold("no exact removable progression consumable is admitted");
+            return PreconditionResult.Ready();
+        }
+
+        public bool Apply(MutationContext context, RootTransactionToken token,
+            ProgressionConsumableState before)
+        {
+            return _inventory.ConsumeProgressionConsumable(_selected);
+        }
+
+        public VerificationResult<ProgressionConsumableState> Verify(MutationContext context,
+            ProgressionConsumableState before, MutationApplyObservation<bool> apply)
+        {
+            var after = Capture(_selected);
+            if (!apply.ReturnedNormally || !apply.Value || before == null || after == null)
+                return VerificationResult<ProgressionConsumableState>.Failed(
+                    "native progression consume did not return a complete state");
+            bool confirmed;
+            string label;
+            if (before.Kind == ProgressionConsumableKind.GiantSeed)
+            {
+                var gain = before.YggdrasilOn
+                    ? Math.Max(1L, Math.Min(200L, (long)Math.Floor(before.Level
+                        * (1.0 + before.Level / 100f)))) : 1L;
+                confirmed = !after.IdentityPresent && after.YggdrasilOn
+                            && after.Seeds == before.Seeds + gain
+                            && after.GoldFruitTier >= Math.Max(1L, before.GoldFruitTier);
+                label = "Giant Seed for " + gain + " exact seeds/Ygg unlock";
+            }
+            else if (before.Kind == ProgressionConsumableKind.Wandoos98)
+            {
+                var debit = before.WandoosOn ? before.OsLevel + 1 : 1;
+                var objectDebit = before.WandoosOn
+                    ? before.Level == debit ? !after.IdentityPresent
+                        : after.IdentityPresent && after.Level == before.Level - debit
+                    : before.Level == 0 ? !after.IdentityPresent
+                        : after.IdentityPresent && after.Level == before.Level - 1;
+                confirmed = objectDebit && after.WandoosOn
+                            && (before.WandoosOn
+                                ? after.OsLevel == before.OsLevel + 1
+                                : after.OsLevel == before.OsLevel);
+                label = "Wandoos 98 disk";
+            }
+            else
+            {
+                var debit = before.XlLevel == 0 ? 1 : before.XlLevel + 1;
+                var objectDebit = before.XlLevel == 0
+                    ? before.Level == 0 ? !after.IdentityPresent
+                        : after.IdentityPresent && after.Level == before.Level - 1
+                    : before.Level == debit ? !after.IdentityPresent
+                        : after.IdentityPresent && after.Level == before.Level - debit;
+                confirmed = objectDebit && after.XlLevel == before.XlLevel + 1;
+                label = "Wandoos XL disk";
+            }
+            if (!confirmed)
+                return VerificationResult<ProgressionConsumableState>.Failed(
+                    label + " lacked its exact identity/resource postcondition");
+            Main.LogAction("PROGRESSION", "Consumed " + label
+                + " [confirmed by exact identity and permanent-state delta]");
+            return VerificationResult<ProgressionConsumableState>.Satisfied(after,
+                label + " exact debit and permanent transition confirmed");
+        }
+
+        public CompensationResult Compensate(MutationContext context, RecoveryToken token,
+            ProgressionConsumableState before, MutationApplyObservation<bool> apply)
+        {
+            return CompensationResult.NotSupported(
+                "native item consumption cannot be reversed without a save rollback");
+        }
+
+        public bool BeforeStateMatches(ProgressionConsumableState a,
+            ProgressionConsumableState b)
+        {
+            return a != null && b != null && ReferenceEquals(a.Identity, b.Identity)
+                   && a.Slot == b.Slot && a.Level == b.Level && a.Removable == b.Removable
+                   && a.YggdrasilOn == b.YggdrasilOn && a.Seeds == b.Seeds
+                   && a.WandoosOn == b.WandoosOn && a.OsLevel == b.OsLevel
+                   && a.XlLevel == b.XlLevel;
+        }
+
+        public string FingerprintBefore(ProgressionConsumableState state)
+        {
+            return Fingerprint(state);
+        }
+
+        public string FingerprintAfter(ProgressionConsumableState state)
+        {
+            return Fingerprint(state);
+        }
+
+        private ProgressionConsumableState Capture(ProgressionConsumableCandidate selected)
+        {
+            if (selected == null || _character == null || _character.inventory == null)
+                return null;
+            var present = _character.inventory.inventory.Any(x => ReferenceEquals(x,
+                selected.Identity));
+            var item = present ? selected.Identity : null;
+            var fruits = _character.yggdrasil == null ? null : _character.yggdrasil.fruits;
+            return new ProgressionConsumableState
+            {
+                Kind = selected.Kind,
+                Identity = selected.Identity,
+                Slot = selected.Slot,
+                ItemId = selected.ItemId,
+                Level = item == null ? -1 : item.level,
+                IdentityPresent = present,
+                Removable = item != null && item.removable,
+                YggdrasilOn = _character.settings.yggdrasilOn,
+                Seeds = _character.yggdrasil == null ? 0L : _character.yggdrasil.seeds,
+                GoldFruitTier = fruits == null || fruits.Count == 0 ? 0L : fruits[0].maxTier,
+                WandoosOn = _character.settings.wandoos98On,
+                OsLevel = _character.wandoos98.OSlevel,
+                XlLevel = _character.wandoos98.XLLevels
+            };
+        }
+
+        private static string Fingerprint(ProgressionConsumableState state)
+        {
+            return state == null ? "missing" : state.Kind + ":" + state.ItemId + ":"
+                + state.Slot + ":" + RuntimeHelpers.GetHashCode(state.Identity) + ":"
+                + state.Level + ":" + state.IdentityPresent + ":" + state.YggdrasilOn
+                + ":" + state.Seeds + ":" + state.WandoosOn + ":" + state.OsLevel
+                + ":" + state.XlLevel;
         }
     }
 
@@ -160,7 +496,11 @@ namespace NGUInjector.Autopilot
                 if (before.Maxxed[id] && !after.Maxxed[id])
                     return VerificationResult<InventoryMaintenanceState>.Failed(
                         "Item List MAXX regressed for ID " + id);
-                if (before.Maxxed[id] || after.Maxxed[id]) continue;
+                // IDs 1-39 are the source-audited physical boost families. Full automation
+                // deliberately converts them into stronger gear/Cube immediately; their native
+                // stat delta is verified inside InventoryManager rather than treated as lost
+                // equipment contribution by this outer topology invariant.
+                if (before.Maxxed[id] || after.Maxxed[id] || id >= 1 && id <= 39) continue;
                 long beforeContribution;
                 long afterContribution;
                 before.Contributions.TryGetValue(id, out beforeContribution);
@@ -246,6 +586,9 @@ namespace NGUInjector.Autopilot
         internal bool AutoAttacking;
         internal bool AutoKillTitans;
         internal int EnemyIdentity;
+        internal int ItopodStart;
+        internal int ItopodEnd;
+        internal bool LazyItopodOn;
     }
 
     internal sealed class EarlyAdventureIntent :
@@ -271,16 +614,16 @@ namespace NGUInjector.Autopilot
             QuestManager quests)
         {
             if (c == null || config == null || !config.ManageAdventure || quests == null
-                || c.settings == null || c.settings.rebirthDifficulty != difficulty.normal)
+                || c.settings == null || c.adventure == null
+                || c.adventureController == null)
                 return false;
             try
             {
-                // This adapter owns ordinary early-game collection only. Titan, puzzle,
-                // endgame, and active Beast Quest routes retain their dedicated authorities.
-                return ZoneHelpers.HighestAvailableTitan() < 0
-                       && quests.IsQuesting() <= 0
-                       && !InventoryManager.ExileAssemblyReady(c)
-                       && !c.adventure.titan7Unlocked;
+                // ControlAdventure itself orders Exile assembly, Death Note, ready Titans,
+                // active quests, major unlocks, collection, and ITOPOD. Keeping those states out
+                // of this sole call-site made every corresponding branch unreachable and allowed
+                // rebirth to approach a ready Titan clock without an Adventure owner.
+                return true;
             }
             catch { return false; }
         }
@@ -307,6 +650,11 @@ namespace NGUInjector.Autopilot
                     "early Adventure route no longer owns the live progression state");
             if (_autopilot == null || _combat == null)
                 return PreconditionResult.Hold("Adventure strategy or combat controller is missing");
+            if (_character.bossController != null
+                && (_character.bossController.isFighting
+                    || _character.bossController.nukeBoss))
+                return PreconditionResult.Hold(
+                    "Fight Boss owns this root; Adventure routing waits for the next settled frame");
             return PreconditionResult.Ready();
         }
 
@@ -331,6 +679,17 @@ namespace NGUInjector.Autopilot
                 && after.Zone != after.TargetZone && !after.FightInProgress)
                 return VerificationResult<EarlyAdventureState>.Failed(
                     "native Adventure controller did not retain the selected target zone");
+            if (after.TargetZone == 1000)
+            {
+                var route = ZoneHelpers.LastItopodRoute;
+                if (route == null || !route.Confirmed
+                    || after.ItopodStart != route.Start || after.ItopodEnd != route.End)
+                    return VerificationResult<EarlyAdventureState>.Failed(
+                        "native ITOPOD range does not match the confirmed solver route");
+                if (after.LazyItopodOn)
+                    return VerificationResult<EarlyAdventureState>.Failed(
+                        "Lazy ITOPOD still owns and may overwrite the solver range");
+            }
             return VerificationResult<EarlyAdventureState>.Satisfied(after,
                 "Adventure target " + after.TargetZone + " is routed through verified combat state");
         }
@@ -348,7 +707,9 @@ namespace NGUInjector.Autopilot
                    && a.FightType == b.FightType && a.FightInProgress == b.FightInProgress
                    && a.AutoAttacking == b.AutoAttacking
                    && a.AutoKillTitans == b.AutoKillTitans
-                   && a.EnemyIdentity == b.EnemyIdentity;
+                   && a.EnemyIdentity == b.EnemyIdentity
+                   && a.ItopodStart == b.ItopodStart && a.ItopodEnd == b.ItopodEnd
+                   && a.LazyItopodOn == b.LazyItopodOn;
         }
 
         public string FingerprintBefore(EarlyAdventureState state) { return Fingerprint(state); }
@@ -370,7 +731,13 @@ namespace NGUInjector.Autopilot
                 AutoKillTitans = _character.settings != null
                                  && _character.settings.autoKillTitans,
                 EnemyIdentity = enemy == null ? 0
-                    : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(enemy)
+                    : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(enemy),
+                ItopodStart = _character.adventure == null
+                    ? -1 : _character.adventure.itopodStart,
+                ItopodEnd = _character.adventure == null
+                    ? -1 : _character.adventure.itopodEnd,
+                LazyItopodOn = _character.arbitrary != null
+                               && _character.arbitrary.lazyITOPODOn
             };
         }
 
@@ -379,24 +746,28 @@ namespace NGUInjector.Autopilot
             return state == null ? "missing" : "zone=" + state.Zone + ":target="
                    + state.TargetZone + ":type=" + state.FightType + ":fight="
                    + state.FightInProgress + ":idle=" + state.AutoAttacking
-                   + ":ak=" + state.AutoKillTitans + ":enemy=" + state.EnemyIdentity;
+                   + ":ak=" + state.AutoKillTitans + ":enemy=" + state.EnemyIdentity
+                   + ":itopod=" + state.ItopodStart + "-" + state.ItopodEnd
+                   + ":lazy=" + state.LazyItopodOn;
         }
     }
 
     internal sealed class ResourceAllocationState
     {
-        internal long Energy;
-        internal long IdleEnergy;
-        internal long Magic;
-        internal long IdleMagic;
-        internal long Res3;
-        internal long IdleRes3;
-        internal long PlanVersion;
-        internal string PlanFingerprint = string.Empty;
+        internal LiveResourceAllocationSnapshot Snapshot;
+    }
+
+    internal sealed class ResourceAllocationApply
+    {
+        internal bool Completed;
+        internal LiveResourceAllocationSnapshot EnergyAccepted;
+        internal LiveResourceAllocationSnapshot MagicAccepted;
+        internal LiveResourceAllocationSnapshot Resource3Accepted;
+        internal LiveResourceAllocationSnapshot RequestedAfter;
     }
 
     internal sealed class ResourceAllocationIntent :
-        IMutationIntent<ResourceAllocationState, bool, ResourceAllocationState>
+        IMutationIntent<ResourceAllocationState, ResourceAllocationApply, ResourceAllocationState>
     {
         private readonly Character _character;
         private readonly CustomAllocation _allocation;
@@ -411,9 +782,9 @@ namespace NGUInjector.Autopilot
         public MutationClass Class { get { return MutationClass.Allocation; } }
         public MutationRisk Risk { get { return MutationRisk.Reversible; } }
         public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
-        public string BindingId { get { return "CustomAllocation.resource-only.v1"; } }
+        public string BindingId { get { return "CustomAllocation.resource-only.full-vector.v2"; } }
         public bool Required { get { return false; } }
-        public bool CanCompensate { get { return false; } }
+        public bool CanCompensate { get { return true; } }
         public bool CreatesNewEpoch { get { return false; } }
         public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
 
@@ -424,13 +795,15 @@ namespace NGUInjector.Autopilot
         {
             if (!Main.IsAutomationReady)
                 return PreconditionResult.Hold("gameplay synchronization is not current");
-            if (before.PlanVersion <= 0 || string.IsNullOrEmpty(before.PlanFingerprint))
-                return PreconditionResult.Hold("no verified generated allocation plan is installed");
-            return Valid(before) ? PreconditionResult.Ready()
-                : PreconditionResult.Hold("resource snapshot is outside exact Int64 bounds");
+            var reason = string.Empty;
+            return before != null && before.Snapshot != null
+                   && before.Snapshot.IsComplete(out reason)
+                ? PreconditionResult.Ready()
+                : PreconditionResult.Hold(before == null || before.Snapshot == null
+                    ? "full native resource-allocation snapshot is unavailable" : reason);
         }
 
-        public bool Apply(MutationContext context, RootTransactionToken token,
+        public ResourceAllocationApply Apply(MutationContext context, RootTransactionToken token,
             ResourceAllocationState before)
         {
             // The old DoAllocations aggregate also mutates gear, diggers, Wandoos, and NGU mode.
@@ -439,55 +812,71 @@ namespace NGUInjector.Autopilot
             try
             {
                 _allocation.AllocateEnergy();
+                var energyAccepted = CaptureLive();
                 _allocation.AllocateMagic();
+                var magicAccepted = CaptureLive();
                 _allocation.AllocateR3();
-                return true;
+                var resource3Accepted = CaptureLive();
+                var phaseReason = ValidateAcceptedPhases(before.Snapshot, energyAccepted,
+                    magicAccepted, resource3Accepted);
+                var requested = string.IsNullOrEmpty(phaseReason)
+                    ? new LiveResourceAllocationSnapshot(energyAccepted.Energy,
+                        magicAccepted.Magic, resource3Accepted.Resource3,
+                        energyAccepted.AdvancedTrainingLevelTargets,
+                        energyAccepted.PlanVersion, energyAccepted.PlanFingerprint)
+                    : null;
+                return new ResourceAllocationApply
+                {
+                    Completed = requested != null,
+                    // Each resource is captured immediately after its own native reclaim/apply
+                    // phase.  Its full target amounts are therefore the accepted per-target deltas
+                    // from the empty native layout, not a post-hoc copy of Verify's final state.
+                    EnergyAccepted = energyAccepted,
+                    MagicAccepted = magicAccepted,
+                    Resource3Accepted = resource3Accepted,
+                    RequestedAfter = requested
+                };
             }
             finally
             {
-                _character.energyMagicPanel.energyRequested.text = originalInput.ToString();
+                _character.energyMagicPanel.energyRequested.text =
+                    ExactResourceAllocator.FormatExactInput(originalInput);
                 _character.energyMagicPanel.validateInput();
             }
         }
 
         public VerificationResult<ResourceAllocationState> Verify(MutationContext context,
-            ResourceAllocationState before, MutationApplyObservation<bool> apply)
+            ResourceAllocationState before, MutationApplyObservation<ResourceAllocationApply> apply)
         {
             var after = Capture();
-            if (!apply.ReturnedNormally || !apply.Value)
+            if (!apply.ReturnedNormally || apply.Value == null || !apply.Value.Completed
+                || apply.Value.RequestedAfter == null)
                 return VerificationResult<ResourceAllocationState>.Failed(
-                    "resource allocation did not return normally");
-            if (!Valid(after))
-                return VerificationResult<ResourceAllocationState>.Failed(
-                    "resource allocation produced an out-of-bounds idle pool");
-            if (before.Energy != after.Energy || before.Magic != after.Magic
-                || before.Res3 != after.Res3)
-                return VerificationResult<ResourceAllocationState>.Failed(
-                    "resource allocation changed a permanent resource capacity");
-            if (before.PlanVersion != after.PlanVersion
-                || !string.Equals(before.PlanFingerprint, after.PlanFingerprint,
-                    StringComparison.Ordinal))
-                return VerificationResult<ResourceAllocationState>.Failed(
-                    "generated allocation plan changed during its native sweep");
+                    "resource allocation did not return a sealed requested-after vector");
+            var reason = string.Empty;
+            if (after == null || !LiveResourceAllocationProof.VerifySettlement(before.Snapshot,
+                    apply.Value.RequestedAfter, after.Snapshot, out reason))
+                return VerificationResult<ResourceAllocationState>.Failed(reason);
             return VerificationResult<ResourceAllocationState>.Satisfied(after,
-                "resource capacities conserved and idle pools remain in exact bounds");
+                "full target vectors, per-resource conservation, and accepted native deltas verified");
         }
 
         public CompensationResult Compensate(MutationContext context, RecoveryToken token,
-            ResourceAllocationState before, MutationApplyObservation<bool> apply)
+            ResourceAllocationState before,
+            MutationApplyObservation<ResourceAllocationApply> apply)
         {
-            return CompensationResult.NotSupported(
-                "exact rollback needs the complete per-controller allocation vector");
+            var reason = string.Empty;
+            return before != null && before.Snapshot != null
+                   && LiveResourceAllocationProof.Restore(_character, before.Snapshot, out reason)
+                ? CompensationResult.Restored(reason)
+                : CompensationResult.Failed(string.IsNullOrEmpty(reason)
+                    ? "exact native allocation replay failed" : reason);
         }
 
         public bool BeforeStateMatches(ResourceAllocationState a, ResourceAllocationState b)
         {
-            return a != null && b != null && a.Energy == b.Energy
-                   && a.IdleEnergy == b.IdleEnergy && a.Magic == b.Magic
-                   && a.IdleMagic == b.IdleMagic && a.Res3 == b.Res3
-                   && a.IdleRes3 == b.IdleRes3 && a.PlanVersion == b.PlanVersion
-                   && string.Equals(a.PlanFingerprint, b.PlanFingerprint,
-                       StringComparison.Ordinal);
+            return a != null && b != null && a.Snapshot != null
+                   && a.Snapshot.ExactEquals(b.Snapshot);
         }
 
         public string FingerprintBefore(ResourceAllocationState state) { return Fingerprint(state); }
@@ -497,31 +886,45 @@ namespace NGUInjector.Autopilot
         {
             return new ResourceAllocationState
             {
-                Energy = _character.curEnergy,
-                IdleEnergy = _character.idleEnergy,
-                Magic = _character.magic.curMagic,
-                IdleMagic = _character.magic.idleMagic,
-                Res3 = _character.res3.curRes3,
-                IdleRes3 = _character.res3.idleRes3,
-                PlanVersion = _allocation.InstalledPlanVersion,
-                PlanFingerprint = _allocation.InstalledPlanFingerprint
+                Snapshot = CaptureLive()
             };
         }
 
-        private static bool Valid(ResourceAllocationState state)
+        private LiveResourceAllocationSnapshot CaptureLive()
         {
-            return state != null && state.Energy >= 0 && state.Magic >= 0 && state.Res3 >= 0
-                   && state.IdleEnergy >= 0 && state.IdleEnergy <= state.Energy
-                   && state.IdleMagic >= 0 && state.IdleMagic <= state.Magic
-                   && state.IdleRes3 >= 0 && state.IdleRes3 <= state.Res3;
+            return LiveResourceAllocationProof.Capture(_character,
+                _allocation.InstalledPlanVersion,
+                _allocation.InstalledPlanFingerprint);
+        }
+
+        private static string ValidateAcceptedPhases(LiveResourceAllocationSnapshot before,
+            LiveResourceAllocationSnapshot energy, LiveResourceAllocationSnapshot magic,
+            LiveResourceAllocationSnapshot res3)
+        {
+            string reason;
+            if (before == null || energy == null || magic == null || res3 == null)
+                return "one or more native allocation phase captures are unavailable";
+            if (!energy.IsComplete(out reason) || !magic.IsComplete(out reason)
+                || !res3.IsComplete(out reason)) return reason;
+            // A resource-specific sweep may mutate only that resource (and Energy's native AT
+            // level-target controls).  This catches cross-resource or later-phase motion even when
+            // capacities/idle totals remain conserved.
+            if (!before.Magic.ExactEquals(energy.Magic)
+                || !before.Resource3.ExactEquals(energy.Resource3))
+                return "Energy phase changed a Magic/Resource 3 target";
+            if (!energy.Energy.ExactEquals(magic.Energy)
+                || !before.Resource3.ExactEquals(magic.Resource3))
+                return "Magic phase changed an Energy/Resource 3 target";
+            if (!magic.Energy.ExactEquals(res3.Energy)
+                || !magic.Magic.ExactEquals(res3.Magic))
+                return "Resource 3 phase changed an Energy/Magic target";
+            return string.Empty;
         }
 
         private static string Fingerprint(ResourceAllocationState state)
         {
-            return state == null ? "missing" : state.PlanVersion + ":" + state.PlanFingerprint
-                   + ":E=" + state.IdleEnergy + "/" + state.Energy
-                   + ":M=" + state.IdleMagic + "/" + state.Magic
-                   + ":R3=" + state.IdleRes3 + "/" + state.Res3;
+            return state == null || state.Snapshot == null
+                ? "missing" : state.Snapshot.Fingerprint();
         }
     }
 

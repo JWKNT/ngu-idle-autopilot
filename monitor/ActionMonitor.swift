@@ -8,8 +8,9 @@ session marker. It renders the decision/root epoch, staged authority, scheduler 
 current/next rebirth policy, finite and unavailable challenge/difficulty/END ETAs, capacity,
 loaded-assembly binding coverage, transaction states, collection debt, and a sparse Key Events history. It has no game
 handle or mutation path; display features must follow explicit truthful producer fields and never
-turn a missing estimate into a zero-second countdown. The Live Actions presentation is the visual
-baseline and should not be restyled by goal/event changes.
+turn a missing estimate into a zero-second countdown or infer a challenge rule from that missing
+estimate. The Live Actions presentation is the visual baseline and should not be restyled by
+goal/event changes.
 */
 import AppKit
 
@@ -445,20 +446,25 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
         let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
-        let noResetPolicy = rebirthTarget < 0
+        let challengeActive = state["challengeActive"] as? Bool ?? false
+        let challengeCode = state["nextChallengeName"] as? String ?? ""
+        let noResetPolicy = challengeActive
+            && (state["challengeAllowsRebirth"] as? Bool == false
+                || challengeCode.hasPrefix("NORB"))
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
+        let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold
         // Number loss and a slower reset/replay route are optimizer costs, not native
         // mutation prohibitions. Only explicit execution authority or a planner hold
         // may turn the status line into a route hold.
         let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
-        let rebirthText = noResetPolicy ? "no reset — active challenge"
-            : rebirthExecutionHold ? "hold — recalculating"
+        let rebirthText = noResetPolicy ? "no reset — challenge rule"
+            : rebirthUnscheduled ? "hold — recalculating"
             : rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
             : rebirthBlocked ? "route hold" : "now"
         let bossText = bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
             : "in " + formatEstimate(bossEta)
         statusLabel.stringValue = "REBIRTH \(rebirthText)   •   BOSS \(selectedBoss) \(bossText)"
-        statusLabel.textColor = rebirthTarget < 0 || rebirthExecutionHold
+        statusLabel.textColor = rebirthUnscheduled
             || rebirthBlocked && rebirthRemaining <= 0 ? .systemOrange : .systemGreen
 
         let exp = numberDouble(state, "exp")
@@ -518,8 +524,13 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
         let rebirthRemaining = max(0, rebirthTarget - rebirthElapsed)
-        let noResetPolicy = rebirthTarget < 0
+        let challengeActive = state["challengeActive"] as? Bool ?? false
+        let challengeCode = state["nextChallengeName"] as? String ?? ""
+        let noResetPolicy = challengeActive
+            && (state["challengeAllowsRebirth"] as? Bool == false
+                || challengeCode.hasPrefix("NORB"))
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
+        let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold
         let rebirthReason = state["rebirthReason"] as? String ?? "current highest-value checkpoint"
         let rebirthNextPositiveETA = number(state, "rebirthNextPositiveEtaSeconds")
         let rebirthNextEvaluationETA = number(state, "rebirthNextEvaluationEtaSeconds")
@@ -751,7 +762,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if noResetPolicy {
             shortTerm.append("Continue the active no-reset challenge policy; no ordinary rebirth is scheduled.")
-        } else if rebirthExecutionHold {
+        } else if rebirthUnscheduled {
             shortTerm.append("Rebirth is unscheduled: continuously re-evaluate until the event model admits a valid mutation boundary.")
         } else if !rebirthExecutionEnabled {
             let reason = rebirthSafetyBlockReason.isEmpty
@@ -859,8 +870,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             && rebirthNextPositiveETA >= 0 ? formatEstimate(rebirthNextPositiveETA) : "no finite candidate emitted"
         let nextEvaluationText = state["rebirthNextEvaluationEtaSeconds"] != nil
             && rebirthNextEvaluationETA >= 0 ? formatEstimate(rebirthNextEvaluationETA) : "next live control tick"
-        let rebirthPolicy = noResetPolicy ? "NO RESET — active challenge forbids rebirth"
-            : rebirthExecutionHold ? "HOLD — no executable reset is scheduled"
+        let rebirthPolicy = noResetPolicy ? "NO RESET — this challenge forbids ordinary rebirths"
+            : rebirthUnscheduled ? "HOLD — no executable reset is scheduled"
             : !rebirthExecutionEnabled ? "DISABLED — rebirth execution is off"
             : rebirthRemaining <= 0 ? "RESET DUE — verify the native boundary"
             : "RESET at the selected checkpoint"
@@ -891,7 +902,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ◆ BOSS: selected \(selectedBoss) / next record \(nextBoss) — \(bossGlance)
         ◆ ADVENTURE: \(zone) — \(majorUnlockActive ? "MAJOR UNLOCK: " + majorUnlockName.uppercased() : collectionBackfill ? "MAXX BACKFILL" : "FORWARD COLLECTION")
         ◆ INVENTORY: \(inventoryUsed)/\(inventoryTotal) used, \(inventoryFree) free — \(inventoryPressure) PRESSURE
-        ◆ REBIRTH: \(rebirthPolicy)\(noResetPolicy || rebirthExecutionHold ? "" : " — " + formatExactDuration(rebirthRemaining) + " remaining")
+        ◆ REBIRTH: \(rebirthPolicy)\(rebirthUnscheduled ? "" : " — " + formatExactDuration(rebirthRemaining) + " remaining")
         ◆ CHALLENGE: \(challengeGlance)
         ◆ TRANSACTION: \(transactionGlance)
 
@@ -916,16 +927,16 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         BLOCKER: \(schedulerBlocker.map { $0 + (schedulerBlockerDetail.map { " — " + $0 } ?? "") } ?? "Unavailable")
 
         PROGRESSION HORIZONS
-        REBIRTH: \(rebirthPolicy) — \(noResetPolicy || rebirthExecutionHold ? "ETA unavailable while held" : availableEstimate(Double(rebirthRemaining)))
+        REBIRTH: \(rebirthPolicy) — \(rebirthUnscheduled ? "ETA unavailable while held" : availableEstimate(Double(rebirthRemaining)))
         CHALLENGE: \(challengeGlance) — clear \(availableEstimate(challengeClearETA.map(Double.init))), recovery \(availableEstimate(challengeRecoveryETA.map(Double.init)))
         DIFFICULTY: \(difficultyCurrent)\(difficultyTarget.map { " → " + $0 } ?? "") — \(availableEstimate(difficultyETA.map(Double.init)))\(difficultyBlocker.map { " — " + $0 } ?? "")
         END: \(endState) — p90 \(availableEstimate(optionalNonnegativeDouble(scheduler, "p90Seconds"))); objective \(endObjective); missing \(endMissing); evidence \(schedulerEvidence)
 
         REBIRTH DECISION — LIVE MODEL
         CURRENT POLICY: \(rebirthPolicy)
-        TARGET RUN AGE: \(noResetPolicy || rebirthExecutionHold ? "not scheduled" : formatExactDuration(rebirthTarget))
+        TARGET RUN AGE: \(rebirthUnscheduled ? "not scheduled" : formatExactDuration(rebirthTarget))
         CURRENT RUN AGE: \(formatExactDuration(rebirthElapsed))
-        REMAINING: \(noResetPolicy || rebirthExecutionHold ? "no executable countdown" : formatExactDuration(rebirthRemaining))
+        REMAINING: \(rebirthUnscheduled ? "no executable countdown" : formatExactDuration(rebirthRemaining))
         EXPECTED EXECUTION: \(noResetPolicy ? "none while the active challenge forbids rebirth" : rebirthExecutionHold ? "none until the event/progression model validates a reset" : wallClockEstimate(rebirthRemaining) + " local time")
         NEXT FINITE RESET CANDIDATE: \(nextPositiveText)
         NEXT MODEL EVALUATION: \(nextEvaluationText)

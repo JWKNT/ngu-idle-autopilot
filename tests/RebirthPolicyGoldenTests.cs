@@ -92,18 +92,27 @@ internal static class RebirthPolicyGoldenTests
 
     private static void TestRecoveryCounterfactuals()
     {
-        var unknown = Call("NGUInjector.Autopilot.RebirthOptimizer", "EvaluateMutationPolicy",
-            0.5, true, 1.1, true, -1, 900);
-        Assert(!(bool)Field(unknown, "Authorized"), "unknown reset recovery ETA fails closed");
+        var nonRegressive = Call("NGUInjector.Autopilot.RebirthOptimizer",
+            "EvaluateMutationPolicy",
+            0.5, true, 1.0, true, -1, 900);
+        Assert((bool)Field(nonRegressive, "Authorized"),
+            "non-regressive recovery Number is a bounded replay proof even without an ETA");
+        Assert(((string)Field(nonRegressive, "Reason")).Contains("non-regressive"),
+            "non-regressive recovery authorization is explicit");
+
+        var unknownRegression = Call("NGUInjector.Autopilot.RebirthOptimizer",
+            "EvaluateMutationPolicy", 0.5, true, 0.9, true, -1, 900);
+        Assert(!(bool)Field(unknownRegression, "Authorized"),
+            "lower-Number recovery still fails closed without reset ETA");
 
         var continueWins = Call("NGUInjector.Autopilot.RebirthOptimizer", "EvaluateMutationPolicy",
-            0.5, true, 1.1, true, 1800, 900);
+            0.5, true, 0.9, true, 1800, 900);
         Assert(!(bool)Field(continueWins, "Authorized"), "faster continuation blocks reset");
         Assert((int)Field(continueWins, "PreferredRouteEtaSeconds") == 900,
             "hold publishes actionable continuation ETA");
 
         var resetWins = Call("NGUInjector.Autopilot.RebirthOptimizer", "EvaluateMutationPolicy",
-            0.5, true, 1.1, true, 600, 1200);
+            0.5, true, 0.9, true, 600, 1200);
         Assert((bool)Field(resetWins, "Authorized"), "faster finite reset route is authorized");
         Assert((int)Field(resetWins, "PreferredRouteEtaSeconds") == 600,
             "authorization publishes reset recovery ETA");
@@ -130,6 +139,31 @@ internal static class RebirthPolicyGoldenTests
             "execution hold remains distinct from a due checkpoint");
     }
 
+    private static void TestDueCheckpointLeaseAndAllocationHorizon()
+    {
+        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldKeepAdmittedCheckpoint", 3600, 3600, 0.25, true),
+            "a reached positive checkpoint remains admitted after replanning");
+        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldKeepAdmittedCheckpoint", 3600, 7200, 0.25, false),
+            "a delayed positive checkpoint cannot roll forward forever");
+        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldKeepAdmittedCheckpoint", 3600, 7200, 0.0, false),
+            "the checkpoint lease never overrides the no-reset baseline");
+        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldKeepAdmittedCheckpoint", 1800, 1800, 0.25, true),
+            "the first-GRB legality window invalidates an early checkpoint");
+
+        var boundaryTarget = (double)Call("NGUInjector.Autopilot.AutopilotPlan",
+            "EffectiveAllocationTargetFor", 7200, false, true, 25200.0);
+        Assert(Math.Abs(boundaryTarget - 28800.0) < 1e-9,
+            "a final-gate hold grants reset-local sinks a rolling one-hour horizon");
+        var ordinaryTarget = (double)Call("NGUInjector.Autopilot.AutopilotPlan",
+            "EffectiveAllocationTargetFor", 7200, false, false, 25200.0);
+        Assert(Math.Abs(ordinaryTarget - 7200.0) < 1e-9,
+            "an executable checkpoint preserves its exact target");
+    }
+
     private static void TestGeneratedProfileWatcherNormalization()
     {
         Assert((bool)Call("NGUInjector.Autopilot.AutopilotPlan", "IsGeneratedAllocationPath",
@@ -150,15 +184,20 @@ internal static class RebirthPolicyGoldenTests
         var config = Activator.CreateInstance(configType, true);
         var held = new[]
         {
-            "AllowApSpending", "AllowPerkSpending",
-            "AllowQuirkSpending", "ManageMoneyPit",
+            "AllowApSpending",
+            "AllowQuirkSpending",
             "AllowGlobalSchedulerExecution",
-            "AllowMoneyPitExecution", "AllowDifficultyExecution",
-            "AllowTitanOneThroughTwelveExecution", "AllowTitanThirteenFourteenExecution",
-            "AllowMove69Execution", "AllowEndSequence", "AllowChallenges"
+            "AllowDifficultyExecution",
+            "AllowTitanThirteenFourteenExecution",
+            "AllowMove69Execution", "AllowEndSequence"
         };
         SetField(config, "AllowRebirths", true);
         SetField(config, "AllowExpSpending", true);
+        SetField(config, "AllowPerkSpending", true);
+        SetField(config, "AllowTitanOneThroughTwelveExecution", true);
+        SetField(config, "ManageMoneyPit", true);
+        SetField(config, "AllowMoneyPitExecution", true);
+        SetField(config, "AllowChallenges", true);
         foreach (var name in held) SetField(config, name, true);
         var ceiling = configType.GetMethod("ApplyDeploymentAuthorityCeiling",
             BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
@@ -171,6 +210,15 @@ internal static class RebirthPolicyGoldenTests
             "audited EXP atoms preserve explicit authority and publish the staged purchase gate");
         Assert((bool)Field(config, "AllowRebirths"),
             "explicit ordinary rebirth authority survives the deployment ceiling");
+        Assert((bool)Field(config, "AllowPerkSpending"),
+            "typed exact one-level perk authority preserves the operator's explicit choice");
+        Assert((bool)Field(config, "AllowTitanOneThroughTwelveExecution"),
+            "typed T1-T12 authority preserves the operator's explicit choice");
+        Assert((bool)Field(config, "ManageMoneyPit")
+               && (bool)Field(config, "AllowMoneyPitExecution"),
+            "typed exact Money Pit policy and irreversible authority preserve explicit choice");
+        Assert((bool)Field(config, "AllowChallenges"),
+            "typed challenge authority preserves the operator's explicit choice");
         Assert((bool)Property(config, "GlobalSchedulerIsShadowOnly"),
             "global scheduler is hard shadow-only independent of serialized input");
 
@@ -194,13 +242,15 @@ internal static class RebirthPolicyGoldenTests
             "Main bridge exposes the typed ordinary-rebirth transaction");
     }
 
-    public static int Main()
+    public static int Main(string[] args)
     {
         try
         {
-            _assembly = Assembly.LoadFrom("NGUIdleAutopilot.dll");
+            _assembly = Assembly.LoadFrom(args != null && args.Length > 0
+                ? args[0] : "NGUIdleAutopilot.dll");
             TestExplicitHoldBaseline();
             TestDueProfileSignatureIsStable();
+            TestDueCheckpointLeaseAndAllocationHorizon();
             TestGeneratedProfileWatcherNormalization();
             TestObservedAllNegativeMutationCase();
             TestLowerNumberPositivePersistentCase();

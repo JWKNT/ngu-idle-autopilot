@@ -9,8 +9,9 @@ unknown game build.
 
 Mechanism: The test loads the installed assembly for metadata inspection, creates the production
 NativeBindingRegistry with the measured SHA-256, and asserts every descriptor binds exactly. It
-then validates deliberately corrupted token and overload descriptors, and creates an unknown-hash
-registry to prove irreversible bindings are held while the exact read-only cost query remains
+then validates deliberately corrupted token and overload descriptors, pins the Money Pit/Daily
+Spin and Titan one-frame/terminal-zone/seven exact version-selector members, and creates an unknown-hash registry to
+prove irreversible bindings are held while the exact read-only cost query remains
 available. Adapter calls use null targets only on the unknown registry, so they stop at the build
 gate and cannot dispatch native code.
 
@@ -179,6 +180,11 @@ internal static class NativeBindingContractTests
                && descriptor.MetadataToken == 0x06000aa1
                && descriptor.ExactSignature == "System.Void Rebirth.calculateTimeMulti()",
             "rebirth preflight pins the discontinuous time-multiplier refresh");
+        Assert(registry.TryGetDescriptor(NativeBindingKeys.RebirthCalculateNextMultis,
+                out descriptor)
+               && descriptor.MetadataToken == 0x06000aa2
+               && descriptor.ExactSignature == "System.Void Rebirth.calculateNextMultis()",
+            "rebirth preflight pins the Blood-adjusted Number preview refresh");
         Assert(registry.TryGetDescriptor(NativeBindingKeys.DifficultySelectEvil, out descriptor)
                && descriptor.MetadataToken == 0x06000a6e
                && registry.TryGetDescriptor(NativeBindingKeys.DifficultySelectSadistic,
@@ -188,6 +194,43 @@ internal static class NativeBindingContractTests
         Assert(registry.TryGetDescriptor(NativeBindingKeys.ItemConsume, out descriptor)
                && descriptor.ExactSignature == "System.Void ItemController.consumeItem()",
             "physical item consumption has an exact private adapter binding");
+        Assert(registry.TryGetDescriptor(NativeBindingKeys.TitanManageOneFrame, out descriptor)
+               && descriptor.MetadataToken == 0x0600008e
+               && descriptor.Visibility == NativeVisibility.Private
+               && descriptor.ExactSignature
+                  == "System.Void AdventureController.manageFight()",
+            "Titan execution pins the private ascending one-kill native frame primitive");
+        Assert(registry.TryGetDescriptor(NativeBindingKeys.TitanEnterZone, out descriptor)
+               && descriptor.MetadataToken == 0x060002cd
+               && descriptor.ExactSignature
+                  == "System.Void ZoneSelector.changeZone(System.Int32)",
+            "terminal Titan entry pins the exact zero-based public zone mutation");
+        Assert(registry.TryGetDescriptor(NativeBindingKeys.MoneyPitEngage, out descriptor)
+               && descriptor.MetadataToken == 0x06000633
+               && descriptor.Visibility == NativeVisibility.Private
+               && descriptor.ExactSignature == "System.Void PitController.engage()",
+            "Money Pit pins the private all-Gold reward mutation");
+        Assert(registry.TryGetDescriptor(NativeBindingKeys.DailySpinClaim, out descriptor)
+               && descriptor.MetadataToken == 0x06000bb7
+               && descriptor.Visibility == NativeVisibility.Public
+               && descriptor.ExactSignature
+                  == "System.Void DailyRewardController.startNoBullshitSpin()",
+            "Daily Spin pins the exact synchronous reward mutation");
+        var titanVersionTokens = new[]
+        {
+            0x0400005a, 0x04000067, 0x04000074, 0x04000086,
+            0x04000092, 0x0400009c, 0x040000a6
+        };
+        for (var titanId = 6; titanId <= 12; titanId++)
+        {
+            Assert(registry.TryGetDescriptor(NativeBindingKeys.TitanVersion(titanId),
+                       out descriptor)
+                   && descriptor.Kind == NativeMemberKind.Field
+                   && descriptor.ValueTypeName == "System.Int32"
+                   && descriptor.Visibility == NativeVisibility.Public
+                   && descriptor.MetadataToken == titanVersionTokens[titanId - 6],
+                "T" + titanId + " selected version pins the exact Adventure field/token");
+        }
         Assert(registry.TryGetDescriptor(NativeBindingKeys.CardConsume, out descriptor)
                && descriptor.ExactSignature
                    == "System.Void CardsController.tryConsumeCard(System.Int32)",

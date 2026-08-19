@@ -66,6 +66,10 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                 // outside the optimizer score; use a finite positive sentinel, never Infinity
                 // (which the pure admission kernel correctly treats as invalid evidence).
                 var selectedScore = double.MaxValue;
+                var recoveryMode = CharObj.settings.rebirthDifficulty == difficulty.normal
+                                   && CharObj.bossID < CharObj.highestBoss;
+                var resetRouteEtaSeconds = -1;
+                var continueRouteEtaSeconds = -1;
                 var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
                 var autopilotOrdinary = Main.AutopilotWants(x => x.AllowRebirths);
                 if (autopilotOrdinary && plan != null)
@@ -73,6 +77,8 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                     if (plan.RebirthExecutionHold) return false;
                     if (!plan.RebirthTargetLocked)
                         selectedScore = plan.RebirthSelectedScorePerHour;
+                    recoveryMode = plan.RebirthRecoveryMode;
+                    resetRouteEtaSeconds = plan.RebirthRecoveryEtaSeconds;
 
                     // Recompute from the final live preview. This is especially important when
                     // Blood NUMBER was cast earlier in this same automation transaction.
@@ -85,6 +91,8 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                         if (live.ExecutionHold || live.TargetSeconds > (int)Math.Floor(time))
                             return false;
                         selectedScore = live.SelectedScorePerHour;
+                        recoveryMode = live.RecoveryMode;
+                        resetRouteEtaSeconds = live.RecoveryEtaSeconds;
                     }
                     else if (!plan.RebirthTargetLocked)
                     {
@@ -100,14 +108,13 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                     CharObj.attackMulti > 0.0 ? CharObj.nextAttackMulti / CharObj.attackMulti : 0.0,
                     CharObj.defenseMulti > 0.0 ? CharObj.nextDefenseMulti / CharObj.defenseMulti : 0.0);
 
-                // Native engage replaces Number; it does not multiply the new preview by the
-                // current Number. The former recovery branch geometrically compounded the same
-                // projected/current ratio across repeated cycles and could therefore veto a
-                // positive EXP/AP/training-cap reset forever while below the Boss record. The
-                // live aggregate score already prices the one-run Number loss. Recheck that score
-                // here, but do not impose the invalid repeated-ratio counterfactual.
+                // Native engage replaces Number; it does not multiply the new preview by current
+                // Number. Aggregate score may price that one-run loss, but below the Boss record it
+                // is not sufficient mutation authority: the exact Boss-0 replay route must also be
+                // finite and beat continuation. Unknown route evidence is a hold, never permission.
                 var decision = RebirthOptimizer.EvaluateMutationPolicy(selectedScore, true,
-                    minimumNumberRatio, false, -1, -1);
+                    minimumNumberRatio, recoveryMode, resetRouteEtaSeconds,
+                    continueRouteEtaSeconds);
                 if (!decision.Authorized) return false;
 
                 // A kill inside the next controller tick is a discrete strict improvement not

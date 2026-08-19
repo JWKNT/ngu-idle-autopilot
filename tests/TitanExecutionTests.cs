@@ -3,11 +3,14 @@ FILE PURPOSE
 
 TitanExecutionTests is the isolated pure/fault-injection suite for reconciled task 13. It proves
 pre-due staging wins the native same-frame crossing, simultaneous due Titans consume in ascending
-one-per-frame order under one aggregate capacity reservation, version/loadout/native-AK gates are
-sequential, Walderp and exact Glop prerequisites remain manual-only, T13 is one-time and T14 retries
-until ordinary item 495 exists, T12 v4 online loot is cumulative, and offline progress emits no
-items. A fake runtime also proves each task-1 root executes at most one exact staging atom while
-initial live authority stays disabled. The suite loads no Unity/game assembly, save, or process.
+one-per-call order under one aggregate capacity reservation, and the synchronous kill verifier
+accepts exactly one selected-version Bestiary increment plus exact clock reset. Version/loadout/
+native-AK gates are sequential, reset interlock spans executable-due/active commitments without
+deadlocking on an unfightable due clock, Walderp and exact Glop
+prerequisites remain manual-only, and T13/T14 stage/enter/wait until durable reward evidence. T12 v4
+online loot is cumulative and offline progress emits no items. A fake runtime proves each task-1
+root executes at most one exact atom while initial live authority stays disabled. The suite loads no
+Unity/game assembly, save, or process.
 */
 using System;
 using System.Collections.Generic;
@@ -44,6 +47,7 @@ namespace NGUInjector.Autopilot
         internal bool AllowCardYeeting = true;
         internal bool AllowRebirths = true;
         internal bool AllowChallenges = true;
+        internal bool AllowDifficultyExecution;
         internal bool AllowEndSequence;
 
         internal bool IsDryRun { get { return Mode != "assist" && Mode != "full"; } }
@@ -124,10 +128,12 @@ internal static class TitanExecutionTests
 
     private static TitanExecutionSnapshot Snapshot(bool online, bool autoKill,
         string stage, IEnumerable<TitanExecutionOpportunity> opportunities,
-        WalderpExecutionSnapshot walderp = null, bool bindings = true)
+        WalderpExecutionSnapshot walderp = null, bool bindings = true,
+        int currentZone = -1, bool currentEnemyIsTargetTitan = false)
     {
         return new TitanExecutionSnapshot("save-A/run-1", online, autoKill,
-            stage, bindings, opportunities, walderp);
+            stage, bindings, opportunities, walderp, currentZone,
+            currentEnemyIsTargetTitan);
     }
 
     private static void TestSameFrameCrossingAndPrestage()
@@ -253,9 +259,10 @@ internal static class TitanExecutionTests
             Snapshot(true, false, string.Empty,
                 new[] {Opportunity(13, 0, 0, 0, ratDone, false, false, 0, 0)}),
             Topology(0));
-        Assert(t13.Kind == TitanExecutionActionKind.EnterManualTitan
-               && !t13.LiveMutationAuthorized,
-            "T13 is planned exactly once before the rat flag and stays outside initial authority");
+        Assert(t13.Kind == TitanExecutionActionKind.StageLoadout
+               && t13.LiveMutationAuthorized
+               && t13.LoadoutRequest.TitanIds().SequenceEqual(new[] {13}),
+            "T13 opens a typed strongest-loadout commitment exactly once before the rat flag");
         Assert(t13Done.Kind == TitanExecutionActionKind.Idle,
             "T13 stops being actionable after the rat flag");
 
@@ -269,8 +276,10 @@ internal static class TitanExecutionTests
             Snapshot(true, false, string.Empty,
                 new[] {Opportunity(14, 0, 0, 0, delivered, false, false, 0, 0)}),
             Topology(1));
-        Assert(t14.Kind == TitanExecutionActionKind.EnterManualTitan,
-            "T14 retries despite its flag while ordinary item 495 is absent");
+        Assert(t14.Kind == TitanExecutionActionKind.StageLoadout
+               && t14.LiveMutationAuthorized
+               && t14.LoadoutRequest.TitanIds().SequenceEqual(new[] {14}),
+            "T14 stages and retries despite its flag while ordinary item 495 is absent");
         Assert(t14Done.Kind == TitanExecutionActionKind.Idle,
             "ordinary item 495, not the final flag, completes the T14 reward");
         var noSlot = new TitanExecutionManager(2.0).Plan(
@@ -331,6 +340,120 @@ internal static class TitanExecutionTests
             "planned offline bootstrap exposes typed high-version preselection without live authority");
     }
 
+    private static void TestTypedOneDueKillAndPostconditions()
+    {
+        var before = Snapshot(true, false, "stage-A", new[]
+        {
+            Opportunity(1, 0, 0, 0, true, true, true, 10, 1),
+            Opportunity(2, 0, 0, 0, true, true, true, 20, 1)
+        });
+        var exact = Snapshot(true, false, "stage-A", new[]
+        {
+            Opportunity(1, 100, 0, 0, true, true, true, 11, 1),
+            Opportunity(2, 0, 0, 0, true, true, true, 20, 1)
+        });
+        Assert(TitanExecutionMutationIntent.ExactOneTitanKillDelta(before, exact, 1),
+            "one selected-version Bestiary increment plus exact target clock reset is accepted");
+
+        var wrongTarget = Snapshot(true, false, "stage-A", new[]
+        {
+            Opportunity(1, 0, 0, 0, true, true, true, 10, 1),
+            Opportunity(2, 100, 0, 0, true, true, true, 21, 1)
+        });
+        Assert(!TitanExecutionMutationIntent.ExactOneTitanKillDelta(before, wrongTarget, 1),
+            "a different native-order Titan delta cannot verify the requested target");
+        var twoKills = Snapshot(true, false, "stage-A", new[]
+        {
+            Opportunity(1, 100, 0, 0, true, true, true, 11, 1),
+            Opportunity(2, 100, 0, 0, true, true, true, 21, 1)
+        });
+        Assert(!TitanExecutionMutationIntent.ExactOneTitanKillDelta(before, twoKills, 1),
+            "two Titan deltas in one synchronous call fail the one-frame contract");
+        var noClockReset = Snapshot(true, false, "stage-A", new[]
+        {
+            Opportunity(1, 0, 0, 0, true, true, true, 11, 1),
+            Opportunity(2, 0, 0, 0, true, true, true, 20, 1)
+        });
+        Assert(!TitanExecutionMutationIntent.ExactOneTitanKillDelta(before, noClockReset, 1),
+            "a counter increment without the exact target clock reset is not a verified kill");
+
+        var manager = new TitanExecutionManager(2.0);
+        var due = new[]
+        {
+            Opportunity(1, 0, 0, 0, true, false, true, 10, 1),
+            Opportunity(2, 0, 0, 0, true, false, true, 20, 1)
+        };
+        var stage = manager.Plan(Snapshot(true, false, string.Empty, due), Topology(2));
+        Assert(stage.Kind == TitanExecutionActionKind.StageLoadout,
+            "a weak pre-stage projection still stages the strongest combat loadout before the live gate");
+        var first = manager.Plan(Snapshot(true, false, stage.CommitmentId, due), Topology(2));
+        Assert(first.Kind == TitanExecutionActionKind.KillOneDueTitan && first.TitanId == 1,
+            "the first transaction requests only the lowest native-order due Titan");
+        var afterFirst = new[]
+        {
+            Opportunity(1, 100, 0, 0, true, true, true, 11, 1),
+            Opportunity(2, 0, 0, 0, true, true, true, 20, 1)
+        };
+        var second = manager.Plan(Snapshot(true, false, stage.CommitmentId, afterFirst),
+            Topology(2));
+        Assert(second.Kind == TitanExecutionActionKind.KillOneDueTitan && second.TitanId == 2,
+            "the next scheduler frame requests only the next still-due committed Titan");
+    }
+
+    private static void TestTerminalCommitmentAndResetInterlock()
+    {
+        var unfightableManager = new TitanExecutionManager(2.0);
+        var unfightable = Opportunity(1, 0, 0, 0, true, false, false, 0, 1,
+            false, false);
+        var unfightableSnapshot = Snapshot(true, false, string.Empty,
+            new[] {unfightable});
+        Assert(!unfightableManager.ResetInterlock(unfightableSnapshot).HoldReset,
+            "a due Titan without source-proven native/manual execution is a clock-loss cost, not a permanent reset deadlock");
+        var attemptedStage = unfightableManager.Plan(unfightableSnapshot, Topology(1));
+        var abortRestore = unfightableManager.Plan(Snapshot(true, false,
+            attemptedStage.CommitmentId, new[] {unfightable}), Topology(1));
+        Assert(attemptedStage.Kind == TitanExecutionActionKind.StageLoadout
+               && abortRestore.Kind == TitanExecutionActionKind.RestoreLoadout,
+            "the executor may test the strongest loadout once, then cleans up immediately when the due native predicate is still false");
+
+        var manager = new TitanExecutionManager(2.0);
+        var due = Opportunity(14, 0, 0, 0, true, false, false, 0, 0,
+            true, true);
+        var dueSnapshot = Snapshot(true, false, string.Empty, new[] {due});
+        Assert(manager.ResetInterlock(dueSnapshot).HoldReset,
+            "a due actionable terminal Titan blocks reset even before a commitment opens");
+        var stage = manager.Plan(dueSnapshot, Topology(1));
+        Assert(stage.Kind == TitanExecutionActionKind.StageLoadout
+               && stage.LoadoutRequest.TitanIds().SequenceEqual(new[] {14}),
+            "T14 accepts a physical strongest-loadout stage request");
+        Assert(manager.ResetInterlock(dueSnapshot).HoldReset,
+            "an active terminal commitment keeps reset blocked across staging");
+
+        var staged = Snapshot(true, false, stage.CommitmentId, new[] {due});
+        var enter = manager.Plan(staged, Topology(1));
+        Assert(enter.Kind == TitanExecutionActionKind.EnterManualTitan
+               && enter.LiveMutationAuthorized,
+            "staged due T14 emits one typed zone-entry mutation");
+        var waiting = manager.Plan(Snapshot(true, false, stage.CommitmentId,
+            new[] {due}, null, true, TitanMechanics.Describe(14).Zone, true), Topology(1));
+        Assert(waiting.Kind == TitanExecutionActionKind.AwaitManualTitanKill,
+            "after exact zone entry CombatManager owns the reserved lethal move while the stage stays locked");
+
+        var delivered = Opportunity(14, 100, 0, 0, false, false, false, 1, 0,
+            true, true);
+        var restore = manager.Plan(Snapshot(true, false, stage.CommitmentId,
+            new[] {delivered}), Topology(1));
+        Assert(restore.Kind == TitanExecutionActionKind.RestoreLoadout,
+            "ordinary item-495 reward evidence advances before terminal loadout cleanup");
+        var complete = manager.Plan(Snapshot(true, false, string.Empty,
+            new[] {delivered}), Topology(1));
+        Assert(complete.Kind == TitanExecutionActionKind.CommitmentComplete,
+            "terminal commitment completes only after durable reward and gear restoration evidence");
+        Assert(!manager.ResetInterlock(Snapshot(true, false, string.Empty,
+                new[] {delivered})).HoldReset,
+            "reset is released only after the terminal reward and cleanup commitment settles");
+    }
+
     private sealed class FakeTitanRuntime : ITitanExecutionRuntime
     {
         internal bool Authority = true;
@@ -342,6 +465,7 @@ internal static class TitanExecutionTests
         internal int Version;
         internal int DesiredVersion = 3;
         internal int Kills;
+        internal int Remaining;
         internal int ApplyCalls;
 
         public bool LiveAuthority { get { return Authority; } }
@@ -354,7 +478,7 @@ internal static class TitanExecutionTests
         public TitanExecutionSnapshot Capture()
         {
             return Snapshot(Online, AutoKill, Stage,
-                new[] {Opportunity(12, 1, Version, DesiredVersion, true,
+                new[] {Opportunity(12, Remaining, Version, DesiredVersion, true,
                     true, NativeVerified, Kills, 18)} , null, Bindings);
         }
         public TitanExecutionApplyResult Apply(TitanExecutionAction action,
@@ -372,9 +496,17 @@ internal static class TitanExecutionTests
                 case TitanExecutionActionKind.StageLoadout:
                     Stage = action.CommitmentId;
                     break;
-                case TitanExecutionActionKind.ReleaseAutokill:
                 case TitanExecutionActionKind.RestoreAutokillPreference:
                     AutoKill = true;
+                    break;
+                case TitanExecutionActionKind.KillOneDueTitan:
+                    // Model the adapter's synchronous true/invoke/finally-false boundary. The
+                    // externally visible setting never rises, exactly one Bestiary record moves,
+                    // and capture observes the freshly reset clock.
+                    AutoKill = true;
+                    Kills++;
+                    Remaining = 100;
+                    AutoKill = false;
                     break;
                 case TitanExecutionActionKind.RestoreLoadout:
                     Stage = string.Empty;
@@ -429,33 +561,29 @@ internal static class TitanExecutionTests
                && !string.IsNullOrEmpty(runtime.Stage) && runtime.ApplyCalls == 3,
             "common exact-reference loadout staging is one separate verified atom");
 
-        var waiting = ExecuteAtom(manager, runtime, coordinator, config, "native-false");
-        Assert(waiting.Action.Kind == TitanExecutionActionKind.HoldNativeAutokillVerification
+        runtime.Remaining = 1;
+        var waiting = ExecuteAtom(manager, runtime, coordinator, config, "not-due-yet");
+        Assert(waiting.Action.Kind == TitanExecutionActionKind.AwaitCommittedKills
                && waiting.Mutation == null && runtime.ApplyCalls == 3 && !runtime.AutoKill,
-            "candidate projection alone cannot release autokill after physical staging");
+            "physical staging remains locked while the committed clock has not reached due");
+        runtime.Remaining = 0;
         runtime.NativeVerified = true;
-        var release = ExecuteAtom(manager, runtime, coordinator, config, "native-true");
-        Assert(release.Action.Kind == TitanExecutionActionKind.ReleaseAutokill
-               && release.Mutation.Kind == MutationResultKind.Committed
-               && runtime.AutoKill && runtime.ApplyCalls == 4,
-            "live native predicate confirmation authorizes the irreversible release atom");
-        var awaiting = ExecuteAtom(manager, runtime, coordinator, config, "await-kill");
-        Assert(awaiting.Action.Kind == TitanExecutionActionKind.AwaitCommittedKills
+        var kill = ExecuteAtom(manager, runtime, coordinator, config, "native-true");
+        Assert(kill.Action.Kind == TitanExecutionActionKind.KillOneDueTitan
+               && kill.Mutation.Kind == MutationResultKind.Committed
+               && !runtime.AutoKill && runtime.Kills == 1 && runtime.Remaining == 100
                && runtime.ApplyCalls == 4,
-            "staged gear is held until the exact committed kill counter advances");
+            "live native predicate authorizes one synchronous verified kill while persistent autokill stays low");
 
-        runtime.Kills++;
-        var cleanupDisable = ExecuteAtom(manager, runtime, coordinator, config, "cleanup-disable");
         var restore = ExecuteAtom(manager, runtime, coordinator, config, "restore-loadout");
         var restoreAk = ExecuteAtom(manager, runtime, coordinator, config, "restore-ak");
         var complete = ExecuteAtom(manager, runtime, coordinator, config, "complete");
-        Assert(cleanupDisable.Action.Kind == TitanExecutionActionKind.DisableAutokill
-               && restore.Action.Kind == TitanExecutionActionKind.RestoreLoadout
+        Assert(restore.Action.Kind == TitanExecutionActionKind.RestoreLoadout
                && restoreAk.Action.Kind == TitanExecutionActionKind.RestoreAutokillPreference
                && complete.Action.Kind == TitanExecutionActionKind.CommitmentComplete,
-            "exact kill delta drives ordered disable, physical restore, preference restore, completion");
-        Equal(runtime.ApplyCalls, 7,
-            "seven mutation plans each invoke exactly one atom; holds/completion invoke none");
+            "exact synchronous kill delta drives physical restore, preference restore, completion");
+        Equal(runtime.ApplyCalls, 6,
+            "six mutation plans each invoke exactly one atom; holds/completion invoke none");
 
         var missingBinding = new TitanExecutionManager(2.0).Plan(
             Snapshot(true, true, string.Empty,
@@ -474,6 +602,8 @@ internal static class TitanExecutionTests
             TestWalderpAndGlop();
             TestTerminalOnceAndRetry();
             TestOnlineOfflineSplit();
+            TestTypedOneDueKillAndPostconditions();
+            TestTerminalCommitmentAndResetInterlock();
             TestCandidateNativeVerificationAndAtoms();
             Console.WriteLine("Titan execution tests passed: " + _assertions + " assertions");
             return 0;

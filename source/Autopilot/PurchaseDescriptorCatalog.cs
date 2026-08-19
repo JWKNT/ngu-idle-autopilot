@@ -13,7 +13,9 @@ AP inventory, slot ladders, Starter Pack clamping, all ten Hearts, and the nativ
 prerequisite are represented explicitly.  EXP formulas retain native integer division and checked
 overflow.  Effects use stable adapter keys so a live integration can capture every touched
 persistent field and prove an exact before/expected/after vector rather than accepting a currency
-delta.  UI text, labels, and keyword weights are intentionally absent from purchase economics.
+delta.  IsSourceExactLiveApPermanent is the conservative executable subset: it excludes every
+consumable, currency conversion, Heart delivery, positive-native-preview, and Starter Pack atom.
+UI text, labels, and keyword weights are intentionally absent from purchase economics.
 */
 using System;
 using System.Collections.Generic;
@@ -412,6 +414,34 @@ namespace NGUInjector.Autopilot
             return true;
         }
 
+        /*
+        SOURCE-EXACT AP EXECUTION SURFACE
+
+        The full 0..81 catalog remains useful for planning and telemetry, but only atoms whose
+        installed native method performs one fixed AP debit plus exact persistent Boolean/counter
+        writes belong on the live permanent-spend surface. Consumables, AP-to-EXP/PP conversions,
+        Hearts, and Starter Pack are intentionally denied here: their value may still be modeled,
+        but their larger physical or native-preview postcondition needs a dedicated transaction.
+        */
+        internal static bool IsSourceExactLiveApPermanent(PurchaseDescriptor descriptor)
+        {
+            if (descriptor == null || descriptor.Currency != PermanentCurrency.ArbitraryPoints
+                || descriptor.NativeId < 0 || descriptor.NativeId > 81 || descriptor.IsHeart)
+                return false;
+            switch (descriptor.NativeId)
+            {
+                case 7: case 8: case 9: case 12: case 13: case 15: case 17:
+                case 21: case 22: case 25: case 28: case 29: case 32: case 34:
+                case 39: case 40: case 41: case 47: case 48: case 49: case 54:
+                case 55: case 56: case 57: case 58: case 62: case 64: case 65:
+                case 66: case 67: case 68: case 69: case 71: case 72: case 73:
+                case 74: case 75: case 76: case 77: case 81:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         internal static LootCapacityRequirement HeartCapacityRequirement(int itemId)
         {
             if (!IsHeartItem(itemId)) throw new ArgumentOutOfRangeException("itemId");
@@ -459,14 +489,16 @@ namespace NGUInjector.Autopilot
             AddAp(result, 9, "Insta Training Caps", "buyInstaTrainAP", 0x06000357, Fixed(10000), Set("ap.hasInstaTraining"));
             AddAp(result, 10, "500 base EXP", "buy500ExpAP", 0x06000359, Fixed(100000), NativeGain("currency.exp"));
             AddHeart(result, 11, "Red Heart", "buyHeartAP", 0x0600035f, 225000, 119);
-            AddAp(result, 12, "Custom percent set 1", "buyCustomPercent1AP", 0x06000361, Fixed(25000), Set("ap.hasCustomPercent1"));
-            AddAp(result, 13, "Custom percent set 2", "buyCustomPercent2AP", 0x06000363, Fixed(100000), Set("ap.hasCustomPercent2"));
+            AddAp(result, 12, "Custom percent set 1", "buyCustomPercent1AP", 0x06000361, Fixed(25000),
+                Set("ap.hasCustomEnergyPercent1"), Set("ap.hasCustomMagicPercent1"));
+            AddAp(result, 13, "Custom percent set 2", "buyCustomPercent2AP", 0x06000363, Fixed(100000),
+                Set("ap.hasCustomEnergyPercent2"), Set("ap.hasCustomMagicPercent2"));
             AddHeart(result, 14, "Yellow Heart", "buyYellowHeartAP", 0x0600036d, 150000, 129);
             AddAp(result, 15, "Inventory space", "buyInventoryAP", 0x0600036f,
                 PurchaseCostDescriptor.ApInventorySpace(), Delta("ap.inventorySpaces", 1));
             AddAp(result, 16, "Starter Pack", "buyStarterPackAP", 0x06000373, Fixed(75000),
                 NativeGain("currency.exp"), Capped("ap.inventorySpaces", 5, 166), Set("ap.hasStarterPack"));
-            AddAp(result, 17, "Accessory slot 4", "buyAcc4AP", 0x06000375, Fixed(225000), Delta("ap.accessorySlots", 1));
+            AddAp(result, 17, "Accessory slot 4", "buyAcc4AP", 0x06000375, Fixed(225000), Set("ap.hasAcc4"));
             AddAp(result, 18, "Poop 1", "buyPoop1AP", 0x06000381, Fixed(3000), Delta("consumable.poop", 1));
             AddAp(result, 19, "Poop 10", "buyPoop10AP", 0x06000383, Fixed(25000), Delta("consumable.poop", 10));
             AddAp(result, 20, "Poop 100", "buyPoop100AP", 0x06000385, Fixed(225000), Delta("consumable.poop", 100));
@@ -485,7 +517,7 @@ namespace NGUInjector.Autopilot
             AddHeart(result, 31, "Brown Heart", "buyHeartBrown", 0x06000393, 225000, 162);
             AddAp(result, 32, "Daycare speed", "buyDaycareSpeedAP", 0x06000395, Fixed(125000), Set("ap.hasDaycareSpeed"));
             AddHeart(result, 33, "Green Heart", "buyHeartGreenAP", 0x06000397, 225000, 171);
-            AddAp(result, 34, "Accessory slot 5", "buyAcc5AP", 0x06000377, Fixed(225000), Delta("ap.accessorySlots", 1));
+            AddAp(result, 34, "Accessory slot 5", "buyAcc5AP", 0x06000377, Fixed(225000), Set("ap.hasAcc5"));
             AddAp(result, 35, "Iron Pill 1", "buyPill1AP", 0x0600039a, Fixed(2500), Delta("consumable.ironPill", 1000));
             AddAp(result, 36, "Iron Pill 10", "buyPill10AP", 0x0600039c, Fixed(20000), Delta("consumable.ironPill", 10000));
             AddAp(result, 37, "Iron Pill 100", "buyPill100AP", 0x0600039e, Fixed(175000), Delta("consumable.ironPill", 100000));
@@ -507,19 +539,20 @@ namespace NGUInjector.Autopilot
             AddAp(result, 51, "25 PP", "buy25ppAP", 0x060003bc, Fixed(100000), Delta("currency.pp", 25));
             AddAp(result, 52, "100 PP", "buy100ppAP", 0x060003be, Fixed(400000), Delta("currency.pp", 100));
             AddAp(result, 53, "500 PP", "buy500ppAP", 0x060003c0, Fixed(2000000), Delta("currency.pp", 500));
-            AddAp(result, 54, "Accessory slot 6", "buyAcc6AP", 0x06000379, Fixed(500000), Delta("ap.accessorySlots", 1));
-            AddAp(result, 55, "Custom idle-percent set", "buyCustomIdlePercent1AP", 0x06000365, Fixed(125000), Set("ap.hasCustomIdlePercent"));
+            AddAp(result, 54, "Accessory slot 6", "buyAcc6AP", 0x06000379, Fixed(500000), Set("ap.hasAcc6"));
+            AddAp(result, 55, "Custom idle-percent set", "buyCustomIdlePercent1AP", 0x06000365, Fixed(125000),
+                Set("ap.hasCustomIdleEnergyPercent1"), Set("ap.hasCustomIdleMagicPercent1"));
             AddAp(result, 56, "Auto Nuke", "buyAutoNukeAP", 0x060003c2, Fixed(65000), Set("ap.hasAutoNuke"));
             AddAp(result, 57, "Daycare kitty art", "buyDaycareArtAP", 0x060003c4, Fixed(250000), Set("ap.hasDaycareArt"));
             AddAp(result, 58, "NGU cap modifier", "buyNGUCapModifierAP", 0x060003c6, Fixed(100000), Set("ap.hasNguCapModifier"));
             AddAp(result, 59, "R3 potion I", "buyRes3Potion1", 0x06000347, Fixed(4000), Delta("ap.res3Potion1", 1));
             AddAp(result, 60, "R3 potion II", "buyRes3Potion2", 0x06000349, Fixed(40000), Delta("ap.res3Potion2", 1));
             AddAp(result, 61, "R3 potion III", "buyRes3Potion3", 0x0600034b, Fixed(40000), Delta("ap.res3Potion3", 1));
-            AddAp(result, 62, "Accessory slot 7", "buyAcc7AP", 0x0600037b, Fixed(500000), Delta("ap.accessorySlots", 1));
+            AddAp(result, 62, "Accessory slot 7", "buyAcc7AP", 0x0600037b, Fixed(500000), Set("ap.hasAcc7"));
             AddHeart(result, 63, "Grey Heart", "buyHeartGreyAP", 0x060003aa, 225000, 297);
-            AddAp(result, 64, "R3 custom percent set 1", "buyRes3Percent1AP", 0x06000367, Fixed(50000), Set("ap.hasRes3Percent1"));
-            AddAp(result, 65, "R3 custom percent set 2", "buyRes3Percent2AP", 0x06000369, Fixed(150000), Set("ap.hasRes3Percent2"));
-            AddAp(result, 66, "R3 custom idle-percent set", "buyRes3IdlePercent1AP", 0x0600036b, Fixed(150000), Set("ap.hasRes3IdlePercent"));
+            AddAp(result, 64, "R3 custom percent set 1", "buyRes3Percent1AP", 0x06000367, Fixed(50000), Set("ap.hasCustomRes3Percent1"));
+            AddAp(result, 65, "R3 custom percent set 2", "buyRes3Percent2AP", 0x06000369, Fixed(150000), Set("ap.hasCustomRes3Percent2"));
+            AddAp(result, 66, "R3 custom idle-percent set", "buyRes3IdlePercent1AP", 0x0600036b, Fixed(150000), Set("ap.hasCustomIdleRes3Percent1"));
             AddAp(result, 67, "R3 name generator", "buyRes3NameGeneratorAP", 0x060003c8, Fixed(85000), Set("ap.hasRes3NameGenerator"));
             AddAp(result, 68, "Faster wishes", "buyFasterWishAP", 0x060003ca, Fixed(250000), Set("ap.hasFasterWishes"));
             AddAp(result, 69, "Inventory Merge slot", "buyInvMergeSlotAP", 0x060003cc,
@@ -529,16 +562,16 @@ namespace NGUInjector.Autopilot
             AddAp(result, 71, "Adventure light", "buyAdvLightAP", 0x060003d0, Fixed(75000), Set("ap.hasAdventureLight"));
             AddAp(result, 72, "Adventure advancer", "buyAdvAdvancerAP", 0x060003d2, Fixed(65000), Set("ap.hasAdventureAdvancer"));
             AddAp(result, 73, "Go-to-quest-zone", "buyGoToQuestAP", 0x060003d4, Fixed(100000), Set("ap.hasGoToQuest"));
-            AddAp(result, 74, "Accessory slot 8", "buyAcc8AP", 0x0600037d, Fixed(500000), Delta("ap.accessorySlots", 1));
+            AddAp(result, 74, "Accessory slot 8", "buyAcc8AP", 0x0600037d, Fixed(500000), Set("ap.hasAcc8"));
             AddAp(result, 75, "Deck space", "buyDeckSlotAP", 0x060003d6,
                 PurchaseCostDescriptor.CounterLadder(50, 25000), Delta("ap.deckSpaces", 1));
             AddAp(result, 76, "Mayo generator", "buyMayoGenAP", 0x060003d8,
                 PurchaseCostDescriptor.CounterLadder(2, 250000), Delta("ap.mayoGenerators", 1));
-            AddAp(result, 77, "Tag slot", "buyTagSlotAP", 0x060003da, Fixed(250000), Delta("ap.tagSlots", 1));
+            AddAp(result, 77, "Tag slot", "buyTagSlotAP", 0x060003da, Fixed(250000), Set("ap.hasTagSlot"));
             AddAp(result, 78, "Card-tier consumable", "buyCardTierConsumableAP", 0x060003de, Fixed(40000), Delta("consumable.cardTier", 1));
             AddAp(result, 79, "Mayo-speed consumable", "buyMayoSpeedConsumableAP", 0x060003dc, Fixed(40000), Delta("consumable.mayoSpeed", 1));
             AddHeart(result, 80, "Rainbow Heart", "buyHeartRainbowAP", 0x060003e0, 500000, 390);
-            AddAp(result, 81, "Accessory slot 9", "buyAcc9AP", 0x0600037f, Fixed(675000), Delta("ap.accessorySlots", 1));
+            AddAp(result, 81, "Accessory slot 9", "buyAcc9AP", 0x0600037f, Fixed(675000), Set("ap.hasAcc9"));
             return result;
         }
 
@@ -568,13 +601,46 @@ namespace NGUInjector.Autopilot
                 Exp("exp.adventure.hit-points", "AdventurePurchases", "buyCustomHP", 0x0600093d, PurchaseCostKind.AdventureHitPoints, "permanent.adventureHitPoints"),
                 Exp("exp.adventure.regen", "AdventurePurchases", "buyCustomregen", 0x0600093f, PurchaseCostKind.AdventureRegen, "permanent.adventureRegen"),
                 new PurchaseDescriptor("exp.energy.speed10", PermanentCurrency.Experience, -1,
-                    "EnergyPurchases", "buyEnergySpeed10", 0x06000955, "Energy speed +10",
+                    "EnergyPurchases", "buyEnergySpeed10", 0x06000955, "Energy Speed +0.1",
                     PurchaseCostDescriptor.Formula(PurchaseCostKind.EnergySpeed10), PurchaseUnlockRequirement.None,
                     0, 0, new[] { Delta("permanent.energySpeed", 10) }),
                 new PurchaseDescriptor("exp.energy.speed100", PermanentCurrency.Experience, -1,
-                    "EnergyPurchases", "buyEnergySpeed100", 0x06000957, "Energy speed +100",
+                    "EnergyPurchases", "buyEnergySpeed100", 0x06000957, "Energy Speed +1.0",
                     PurchaseCostDescriptor.Formula(PurchaseCostKind.EnergySpeed100), PurchaseUnlockRequirement.None,
                     0, 0, new[] { Delta("permanent.energySpeed", 100) }),
+                new PurchaseDescriptor("exp.energy.speed-special1", PermanentCurrency.Experience, -1,
+                    "EnergyPurchases", "buyEnergySpeedSpecial1", 0x0600095b,
+                    "Energy Speed special +0.2", PurchaseCostDescriptor.LiveSerialized(),
+                    PurchaseUnlockRequirement.None, 0, 0, new[]
+                    {
+                        Delta("permanent.energySpeed", 20), Set("exp.energySpeedSpecial1")
+                    }),
+                new PurchaseDescriptor("exp.energy.speed-special2", PermanentCurrency.Experience, -1,
+                    "EnergyPurchases", "buyEnergySpeedSpecial2", 0x0600095d,
+                    "Energy Speed special +0.3", PurchaseCostDescriptor.LiveSerialized(),
+                    PurchaseUnlockRequirement.None, 0, 0, new[]
+                    {
+                        Delta("permanent.energySpeed", 30), Set("exp.energySpeedSpecial2")
+                    }),
+                new PurchaseDescriptor("exp.energy.speed-special3", PermanentCurrency.Experience, -1,
+                    "EnergyPurchases", "buyEnergySpeedSpecial3", 0x0600095f,
+                    "Energy Speed special +0.4", PurchaseCostDescriptor.LiveSerialized(),
+                    PurchaseUnlockRequirement.None, 0, 0, new[]
+                    {
+                        Delta("permanent.energySpeed", 40), Set("exp.energySpeedSpecial3")
+                    }),
+                new PurchaseDescriptor("exp.magic.speed10", PermanentCurrency.Experience, -1,
+                    "MagicPurchases", "buy10MagicSpeed", 0x06000992, "Magic Speed +0.1",
+                    PurchaseCostDescriptor.LiveSerialized(), PurchaseUnlockRequirement.None,
+                    0, 0, new[] { Delta("permanent.magicSpeed", 10) }),
+                new PurchaseDescriptor("exp.fight-boss.attack10", PermanentCurrency.Experience, -1,
+                    "StatBoostPurchases", "buyAttack10", 0x060009e1,
+                    "Fight Boss Attack +10%", Fixed(30), PurchaseUnlockRequirement.None,
+                    0, 0, new[] { Delta("permanent.fightBossAttackTenths", 1) }),
+                new PurchaseDescriptor("exp.fight-boss.defense10", PermanentCurrency.Experience, -1,
+                    "StatBoostPurchases", "buyDefense10", 0x060009e7,
+                    "Fight Boss Defense +10%", Fixed(30), PurchaseUnlockRequirement.None,
+                    0, 0, new[] { Delta("permanent.fightBossDefenseTenths", 1) }),
                 new PurchaseDescriptor("exp.adventure.inventory-space", PermanentCurrency.Experience, -1,
                     "AdventurePurchases", "buyInventorySpace", 0x06000917, "EXP inventory space",
                     PurchaseCostDescriptor.Formula(PurchaseCostKind.ExpInventorySpace), PurchaseUnlockRequirement.None,

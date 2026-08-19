@@ -12,7 +12,8 @@ supplied Assembly. Known builds enforce every descriptor including metadata toke
 do not bind or invoke derived-state writes or irreversible mutations; exact signature-only read
 bindings remain available so telemetry can continue without granting mutation authority.
 NativeMutationAdapters provides semantic adapters for reset, challenge, inventory, Money Pit,
-Wandoos, Card, save-load, Yggdrasil, and permanent-purchase calls. An adapter result says only
+Daily Spin, Titan one-frame execution/version selection, Wandoos, Card, save-load, Yggdrasil, AP
+purchases, and exact one-level QP quirk purchases. An adapter result says only
 whether reflection was attempted; it deliberately does not claim the game mutation committed.
 
 Inputs and outputs: Inputs are the loaded Assembly-CSharp Assembly, its externally measured SHA-256,
@@ -182,7 +183,10 @@ namespace NGUInjector.Autopilot
         internal const string DifficultySelectEvil = "difficulty.evil.select";
         internal const string DifficultySelectSadistic = "difficulty.sadistic.select";
         internal const string ItemConsume = "inventory.item.consume";
+        internal const string TitanManageOneFrame = "titan.manage-one-native-frame";
+        internal const string TitanEnterZone = "titan.enter-zone";
         internal const string MoneyPitEngage = "money-pit.engage";
+        internal const string DailySpinClaim = "daily-spin.claim";
         internal const string WandoosNextOs = "wandoos.next-os";
         internal const string WandoosSetOs = "wandoos.set-os";
         internal const string YggFruitToBuy = "yggdrasil.fruit-to-buy";
@@ -192,6 +196,14 @@ namespace NGUInjector.Autopilot
         internal const string AdventureInventorySpaceCost = "adventure.inventory-space-cost";
         internal const string ApPurchaseId = "ap.purchase-id";
         internal const string ApPurchaseName = "ap.purchase-name";
+        internal const string QuirkTryLevelUp = "quirk.try-level-up";
+
+        internal static string TitanVersion(int titanId)
+        {
+            if (titanId < 6 || titanId > 12)
+                throw new ArgumentOutOfRangeException("titanId");
+            return "titan." + titanId + ".selected-version";
+        }
 
         internal static string PurchaseMethod(string declaringTypeName, string methodName)
         {
@@ -625,9 +637,43 @@ namespace NGUInjector.Autopilot
             descriptors.Add(Method(NativeBindingKeys.ItemConsume, "ItemController", "consumeItem",
                 Empty(), VoidName, NativeVisibility.Private, 0x06000ed2,
                 NativeBindingScope.IrreversibleMutation, "consume exact selected physical item"));
+            descriptors.Add(Method(NativeBindingKeys.TitanManageOneFrame,
+                "AdventureController", "manageFight", Empty(), VoidName,
+                NativeVisibility.Private, 0x0600008e,
+                NativeBindingScope.IrreversibleMutation,
+                "evaluate T1-T12 in native ascending order, kill at most one due Titan, reset its clock, and run its loot path"));
+            descriptors.Add(Method(NativeBindingKeys.TitanEnterZone, "ZoneSelector",
+                "changeZone", Types(IntName), VoidName, NativeVisibility.Public,
+                0x060002cd, NativeBindingScope.IrreversibleMutation,
+                "enter the exact zero-based Adventure zone for staged terminal-Titan combat"));
+            descriptors.Add(Field(NativeBindingKeys.TitanVersion(6), "Adventure",
+                "titan6Version", IntName, NativeVisibility.Public, 0x0400005a,
+                NativeBindingScope.DerivedStateWrite, "select T6 reward/enemy version 0-3"));
+            descriptors.Add(Field(NativeBindingKeys.TitanVersion(7), "Adventure",
+                "titan7Version", IntName, NativeVisibility.Public, 0x04000067,
+                NativeBindingScope.DerivedStateWrite, "select T7 reward/enemy version 0-3"));
+            descriptors.Add(Field(NativeBindingKeys.TitanVersion(8), "Adventure",
+                "titan8Version", IntName, NativeVisibility.Public, 0x04000074,
+                NativeBindingScope.DerivedStateWrite, "select T8 reward/enemy version 0-3"));
+            descriptors.Add(Field(NativeBindingKeys.TitanVersion(9), "Adventure",
+                "titan9Version", IntName, NativeVisibility.Public, 0x04000086,
+                NativeBindingScope.DerivedStateWrite, "select T9 reward/enemy version 0-3"));
+            descriptors.Add(Field(NativeBindingKeys.TitanVersion(10), "Adventure",
+                "titan10Version", IntName, NativeVisibility.Public, 0x04000092,
+                NativeBindingScope.DerivedStateWrite, "select T10 reward/enemy version 0-3"));
+            descriptors.Add(Field(NativeBindingKeys.TitanVersion(11), "Adventure",
+                "titan11Version", IntName, NativeVisibility.Public, 0x0400009c,
+                NativeBindingScope.DerivedStateWrite, "select T11 reward/enemy version 0-3"));
+            descriptors.Add(Field(NativeBindingKeys.TitanVersion(12), "Adventure",
+                "titan12Version", IntName, NativeVisibility.Public, 0x040000a6,
+                NativeBindingScope.DerivedStateWrite, "select T12 reward/enemy version 0-3"));
             descriptors.Add(Method(NativeBindingKeys.MoneyPitEngage, "PitController", "engage",
                 Empty(), VoidName, NativeVisibility.Private, 0x06000633,
                 NativeBindingScope.IrreversibleMutation, "debit Gold and claim Money Pit reward"));
+            descriptors.Add(Method(NativeBindingKeys.DailySpinClaim, "DailyRewardController",
+                "startNoBullshitSpin", Empty(), VoidName, NativeVisibility.Public, 0x06000bb7,
+                NativeBindingScope.IrreversibleMutation,
+                "debit one free spin or exactly 86400 timer seconds, advance saved RNG, and grant one reward"));
             descriptors.Add(Field(NativeBindingKeys.WandoosNextOs, "Wandoos98Controller", "nextOS",
                 IntName, NativeVisibility.Private, 0x04000e36,
                 NativeBindingScope.IrreversibleMutation, "Wandoos target selector"));
@@ -656,6 +702,10 @@ namespace NGUInjector.Autopilot
             descriptors.Add(Field(NativeBindingKeys.ApPurchaseName, "ArbitraryController", "itemName",
                 StringName, NativeVisibility.Public, 0x0400030d,
                 NativeBindingScope.IrreversibleMutation, "AP shop purchase-name guard selector"));
+            descriptors.Add(Method(NativeBindingKeys.QuirkTryLevelUp,
+                "BeastQuestPerkController", "tryLevelUp", Types(IntName), VoidName,
+                NativeVisibility.Public, 0x0600051c, NativeBindingScope.IrreversibleMutation,
+                "recheck quirk cap, QP, difficulty and feature gates, then buy exactly one level"));
 
             AddPurchaseCatalog(descriptors);
             return descriptors.ToArray();
@@ -979,9 +1029,80 @@ namespace NGUInjector.Autopilot
             return _registry.InvokeMutation(NativeBindingKeys.ItemConsume, itemController);
         }
 
+        /*
+        TYPED TITAN NATIVE BOUNDARY
+
+        AdventureController.manageFight is the audited native update primitive, not a generic
+        combat helper. Its T1-T12 branches are ordered and each successful branch returns after
+        the selected-version Bestiary increment, exact clock reset, and native loot call. The
+        execution coordinator temporarily raises autoKillTitans only around this synchronous call,
+        then proves the one-target counter/clock delta; the adapter itself never claims a kill.
+
+        Version selection intentionally writes the exact Adventure field instead of calling
+        changeTitanDifficulty(int): that native UI method switches on the ambient adventure zone,
+        so using it from a background executor could mutate the wrong Titan. T1-T5 and T13-T14 do
+        not have version selectors and are rejected here.
+        */
+        internal NativeInvocationResult InvokeOneTitanFrame(object adventureController)
+        {
+            return _registry.InvokeMutation(NativeBindingKeys.TitanManageOneFrame,
+                adventureController);
+        }
+
+        internal NativeInvocationResult EnterTitanZone(object zoneSelector,
+            int zeroBasedZone)
+        {
+            if (zeroBasedZone < 0)
+                return Invalid("terminal Titan zone must be nonnegative");
+            return _registry.InvokeMutation(NativeBindingKeys.TitanEnterZone,
+                zoneSelector, zeroBasedZone);
+        }
+
+        internal NativeInvocationResult SelectTitanVersion(object adventure,
+            int titanId, int zeroBasedVersion)
+        {
+            if (titanId < 6 || titanId > 12 || zeroBasedVersion < 0
+                || zeroBasedVersion > 3)
+                return Invalid("Titan selector requires T6-T12 and a zero-based version 0-3");
+            var key = NativeBindingKeys.TitanVersion(titanId);
+            if (!_registry.IsKnownBuild || !_registry.IrreversibleActionsEnabled)
+                return new NativeInvocationResult(_registry.IsKnownBuild
+                        ? NativeInvocationStatus.HeldRegistryIncomplete
+                        : NativeInvocationStatus.HeldUnknownBuild,
+                    key, _registry.IsKnownBuild
+                        ? "one or more native bindings failed validation"
+                        : _registry.BuildFailureReason, null, null);
+            FieldInfo selector;
+            string reason;
+            if (!_registry.TryGetBoundField(key, out selector, out reason))
+                return Unavailable(key, reason);
+            if (adventure == null || !selector.DeclaringType.IsInstanceOfType(adventure))
+                return new NativeInvocationResult(NativeInvocationStatus.TargetMismatch,
+                    key, "Titan version target is not an Adventure instance", null, null);
+            try
+            {
+                selector.SetValue(adventure, zeroBasedVersion);
+                return new NativeInvocationResult(NativeInvocationStatus.Invoked, key,
+                    "exact Titan version field written; caller must verify the selected version",
+                    null, null);
+            }
+            catch (Exception error)
+            {
+                return new NativeInvocationResult(NativeInvocationStatus.ThrewAfterInvocation,
+                    key, "Titan version write threw; recapture the selector before retry",
+                    null, error);
+            }
+        }
+
         internal NativeInvocationResult TossMoneyPit(object pitController)
         {
             return _registry.InvokeMutation(NativeBindingKeys.MoneyPitEngage, pitController);
+        }
+
+        internal NativeInvocationResult ClaimDailySpin(object dailyRewardController)
+        {
+            return _registry.InvokeMutation(NativeBindingKeys.DailySpinClaim,
+                dailyRewardController);
         }
 
         internal NativeInvocationResult ConsumeCard(object cardsController, int exactIndex)
@@ -1139,6 +1260,14 @@ namespace NGUInjector.Autopilot
                     result.ReturnValue, restoreError);
             }
             return result;
+        }
+
+        internal NativeInvocationResult BuyOneQuirkLevel(object controller, int exactId)
+        {
+            if (exactId < 0)
+                return Invalid("quirk ID must be nonnegative");
+            return _registry.InvokeMutation(NativeBindingKeys.QuirkTryLevelUp,
+                controller, exactId);
         }
 
         private NativeInvocationResult SelectAndInvoke(object controller, string selectorKey,

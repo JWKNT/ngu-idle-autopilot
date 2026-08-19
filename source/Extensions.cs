@@ -243,13 +243,20 @@ namespace NGUInjector
                 if (Settings.ManageR3 || Main.AutopilotWants(x => x.ManageAllocations))
                     allocation.AllocateR3();
 
-                if ((Settings.ManageDiggers || Main.AutopilotWants(x => x.ManageDiggers)) && Main.Character.buttons.diggers.interactable)
+                // Full autopilot owns Digger membership/levels through a root-coordinated typed
+                // transaction.  The legacy pair clears and rewrites the same state without that
+                // lease, so it may run only when autopilot has not claimed the subsystem.
+                if (Settings.ManageDiggers && !Main.AutopilotWants(x => x.ManageDiggers)
+                    && Main.Character.buttons.diggers.interactable)
                 {
                     allocation.EquipDiggers();
                     DiggerManager.RecapDiggers();
                 }
 
-                if ((Settings.ManageWandoos || Main.AutopilotWants(x => x.ManageAllocations)) && Main.Character.buttons.wandoos.interactable)
+                // Wandoos OS changes erase run-local levels/progress.  Autopilot executes the
+                // selected switch once through WandoosRunManager before reallocating resources.
+                if (Settings.ManageWandoos && !Main.AutopilotWants(x => x.ManageAllocations)
+                    && Main.Character.buttons.wandoos.interactable)
                     allocation.SwapOS();
 
             }

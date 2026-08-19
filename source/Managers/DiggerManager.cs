@@ -140,6 +140,49 @@ namespace NGUInjector.Managers
             return TryEquipDiggers(diggers, ObjectiveWeights);
         }
 
+        internal static MutationResult ManageSet(RootTransaction root, AutopilotPlan plan)
+        {
+            var c = Main.Character;
+            if (root == null || root.IsClosed || c == null || plan == null
+                || !c.settings.diggersOn || c.diggers == null || c.allDiggers == null
+                || CurrentLock != LockType.None)
+                return null;
+            var requested = (plan.Diggers ?? new int[0])
+                .Where(x => x >= 0 && x < c.diggers.diggers.Count).Distinct()
+                .Where(x => c.diggers.diggers[x].maxLevel > 0)
+                .Take(c.allDiggers.maxDiggerSlots()).ToArray();
+            var levels = AllocateDiggerLevels(c, requested, ObjectiveWeights,
+                AvailableDiggerGps(c), 10000);
+            var expected = requested.Where(x => levels.ContainsKey(x) && levels[x] > 0)
+                .OrderBy(x => x).ToArray();
+            var current = c.diggers.activeDiggers.OrderBy(x => x).ToArray();
+            var exactLevels = Enumerable.Range(0, c.diggers.diggers.Count).All(id =>
+                c.diggers.diggers[id].curLevel
+                == (levels.ContainsKey(id) ? levels[id] : 0L));
+            if (current.SequenceEqual(expected) && exactLevels) return null;
+            return root.ExecuteChild(new DiggerSetIntent(c, expected, levels));
+        }
+
+        internal static MutationResult ManageUpgrade(RootTransaction root, AutopilotPlan plan)
+        {
+            var c = Main.Character;
+            if (root == null || root.IsClosed || c == null || plan == null
+                || !c.settings.diggersOn || CurrentLock != LockType.None)
+                return null;
+            var remaining = !plan.RebirthExecutionHold
+                ? (int)Math.Max(0.0, Math.Ceiling(plan.EffectiveAllocationTarget(c)
+                                                 - c.rebirthTime.totalseconds)) : 0;
+            var ledger = ResourceHorizonModel.EvaluateGold(c, remaining);
+            var bundle = ledger.DiggerBundle;
+            var protectedSpend = ledger.ProtectedSpendBefore(
+                GoldClaimKind.DiggerPermanentUpgrade);
+            if (bundle == null || bundle.ActorId < 0
+                || c.realGold + Math.Max(1e-9, c.realGold * 1e-12)
+                   < bundle.RequiredLiquidity + protectedSpend)
+                return null;
+            return root.ExecuteChild(new DiggerUpgradeIntent(c, bundle, protectedSpend));
+        }
+
         private static bool TryEquipDiggers(int[] diggers, IDictionary<int, double> weights)
         {
             if (Main.Character == null || Main.Character.diggers == null
@@ -213,6 +256,217 @@ namespace NGUInjector.Managers
             return false;
         }
 
+        private sealed class DiggerSetIntent :
+            IMutationIntent<DiggerState, bool, DiggerState>
+        {
+            private readonly Character _character;
+            private readonly int[] _selected;
+            private readonly IDictionary<int, long> _levels;
+
+            internal DiggerSetIntent(Character character, int[] selected,
+                IDictionary<int, long> levels)
+            {
+                _character = character;
+                _selected = selected ?? new int[0];
+                _levels = levels ?? new Dictionary<int, long>();
+            }
+
+            public string Id { get { return "diggers.set"; } }
+            public MutationClass Class { get { return MutationClass.Diggers; } }
+            public MutationRisk Risk { get { return MutationRisk.FiniteResource; } }
+            public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
+            public string BindingId { get { return "AllDiggers.clear/activate+curLevel/public-exact"; } }
+            public bool Required { get { return false; } }
+            public bool CanCompensate { get { return true; } }
+            public bool CreatesNewEpoch { get { return false; } }
+            public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
+
+            public DiggerState CaptureBefore(MutationContext context)
+            {
+                return CaptureDiggerState(_character);
+            }
+
+            public PreconditionResult CheckPreconditions(MutationContext context,
+                DiggerState before)
+            {
+                if (!Main.IsAutomationReady)
+                    return PreconditionResult.Hold("gameplay synchronization is not current");
+                if (before == null || CurrentLock != LockType.None)
+                    return PreconditionResult.Hold("Digger state is unavailable or event-locked");
+                if (_selected.Length > _character.allDiggers.maxDiggerSlots())
+                    return PreconditionResult.Hold("requested Digger set exceeds native slots");
+                return PreconditionResult.Ready();
+            }
+
+            public bool Apply(MutationContext context, RootTransactionToken token,
+                DiggerState before)
+            {
+                return ApplyDiggerTransaction(_character, _selected, _levels);
+            }
+
+            public VerificationResult<DiggerState> Verify(MutationContext context,
+                DiggerState before, MutationApplyObservation<bool> apply)
+            {
+                var after = CaptureDiggerState(_character);
+                var exactLevels = after != null && Enumerable.Range(0, after.Levels.Length)
+                    .All(id => after.Levels[id]
+                               == (_levels.ContainsKey(id) ? _levels[id] : 0L));
+                var expected = _selected.Where(id => _levels.ContainsKey(id)
+                    && _levels[id] > 0L).OrderBy(x => x).ToArray();
+                var gross = Math.Max(0.0, _character.grossGoldPerSecond());
+                var valid = apply.ReturnedNormally && apply.Value && after != null
+                            && expected.SequenceEqual(after.ActiveIds.OrderBy(x => x))
+                            && exactLevels && _character.totalGPSDrain()
+                               <= gross + Math.Max(1e-9, gross * 1e-12);
+                return valid ? VerificationResult<DiggerState>.Satisfied(after,
+                        "exact Digger set/levels/slots/GPS drain confirmed")
+                    : VerificationResult<DiggerState>.Failed(
+                        "Digger set lacked exact membership/level/drain postconditions");
+            }
+
+            public CompensationResult Compensate(MutationContext context, RecoveryToken token,
+                DiggerState before, MutationApplyObservation<bool> apply)
+            {
+                return RestoreSnapshot(before, "root-coordinated Digger state")
+                    ? CompensationResult.Restored("Digger levels and membership restored")
+                    : CompensationResult.Failed("Digger state could not be restored exactly");
+            }
+
+            public bool BeforeStateMatches(DiggerState expected, DiggerState observed)
+            {
+                return SameDiggerState(expected, observed);
+            }
+
+            public string FingerprintBefore(DiggerState state) { return Fingerprint(state); }
+            public string FingerprintAfter(DiggerState state) { return Fingerprint(state); }
+        }
+
+        private sealed class DiggerUpgradeState
+        {
+            internal double Gold;
+            internal long[] MaxLevels;
+            internal double Cost;
+        }
+
+        private sealed class DiggerUpgradeIntent :
+            IMutationIntent<DiggerUpgradeState, bool, DiggerUpgradeState>
+        {
+            private readonly Character _character;
+            private readonly GoldSpendBundle _bundle;
+            private readonly double _protectedSpend;
+
+            internal DiggerUpgradeIntent(Character character, GoldSpendBundle bundle,
+                double protectedSpend)
+            {
+                _character = character;
+                _bundle = bundle;
+                _protectedSpend = Math.Max(0.0, protectedSpend);
+            }
+
+            public string Id { get { return _bundle.ActionId; } }
+            public MutationClass Class { get { return MutationClass.Diggers; } }
+            public MutationRisk Risk { get { return MutationRisk.Irreversible; } }
+            public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
+            public string BindingId { get { return "AllDiggers.upgradeMaxLevel(int)/public-exact"; } }
+            public bool Required { get { return false; } }
+            public bool CanCompensate { get { return false; } }
+            public bool CreatesNewEpoch { get { return false; } }
+            public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
+
+            public DiggerUpgradeState CaptureBefore(MutationContext context) { return Capture(); }
+
+            public PreconditionResult CheckPreconditions(MutationContext context,
+                DiggerUpgradeState before)
+            {
+                if (!Main.IsAutomationReady)
+                    return PreconditionResult.Hold("gameplay synchronization is not current");
+                if (before == null || _bundle.ActorId < 0
+                    || _bundle.ActorId >= before.MaxLevels.Length)
+                    return PreconditionResult.Hold("Digger upgrade target is unavailable");
+                var liveCost = _character.allDiggers.upgradeCost(_bundle.ActorId);
+                if (Math.Abs(liveCost - _bundle.Debit) > Math.Max(1e-9, liveCost * 1e-9)
+                    || Math.Abs(liveCost - before.Cost) > Math.Max(1e-9, liveCost * 1e-9))
+                    return PreconditionResult.Hold("Digger upgrade cost changed after planning");
+                if (before.Gold + Math.Max(1e-9, before.Gold * 1e-12)
+                    < liveCost + _protectedSpend)
+                    return PreconditionResult.Hold("joint Gold ledger reserve would be crossed");
+                return PreconditionResult.Ready();
+            }
+
+            public bool Apply(MutationContext context, RootTransactionToken token,
+                DiggerUpgradeState before)
+            {
+                _character.allDiggers.upgradeMaxLevel(_bundle.ActorId);
+                return true;
+            }
+
+            public VerificationResult<DiggerUpgradeState> Verify(MutationContext context,
+                DiggerUpgradeState before, MutationApplyObservation<bool> apply)
+            {
+                var after = Capture();
+                var valid = apply.ReturnedNormally && apply.Value && after != null
+                            && after.MaxLevels[_bundle.ActorId]
+                               == before.MaxLevels[_bundle.ActorId] + 1L
+                            && Enumerable.Range(0, before.MaxLevels.Length)
+                                .Where(x => x != _bundle.ActorId)
+                                .All(x => after.MaxLevels[x] == before.MaxLevels[x])
+                            && Math.Abs((before.Gold - after.Gold) - before.Cost)
+                               <= Math.Max(1e-6, before.Cost * 1e-6);
+                if (!valid)
+                    return VerificationResult<DiggerUpgradeState>.Failed(
+                        "Digger upgrade lacked exact +1 max-level and Gold debit");
+                Main.LogAction("PURCHASE", "Executed " + _bundle.ActionId
+                    + " [exact +1 max level and Gold debit confirmed; replan required]");
+                return VerificationResult<DiggerUpgradeState>.Satisfied(after,
+                    "one exact permanent Digger max-level purchase confirmed");
+            }
+
+            public CompensationResult Compensate(MutationContext context, RecoveryToken token,
+                DiggerUpgradeState before, MutationApplyObservation<bool> apply)
+            {
+                return CompensationResult.NotSupported(
+                    "permanent Digger max-level purchases have no safe inverse");
+            }
+
+            public bool BeforeStateMatches(DiggerUpgradeState expected,
+                DiggerUpgradeState observed)
+            {
+                return expected != null && observed != null && expected.Gold == observed.Gold
+                       && expected.Cost == observed.Cost
+                       && expected.MaxLevels.SequenceEqual(observed.MaxLevels);
+            }
+
+            public string FingerprintBefore(DiggerUpgradeState state)
+            {
+                return UpgradeFingerprint(state);
+            }
+
+            public string FingerprintAfter(DiggerUpgradeState state)
+            {
+                return UpgradeFingerprint(state);
+            }
+
+            private DiggerUpgradeState Capture()
+            {
+                if (_character == null || _character.diggers == null
+                    || _bundle.ActorId < 0
+                    || _bundle.ActorId >= _character.diggers.diggers.Count) return null;
+                return new DiggerUpgradeState
+                {
+                    Gold = _character.realGold,
+                    MaxLevels = _character.diggers.diggers.Select(x => x.maxLevel).ToArray(),
+                    Cost = _character.allDiggers.upgradeCost(_bundle.ActorId)
+                };
+            }
+
+            private static string UpgradeFingerprint(DiggerUpgradeState state)
+            {
+                return state == null ? "missing" : state.Gold.ToString("R") + ":"
+                    + state.Cost.ToString("R") + ":"
+                    + string.Join(",", state.MaxLevels.Select(x => x.ToString()).ToArray());
+            }
+        }
+
         private static DiggerState CaptureDiggerState(Character c)
         {
             return new DiggerState
@@ -220,6 +474,22 @@ namespace NGUInjector.Managers
                 Levels = c.diggers.diggers.Select(x => x.curLevel).ToArray(),
                 ActiveIds = c.diggers.activeDiggers.ToArray()
             };
+        }
+
+        private static bool SameDiggerState(DiggerState expected, DiggerState observed)
+        {
+            return expected != null && observed != null
+                   && expected.Levels != null && observed.Levels != null
+                   && expected.ActiveIds != null && observed.ActiveIds != null
+                   && expected.Levels.SequenceEqual(observed.Levels)
+                   && expected.ActiveIds.SequenceEqual(observed.ActiveIds);
+        }
+
+        private static string Fingerprint(DiggerState state)
+        {
+            if (state == null) return "missing";
+            return string.Join(",", state.ActiveIds.Select(x => x.ToString()).ToArray()) + ":"
+                   + string.Join(",", state.Levels.Select(x => x.ToString()).ToArray());
         }
 
         private static bool RestoreSnapshot(DiggerState snapshot, string label)

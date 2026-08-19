@@ -28,7 +28,8 @@ FILE PURPOSE
 Main is the Unity orchestration, lifecycle-epoch, save/load, and native-mutation dispatch host. It
 publishes its instance before callbacks, discovers/rebinds live controllers, establishes the
 active-game synchronization barrier, keys queued work and decision latches to GameEpoch, selects
-exactly one allocation owner, and writes confirmed action/deployment telemetry. Inputs are Unity
+exactly one allocation owner, executes typed permanent Blood spells and the END-Blood item delivery
+before reset, and writes confirmed action/deployment telemetry. Inputs are Unity
 state, legacy settings, autopilot config/plans, watched files, and manual snapshot keys; outputs are
 leased manager/controller calls, durable last-good snapshot generations, and append-only runtime
 evidence, including the exact loaded-assembly native-binding health used by deployment admission.
@@ -57,6 +58,11 @@ namespace NGUInjector
         private InventoryManager _invManager;
         private CombatManager _combManager;
         private QuestManager _questManager;
+        private TitanExecutionManager _titanExecution;
+        private LiveTitanExecutionRuntime _titanRuntime;
+        private LiveResetProgressionRuntime _resetProgressionRuntime;
+        private EndgameTransactionManager _endgameTransactions;
+        private RootTransaction _activeTitanRoot;
         private static CustomAllocation _profile;
         internal static AutopilotManager Autopilot;
         private float _timeLeft = 1.0f;
@@ -243,6 +249,34 @@ namespace NGUInjector
         internal static AutopilotConfig CurrentAutopilotConfig
         {
             get { return Autopilot == null ? null : Autopilot.Config; }
+        }
+
+        internal static bool TryGetTitanResetInterlock(out TitanResetInterlock interlock)
+        {
+            interlock = null;
+            var current = reference;
+            var config = Autopilot == null ? null : Autopilot.Config;
+            if (config == null || !config.AllowTitanOneThroughTwelveExecution
+                && !config.AllowTitanThirteenFourteenExecution)
+                return false;
+            if (current == null || current._titanExecution == null
+                || current._titanRuntime == null)
+            {
+                interlock = new TitanResetInterlock(true, 0,
+                    "typed Titan reset boundary is enabled but its live runtime is unavailable");
+                return true;
+            }
+            try
+            {
+                interlock = current._titanExecution.ResetInterlock(
+                    current._titanRuntime.Capture());
+            }
+            catch (Exception error)
+            {
+                interlock = new TitanResetInterlock(true, 0,
+                    "typed Titan reset capture failed: " + error.GetType().Name);
+            }
+            return true;
         }
 
         internal static bool IsGameplayReady
@@ -915,6 +949,7 @@ namespace NGUInjector
                 WishManager = new WishManager();
 
                 Autopilot = new AutopilotManager(_dir, _profilesDir);
+                RecreateTitanExecutionRuntime();
 
                 LoadAllocation();
                 LoadAllocationProfiles();
@@ -1234,10 +1269,26 @@ namespace NGUInjector
             _combManager = new CombatManager();
             WishManager = new WishManager();
             Autopilot = new AutopilotManager(_dir, _profilesDir);
+            RecreateTitanExecutionRuntime();
             _allocationOwnerKnown = false;
             LoadAllocation();
             ExecutionSafety.ObserveConfig(Autopilot.Config);
             RefreshAllocationOwnership();
+        }
+
+        private void RecreateTitanExecutionRuntime()
+        {
+            _activeTitanRoot = null;
+            _titanExecution = new TitanExecutionManager(2.0);
+            _titanRuntime = TitanLiveSnapshotAdapter.Create(Character,
+                () => _activeTitanRoot,
+                titanId => _combManager != null
+                           && _combManager.HasTerminalLethalReservation(titanId));
+            _resetProgressionRuntime = LiveResetProgressionRuntime.Create(Character,
+                () => _activeTitanRoot);
+            _endgameTransactions = new EndgameTransactionManager(
+                new CharacterEndgameTransactionPort(Character,
+                    () => CurrentGameEpochFingerprint));
         }
 
         private void TryInstallPlanForCurrentEpoch()
@@ -1839,6 +1890,8 @@ namespace NGUInjector
             RootTransaction mutationRoot = null;
             long executionStateVersion = -1;
             var ordinaryRebirthCommitted = false;
+            var resetProgressionCommitted = false;
+            var resetProgressionSelected = false;
             try
             {
                 ObserveGameEpochTransitions();
@@ -1871,6 +1924,7 @@ namespace NGUInjector
                     return;
                 }
                 mutationRoot = rootBegin.Transaction;
+                _activeTitanRoot = mutationRoot;
                 executionStateVersion = ExecutionSafety.StateVersion;
                 Autopilot.ExecutePlannedMutations(mutationRoot);
                 var progression = ProgressionTransactions.Execute(mutationRoot, Character,
@@ -1879,6 +1933,83 @@ namespace NGUInjector
                 if (progression.Failed)
                     transactionErrors.Add("critical progression transaction failed: "
                                           + progression.FailureReason);
+
+                // Persistent free/periodic systems are independent typed children.  Execute at
+                // most one transition per manager after inventory/progression settlement and
+                // before the Titan/reset boundaries.  Every manager revalidates the shared root;
+                // a Digger set change forces the upgrade decision to wait for next-second replan.
+                if (!mutationRoot.IsClosed && Autopilot.Config.ManageInventory)
+                    DaycareManager.Manage(mutationRoot);
+                if (!mutationRoot.IsClosed && Autopilot.Config.ManageBeards)
+                    BeardManager.Manage(mutationRoot);
+                if (!mutationRoot.IsClosed && Autopilot.Config.ManageDiggers)
+                {
+                    var diggerSet = DiggerManager.ManageSet(mutationRoot, Autopilot.Plan);
+                    if (diggerSet == null && !mutationRoot.IsClosed)
+                        DiggerManager.ManageUpgrade(mutationRoot, Autopilot.Plan);
+                }
+                if (!mutationRoot.IsClosed && Autopilot.Config.ManageMoneyPit)
+                    MoneyPitManager.CheckMoneyPit(mutationRoot,
+                        Autopilot.Config.MoneyPitReserve);
+                if (!mutationRoot.IsClosed && Autopilot.Config.ManageDailySpin)
+                    MoneyPitManager.DoDailySpin(mutationRoot);
+
+                if (!mutationRoot.IsClosed && Autopilot.Config.ManageBloodMagic)
+                {
+                    var permanentBlood = PermanentBloodSpellManager.Manage(mutationRoot,
+                        Character, Autopilot.Config, Autopilot.Plan);
+                    if (permanentBlood != null
+                        && (permanentBlood.Kind == MutationResultKind.RejectedUnchanged
+                            || permanentBlood.Kind == MutationResultKind.Compensated
+                            || permanentBlood.Kind == MutationResultKind.Quarantined
+                            || permanentBlood.Kind == MutationResultKind.Indeterminate
+                            || permanentBlood.Kind == MutationResultKind.CommittedWithException))
+                        transactionErrors.Add("permanent Blood spell failed: "
+                                              + permanentBlood.Reason);
+                }
+
+                // A fully funded Sadistic END-Blood cast is a unique item delivery, not an
+                // optional final-panel action.  Deliver it before Titan/reset admission so the
+                // ordinary rebirth child cannot remain held forever while preserving 5e22 Blood.
+                // The manager temporarily exempts item 494 from filters, proves ordinary-slot
+                // capacity, invokes the native cast, and commits only after observing the exact
+                // level-100 item and zero Blood pool.
+                if (!mutationRoot.IsClosed && Autopilot.Config.ManageBloodMagic
+                    && _endgameTransactions != null
+                    && Character.settings.rebirthDifficulty == difficulty.sadistic
+                    && !EndgameDependencyModel.IsOwned(Character,
+                        EndgameTransactionMechanics.EndBloodItemId)
+                    && Character.bloodMagic != null
+                    && Character.bloodMagic.bloodPoints >= MechanicsEndgame.EndBloodCost)
+                {
+                    _endgameTransactions.ObserveBloodCommitment(true);
+                    var endBlood = _endgameTransactions.TryDeliverEndBlood(mutationRoot);
+                    if (endBlood.Kind == MutationResultKind.RejectedUnchanged
+                        || endBlood.Kind == MutationResultKind.Compensated
+                        || endBlood.Kind == MutationResultKind.Quarantined
+                        || endBlood.Kind == MutationResultKind.Indeterminate
+                        || endBlood.Kind == MutationResultKind.CommittedWithException)
+                        transactionErrors.Add("END Blood item delivery failed: "
+                                              + endBlood.Reason);
+                }
+
+                if (!mutationRoot.IsClosed && _titanExecution != null && _titanRuntime != null
+                    && (Autopilot.Config.AllowTitanOneThroughTwelveExecution
+                        || Autopilot.Config.AllowTitanThirteenFourteenExecution))
+                {
+                    _titanExecution.EnableSafeT1ThroughT12Authority(
+                        Autopilot.Config.AllowTitanOneThroughTwelveExecution);
+                    _titanExecution.EnableSafeT13AndT14Authority(
+                        Autopilot.Config.AllowTitanThirteenFourteenExecution);
+                    var titan = _titanExecution.ExecuteNext(mutationRoot, _titanRuntime);
+                    if (titan.Mutation != null
+                        && (titan.Mutation.Kind == MutationResultKind.RejectedUnchanged
+                            || titan.Mutation.Kind == MutationResultKind.Compensated
+                            || titan.Mutation.Kind == MutationResultKind.Quarantined
+                            || titan.Mutation.Kind == MutationResultKind.Indeterminate
+                            || titan.Mutation.Kind == MutationResultKind.CommittedWithException))
+                        transactionErrors.Add("Titan execution failed: " + titan.Reason);
+                }
                 if (mutationRoot.IsClosed
                     || !string.Equals(mutationRoot.Token.EpochFingerprint,
                         CurrentGameEpochFingerprint, StringComparison.Ordinal))
@@ -1935,10 +2066,12 @@ namespace NGUInjector
                 //    watch.Stop();
                 //}
 
-                if (LoadoutManager.CurrentLock == LockType.Titan || Settings.SwapTitanLoadouts)
+                if ((LoadoutManager.CurrentLock == LockType.Titan || Settings.SwapTitanLoadouts)
+                    && !Autopilot.Config.AllowTitanOneThroughTwelveExecution
+                    && !Autopilot.Config.AllowTitanThirteenFourteenExecution)
                 {
                     ExecutionSafety.ReportHold("typed-intent:titan-execution",
-                        "Titan loadout/digger staging is held until TitanExecutionManager is wired to the root.");
+                        "Titan loadout/digger staging is held because typed Titan execution authority is disabled.");
                 }
 
                 if ((Settings.ManageYggdrasil || AutopilotWants(x => x.ManageYggdrasil)) && Character.buttons.yggdrasil.interactable)
@@ -1992,13 +2125,65 @@ namespace NGUInjector
                     }
                 }
 
-                // Rebirth is the final typed transaction boundary. Do not enter challenges here:
-                // their separately keyed admission remains disabled until copied-save calibration.
+                // Reset progression is the final typed boundary. The first live-capable wave owns
+                // only admission-grade Normal challenges and Normal->Evil; its deployment flags
+                // remain independently default-false. A committed epoch transition precludes an
+                // ordinary-reset child in this root.
                 if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore)
                     transactionErrors.Add("one or more native mutations were rejected during this sweep");
                 if (executionStateVersion != ExecutionSafety.StateVersion)
                     transactionErrors.Add("execution state changed during this sweep; commit lease invalidated");
                 if (transactionErrors.Count == 0 && Autopilot != null
+                    && mutationRoot != null && !mutationRoot.IsClosed
+                    && Autopilot.CanExecuteIrreversible
+                    && Autopilot.Config.AllowChallenges)
+                {
+                    var challenge = ResetProgressionTransaction.ExecuteNormalChallenge(
+                        mutationRoot, _resetProgressionRuntime, true);
+                    resetProgressionSelected = challenge.Selected;
+                    if (challenge.Mutation != null)
+                    {
+                        resetProgressionCommitted = challenge.Mutation.Kind
+                            == MutationResultKind.Committed
+                            || challenge.Mutation.Kind
+                            == MutationResultKind.CommittedWithException;
+                        if (challenge.Mutation.Kind == MutationResultKind.RejectedUnchanged
+                            || challenge.Mutation.Kind == MutationResultKind.Compensated
+                            || challenge.Mutation.Kind == MutationResultKind.Quarantined
+                            || challenge.Mutation.Kind == MutationResultKind.Indeterminate
+                            || challenge.Mutation.Kind
+                            == MutationResultKind.CommittedWithException)
+                            transactionErrors.Add("challenge reset transaction failed: "
+                                                  + challenge.Reason);
+                    }
+                }
+                if (!resetProgressionSelected && !resetProgressionCommitted
+                    && transactionErrors.Count == 0
+                    && Autopilot != null && mutationRoot != null && !mutationRoot.IsClosed
+                    && Autopilot.CanExecuteIrreversible
+                    && Autopilot.Config.AllowDifficultyExecution)
+                {
+                    var difficulty = ResetProgressionTransaction.ExecuteNormalToEvil(
+                        mutationRoot, _resetProgressionRuntime, true);
+                    if (difficulty.Mutation != null)
+                    {
+                        resetProgressionCommitted = difficulty.Mutation.Kind
+                            == MutationResultKind.Committed
+                            || difficulty.Mutation.Kind
+                            == MutationResultKind.CommittedWithException;
+                        if (difficulty.Mutation.Kind == MutationResultKind.RejectedUnchanged
+                            || difficulty.Mutation.Kind == MutationResultKind.Compensated
+                            || difficulty.Mutation.Kind == MutationResultKind.Quarantined
+                            || difficulty.Mutation.Kind == MutationResultKind.Indeterminate
+                            || difficulty.Mutation.Kind
+                            == MutationResultKind.CommittedWithException)
+                            transactionErrors.Add("difficulty reset transaction failed: "
+                                                  + difficulty.Reason);
+                    }
+                }
+                if (!resetProgressionSelected && !resetProgressionCommitted
+                    && transactionErrors.Count == 0
+                    && Autopilot != null && mutationRoot != null && !mutationRoot.IsClosed
                     && Autopilot.CanExecuteIrreversible && Autopilot.Config.AllowRebirths)
                 {
                     var rebirth = Autopilot.ExecuteOrdinaryRebirth(mutationRoot);
@@ -2007,13 +2192,14 @@ namespace NGUInjector
                         transactionErrors.Add("ordinary rebirth transaction failed: "
                                               + rebirth.Reason);
                 }
-                else if (Settings.AutoRebirth && (Autopilot == null
+                else if (!resetProgressionSelected && !resetProgressionCommitted
+                         && Settings.AutoRebirth && (Autopilot == null
                          || Autopilot.Config == null || !Autopilot.Config.AllowRebirths))
                 {
                     ExecutionSafety.ReportHold("typed-intent:legacy-rebirth",
                         "Legacy AutoRebirth is held; only the typed autopilot ordinary-reset intent may execute.");
                 }
-                if (!ordinaryRebirthCommitted)
+                if (!ordinaryRebirthCommitted && !resetProgressionCommitted)
                 {
                     if (System.Threading.Interlocked.Read(ref _rejectionEpoch) != rejectionEpochBefore
                         && transactionErrors.Count == 0)
@@ -2033,6 +2219,7 @@ namespace NGUInjector
             }
             finally
             {
+                _activeTitanRoot = null;
                 if (mutationRoot != null)
                 {
                     var epochChanged = !string.Equals(mutationRoot.Token.EpochFingerprint,

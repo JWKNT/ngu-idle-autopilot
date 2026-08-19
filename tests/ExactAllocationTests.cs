@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using NGUInjector.Autopilot;
 
 /*
@@ -19,8 +21,109 @@ internal static class ExactAllocationTests
         if (!condition) throw new Exception(message);
     }
 
+    private static ExactAllocationVector Vector(ExactResourceKind resource, long capacity,
+        long idle, params long[] targets)
+    {
+        var values = new Dictionary<string, long>();
+        for (var i = 0; i < targets.Length; i++) values["target." + i] = targets[i];
+        return new ExactAllocationVector(resource, capacity, idle, values);
+    }
+
+    private static void TestSealedFullTargetSettlement()
+    {
+        var before = Vector(ExactResourceKind.Energy, 100, 20, 30, 50);
+        var requested = Vector(ExactResourceKind.Energy, 100, 10, 40, 50);
+        var settlement = new ExactAllocationSettlement(before, requested);
+        string reason;
+        Assert(settlement.IsAdmissible(out reason),
+            "complete conserved before/requested-after vectors are admissible");
+        Assert(settlement.VerifyAcceptedNativeState(
+                Vector(ExactResourceKind.Energy, 100, 10, 40, 50), out reason),
+            "accepted native vector must equal every sealed target");
+        Assert(!settlement.VerifyAcceptedNativeState(
+                Vector(ExactResourceKind.Energy, 100, 10, 39, 51), out reason)
+               && reason.Contains("differs"),
+            "same capacity and idle cannot hide a misrouted target allocation");
+
+        var omitted = new ExactAllocationSettlement(
+            Vector(ExactResourceKind.Magic, 100, 20, 30, 49),
+            Vector(ExactResourceKind.Magic, 100, 20, 30, 50));
+        Assert(!omitted.IsAdmissible(out reason) && reason.Contains("before-state"),
+            "a missing before-state allocation fails conservation");
+        var overdrawn = new ExactAllocationSettlement(
+            Vector(ExactResourceKind.Resource3, 100, 50, 25, 25),
+            Vector(ExactResourceKind.Resource3, 100, 0, 60, 50));
+        Assert(!overdrawn.IsAdmissible(out reason) && reason.Contains("requested-after"),
+            "an overdrawn requested-after vector fails conservation");
+
+        var changedSchema = new ExactAllocationVector(ExactResourceKind.Energy, 100, 10,
+            new Dictionary<string, long> {{"target.0", 40}, {"replacement", 50}});
+        Assert(!new ExactAllocationSettlement(before, changedSchema).IsAdmissible(out reason)
+               && reason.Contains("schema"),
+            "target schema cannot change within one allocation transaction");
+        Assert(!new ExactAllocationSettlement(before,
+                Vector(ExactResourceKind.Energy, 101, 11, 40, 50)).IsAdmissible(out reason)
+               && reason.Contains("capacity"),
+            "capacity mutation cannot settle as resource allocation");
+        Assert(requested.Keys().SequenceEqual(new[] {"target.0", "target.1"}),
+            "target keys are stable and sorted for deterministic receipts");
+    }
+
+    private static void TestNoCurrencyIdleFallback()
+    {
+        Assert(ExactResourceAllocator.SelectNoCurrencyFallback(true, true,
+                   true, true, true, false) == NoCurrencyFallbackKind.Ngu,
+            "an unlocked persistent NGU must outrank the reset-local Wandoos fallback");
+        Assert(ExactResourceAllocator.SelectNoCurrencyFallback(false, false,
+                   true, true, true, false) == NoCurrencyFallbackKind.Wandoos,
+            "active installed Wandoos must absorb a remainder when NGU is unavailable");
+        Assert(ExactResourceAllocator.SelectNoCurrencyFallback(false, false,
+                   true, false, true, false) == NoCurrencyFallbackKind.None,
+            "an uninstalled Wandoos bar is not a live fallback sink");
+        Assert(ExactResourceAllocator.SelectNoCurrencyFallback(false, false,
+                   true, true, false, false) == NoCurrencyFallbackKind.None,
+            "a disabled Wandoos feature is not an active fallback sink");
+        Assert(ExactResourceAllocator.SelectNoCurrencyFallback(false, false,
+                   true, true, true, true) == NoCurrencyFallbackKind.None,
+            "a challenge-disabled Wandoos bar is not a fallback sink");
+    }
+
+    private static void TestResource3FallbackSourceContract()
+    {
+        var source = File.ReadAllText("source/AllocationProfiles/CustomAllocation.cs");
+        var r3Method = source.IndexOf("public override void AllocateR3()",
+            StringComparison.Ordinal);
+        var valuedSweep = source.IndexOf("foreach (var prio in temp)",
+            r3Method, StringComparison.Ordinal);
+        var fallback = source.IndexOf("AllocateR3NoCurrencyFallback(",
+            valuedSweep, StringComparison.Ordinal);
+        Assert(r3Method >= 0 && valuedSweep > r3Method && fallback > valuedSweep,
+            "Resource 3 fallback must run only after valued Hack/Wish priorities");
+        Assert(source.IndexOf("_character.hacksController.addR3(hackId, before)",
+                   fallback, StringComparison.Ordinal) > fallback
+               && source.IndexOf("_character.wishesController.addRes3(wishId)",
+                   fallback, StringComparison.Ordinal) > fallback,
+            "Resource 3 fallback must use only the native Hack/Wish add controllers");
+        Assert(source.IndexOf("TryObservedAcceptance(before,",
+                   fallback, StringComparison.Ordinal) > fallback
+               && source.IndexOf("_character.res3.idleRes3, before, out accepted)",
+                   fallback, StringComparison.Ordinal) > fallback,
+            "Resource 3 fallback must report only observed accepted idle-pool deltas");
+        Assert(source.IndexOf("idle-topology-blocker=", valuedSweep,
+                   StringComparison.Ordinal) > fallback
+               && source.IndexOf("DescribeR3NoCurrencyFallback", fallback,
+                   StringComparison.Ordinal) > fallback,
+            "Resource 3 fallback must expose an exact live-topology blocker when idle remains");
+        Assert(source.IndexOf("_character.hacks.hacks[hackId].res3 =",
+                   fallback, StringComparison.Ordinal) < 0
+               && source.IndexOf("_character.wishes.wishes[wishId].res3 =",
+                   fallback, StringComparison.Ordinal) < 0,
+            "Resource 3 fallback must never rewrite native allocation fields directly");
+    }
+
     public static int Main()
     {
+        TestResource3FallbackSourceContract();
         var values = new[] {1L << 24, 1L << 53, 1000000000000000000L,
             9000000000000000000L, 8999999999999999999L, long.MaxValue - 1L};
         foreach (var value in values)
@@ -111,6 +214,9 @@ internal static class ExactAllocationTests
         for (var i = 1; i < order.Length; i++)
             Assert(ExactResourceAllocator.IsValidPhaseTransition(order[i - 1], order[i]),
                 "allocation phase order skipped a safety boundary");
+
+        TestSealedFullTargetSettlement();
+        TestNoCurrencyIdleFallback();
 
         Console.WriteLine("Exact allocation assertions passed: " + _assertions);
         return 0;

@@ -476,9 +476,7 @@ namespace NGUInjector.Autopilot
                            || config.AllowCardYeeting;
                 case MutationClass.Rebirth: return config.AllowRebirths;
                 case MutationClass.Challenge: return config.AllowChallenges;
-                // Difficulty authority is introduced by the dedicated transition executor. Until
-                // its independently configured gate is integrated, new intents remain fail-closed.
-                case MutationClass.Difficulty: return false;
+                case MutationClass.Difficulty: return config.AllowDifficultyExecution;
                 case MutationClass.EndSequence: return config.AllowEndSequence;
                 case MutationClass.SaveLoad: return false;
                 default: return false;

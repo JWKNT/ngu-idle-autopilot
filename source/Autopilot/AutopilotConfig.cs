@@ -49,8 +49,8 @@ namespace NGUInjector.Autopilot
         public bool AllowEndSequence = false;
 
         // Staged authority ceiling. These flags document the deployment boundary as data. Ordinary
-        // rebirth is separately admitted by its typed preview/reset transaction; challenge and
-        // difficulty authority remain independent and fail-closed.
+        // rebirth and the narrow typed Normal-challenge wave are separately admitted by exact
+        // preview/reset transactions; difficulty authority remains independent and fail-closed.
         public bool AllowVerifiedReversibleActions = true;
         public bool AllowGlobalSchedulerExecution = false;
         public bool AllowPermanentPurchaseExecution = false;
@@ -92,16 +92,22 @@ namespace NGUInjector.Autopilot
             // invocation plus exact debit/effect settlement. Preserve the operator's explicit
             // AllowExpSpending choice and publish that same authority to the staged plan.
             config.AllowApSpending = false;
-            config.AllowPerkSpending = false;
+            // PerkPurchaseIntent now owns one native perk level per root and proves the exact
+            // PP debit, level transition, and terminal item delivery. Preserve the operator's
+            // explicit choice instead of silently narrowing it at deployment.
             config.AllowQuirkSpending = false;
-            config.AllowChallenges = false;
+            // ResetProgressionTransaction is the sole challenge-entry writer. Preserve the
+            // operator's explicit choice; the planner still admits only the audited Normal subset,
+            // and every entry repeats Titan/fruit/Blood/root/native postcondition gates.
             config.AllowEndSequence = false;
-            config.ManageMoneyPit = false;
             config.AllowGlobalSchedulerExecution = false;
             config.AllowPermanentPurchaseExecution = config.AllowExpSpending;
-            config.AllowMoneyPitExecution = false;
+            // Money Pit has a typed all-Gold transaction, chronological hard-spend ledger, exact
+            // delivery preflight, and exact debit/tier postconditions. Preserve its separate
+            // explicit irreversible flag instead of erasing both policy and manager ownership.
             config.AllowDifficultyExecution = false;
-            config.AllowTitanOneThroughTwelveExecution = false;
+            // T1-T12 now execute one build-pinned, epoch-bound native frame at a time and prove
+            // selected-version Bestiary plus full clock-reset deltas. Preserve explicit authority.
             config.AllowTitanThirteenFourteenExecution = false;
             config.AllowMove69Execution = false;
             return config;

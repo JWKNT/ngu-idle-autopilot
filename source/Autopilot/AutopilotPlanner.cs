@@ -99,11 +99,13 @@ namespace NGUInjector.Autopilot
         Early Normal already has a one-second source-derived optimizer. Later stages previously
         promoted human-friendly chapter clocks to policy. Keep those clocks as priors, enumerate
         the live native event queue, and publish both winner and runner-up. Puzzle targets remain
-        locked because their legal window is not an exchangeable utility preference.
+        locked because their legal window is not an exchangeable utility preference. An active
+        challenge still receives this ordinary checkpoint: its own policy then accepts it, delays
+        it for Troll/Laser timing, or rejects it only for the actual No-Rebirth rule.
         */
         private static void ApplyProgressionCheckpoint(Character c, AutopilotPlan plan)
         {
-            if (c == null || plan == null || plan.RebirthTargetLocked || c.challenges.inChallenge)
+            if (c == null || plan == null || plan.RebirthTargetLocked)
                 return;
             var earlyNormal = c.settings.rebirthDifficulty == difficulty.normal
                               && !(c.inventory.itemList.numberComplete || c.settings.nguOn);
@@ -406,6 +408,9 @@ namespace NGUInjector.Autopilot
             if (next == null) return;
             plan.ChallengeAdmitted = true;
             plan.ChallengeName = next.ProfileCode;
+            plan.ChallengeAllowsRebirth = ChallengeStrategyPlanner.AllowsOrdinaryRebirth(next.Type);
+            plan.ChallengeRulesSummary = ChallengeStrategyPlanner.RulesSummary(next.Type);
+            plan.ChallengeRebirthPolicy = "Not active; entry still requires its exact opportunity proof.";
             plan.ChallengeClearEtaSeconds = (int)Math.Ceiling(next.PessimisticClearSeconds);
             plan.ChallengeRecoveryEtaSeconds = (int)Math.Ceiling(next.RecoverySeconds);
             plan.ChallengeTargetBoss = next.TargetBoss < 0 ? -1 : next.TargetBoss + 1;
@@ -418,7 +423,10 @@ namespace NGUInjector.Autopilot
         private static void ApplyActiveChallengePlan(Character c, AutopilotPlan plan)
         {
             if (!c.challenges.inChallenge) return;
-            var active = ChallengeStrategyPlanner.ActivePolicy(c);
+            // The base stage has already selected an exact ordinary-rebirth checkpoint.  Passing
+            // it into the active challenge policy is essential: omitting it made every challenge,
+            // including unrestricted Basic, look like a native no-reset mode.
+            var active = ChallengeStrategyPlanner.ActivePolicy(c, null, plan.RebirthSeconds);
             if (active == null) return;
             plan.Challenges.Clear();
             plan.Stage += " / active challenge";
@@ -426,11 +434,16 @@ namespace NGUInjector.Autopilot
             plan.ChallengeActive = true;
             plan.ChallengeAdmitted = false;
             plan.ChallengeName = active.Code;
+            plan.ChallengeAllowsRebirth = active.MechanicallyAllowsRebirth;
+            plan.ChallengeRulesSummary = active.RulesSummary;
+            plan.ChallengeRebirthPolicy = active.RebirthPolicySummary;
             plan.ChallengeTargetBoss = active.TargetBoss < 0 ? -1 : active.TargetBoss + 1;
             plan.ChallengeTargetLevel = active.TargetLevel;
             plan.ChallengeClearEtaSeconds = active.EtaSeconds;
             plan.ChallengeEtaReason = active.EtaReason;
-            plan.ChallengeEvidenceSummary = active.Code + " active: " + active.EtaReason;
+            plan.ChallengeEvidenceSummary = active.Code + " active. " + active.RulesSummary
+                                            + " " + active.RebirthPolicySummary
+                                            + " Clear estimate: " + active.EtaReason;
             plan.Energy.Clear();
             plan.Magic.Clear();
             plan.R3.Clear();
@@ -651,7 +664,11 @@ namespace NGUInjector.Autopilot
                     && !value.StartsWith("CAPWAN", StringComparison.OrdinalIgnoreCase))
                     continue;
                 var fraction = 1.0;
-                var split = value.Split(':');
+                // Unity's installed mscorlib does not expose the newer
+                // String.Split(char, StringSplitOptions) overload selected by the build-time
+                // compiler for a scalar char. Use the legacy char[] overload explicitly so the
+                // Wandoos projection runs on the same framework surface as the game.
+                var split = value.Split(new[] {':'}, StringSplitOptions.None);
                 int percent;
                 if (split.Length > 1 && int.TryParse(split[1], out percent))
                     fraction = Math.Max(0.0, Math.Min(1.0, percent / 100.0));

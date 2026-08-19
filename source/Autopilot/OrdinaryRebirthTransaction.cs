@@ -12,22 +12,27 @@ into an executable transaction without granting challenge or difficulty authorit
 
 Mechanism: A pure admission gate first refuses work that is not due. A build-pinned preview child
 then invokes calculateTimeMulti and calculateNextMultis in native order and proves every formula
-input remained stable. The reset child recaptures the live state, repeats the complete policy gate,
-invokes ordinary Rebirth.engage, verifies the exact +1/timer/Number/Boss/Titan transform, and closes
-the old game epoch synchronously.
+input remained stable. After recovery/value admission, a typed Blood sibling converts the exact
+remaining pool into rebirth power and forces a second native preview. The reset child recaptures the
+live state, repeats the complete policy gate, invokes ordinary Rebirth.engage, verifies the exact
++1/timer/Number/Boss/Titan transform, and closes the old game epoch synchronously.
 
 Inputs and outputs: Inputs are the current Character, immutable Autopilot plan/config, and the
 caller-owned RootTransaction. Outputs are a typed OrdinaryRebirthExecutionOutcome and the two root
-journal entries when a due reset is attempted.
+preview/reset entries, plus Blood and refreshed-preview entries when the boundary pool is nonzero.
 
 Invariants and safety: A future/held/non-positive reset creates no child and cannot dirty the root.
-Challenge selection, difficulty changes, harvests, Blood spending, Titan fights, and loadout changes
-are never hidden inside this transaction. Unknown bindings, stale preview state, a native no-op, or
-a partial reset fail closed; partial reset state quarantines the game epoch.
+Challenge selection, difficulty changes, harvests, Titan fights, and loadout changes are never hidden
+inside this transaction. Boundary Blood is its own journaled child and cannot run before recovery
+policy admission or consume a fully-funded END delivery. Unknown bindings, stale preview state, a
+native no-op, or a partial reset fail closed; partial reset state quarantines the game epoch. When
+typed Titan authority is enabled, its live reset interlock is authoritative and its exact hold reason
+is propagated; otherwise the legacy boundary remains viability-aware rather than blocking an
+unfightable merely-due Titan.
 
-Extension points and non-goals: Typed pre-rebirth Blood/Ygg/Titan actions can become earlier sibling
-intents later. Until then their live pending state is an explicit reset blocker. This file does not
-plan reset times, enter challenges, or mutate allocation profiles.
+Extension points and non-goals: Typed Ygg/Titan actions remain earlier sibling intents. Their live
+pending state is an explicit reset blocker. This file does not plan reset times, enter challenges,
+or mutate allocation profiles.
 */
 namespace NGUInjector.Autopilot
 {
@@ -47,6 +52,7 @@ namespace NGUInjector.Autopilot
         internal bool NoRebirthChallenge;
         internal bool DifficultySelectorClear;
         internal bool TitanBoundaryClear;
+        internal string TitanBoundaryReason = string.Empty;
         internal bool HarvestBoundaryClear;
         internal bool BloodBoundaryClear;
         internal bool GrbWindowClear;
@@ -90,7 +96,9 @@ namespace NGUInjector.Autopilot
             if (!input.DifficultySelectorClear)
                 return Hold("a pending difficulty selector cannot be consumed by ordinary rebirth");
             if (!input.TitanBoundaryClear)
-                return Hold("a ready/active Titan boundary must be resolved before reset");
+                return Hold(string.IsNullOrEmpty(input.TitanBoundaryReason)
+                    ? "a ready/active Titan boundary must be resolved before reset"
+                    : input.TitanBoundaryReason);
             if (!input.HarvestBoundaryClear)
                 return Hold("a mature fruit must be handled by its typed transaction before reset");
             if (!input.BloodBoundaryClear)
@@ -137,7 +145,12 @@ namespace NGUInjector.Autopilot
         internal static OrdinaryRebirthExecutionOutcome Execute(RootTransaction root,
             Character character, AutopilotPlan plan, AutopilotConfig config)
         {
-            var initial = EvaluateLive(character, plan, config, false);
+            // Blood is a reset-local currency.  Admit a due boundary far enough to spend it through
+            // its own typed child, then repeat the complete gate with Blood required to be zero.
+            // Without this sibling transaction the allocator can create Blood forever while the
+            // reset gate waits forever for an external consumer that no longer has a live caller.
+            var canConsumeBlood = CanConsumeBoundaryBlood(character, config);
+            var initial = EvaluateLive(character, plan, config, false, canConsumeBlood);
             if (!initial.Ready)
                 return new OrdinaryRebirthExecutionOutcome {Reason = initial.Reason};
             if (root == null || root.IsClosed)
@@ -147,6 +160,39 @@ namespace NGUInjector.Autopilot
             if (preview.Kind != MutationResultKind.Committed
                 && preview.Kind != MutationResultKind.NoOpVerified)
                 return Failed("rebirth preview transaction did not commit: " + preview.Reason);
+
+            // Do not consume Blood merely because the wall-clock checkpoint is due.  First prove
+            // the same recovery/value policy used by the final irreversible gate, with pending
+            // Blood as the only temporarily waived boundary fact.
+            var preBloodPolicy = EvaluateLive(character, plan, config, true, canConsumeBlood);
+            if (!preBloodPolicy.Ready)
+            {
+                ExecutionSafety.ReportHold("ordinary-rebirth-policy-preflight",
+                    preBloodPolicy.Reason);
+                return new OrdinaryRebirthExecutionOutcome
+                {
+                    Attempted = true,
+                    Reason = preBloodPolicy.Reason
+                };
+            }
+
+            if (canConsumeBlood)
+            {
+                var blood = root.ExecuteChild(new RebirthBloodSpendIntent(character));
+                if (blood.Kind != MutationResultKind.Committed
+                    && blood.Kind != MutationResultKind.NoOpVerified)
+                    return Failed("pre-rebirth Blood transaction did not commit: " + blood.Reason);
+                if (blood.Kind == MutationResultKind.Committed)
+                    Main.LogAction("BLOOD",
+                        "Spent the exact remaining Blood pool on the NUMBER spell at the selected rebirth boundary [typed debit and rebirth-power delta confirmed]");
+
+                // The NUMBER spell changes rebirthPower, one of calculateNextMultis' exact inputs.
+                // Refresh both native preview stages again before final admission.
+                preview = root.ExecuteChild(new RebirthPreviewIntent(character));
+                if (preview.Kind != MutationResultKind.Committed
+                    && preview.Kind != MutationResultKind.NoOpVerified)
+                    return Failed("post-Blood rebirth preview did not commit: " + preview.Reason);
+            }
 
             var final = EvaluateLive(character, plan, config, true);
             if (!final.Ready)
@@ -184,6 +230,15 @@ namespace NGUInjector.Autopilot
         internal static OrdinaryRebirthGateResult EvaluateLive(Character c,
             AutopilotPlan plan, AutopilotConfig config, bool requirePreview)
         {
+            return EvaluateLive(c, plan, config, requirePreview, false);
+        }
+
+        private static OrdinaryRebirthGateResult EvaluateLive(Character c,
+            AutopilotPlan plan, AutopilotConfig config, bool requirePreview,
+            bool permitPendingBoundaryBlood)
+        {
+            string titanBoundaryReason;
+            var titanBoundaryClear = TitanBoundaryClear(c, out titanBoundaryReason);
             var input = new OrdinaryRebirthGateInput
             {
                 Authority = config != null && config.AllowRebirths,
@@ -206,9 +261,11 @@ namespace NGUInjector.Autopilot
                 DifficultySelectorClear = c != null && c.settings != null
                                           && c.settings.rebirthDifficulty
                                           == c.nextRebirthDifficulty,
-                TitanBoundaryClear = TitanBoundaryClear(c),
+                TitanBoundaryClear = titanBoundaryClear,
+                TitanBoundaryReason = titanBoundaryReason,
                 HarvestBoundaryClear = HarvestBoundaryClear(c, config),
-                BloodBoundaryClear = BloodBoundaryClear(c, config),
+                BloodBoundaryClear = permitPendingBoundaryBlood
+                                     || BloodBoundaryClear(c, config),
                 GrbWindowClear = GrbWindowClear(c, plan),
                 ImminentBossClear = ImminentBossClear(c),
                 RequirePreview = requirePreview,
@@ -231,6 +288,9 @@ namespace NGUInjector.Autopilot
                                 && NearlyEqual(c.timeMulti, expectedTime);
             var score = plan.RebirthTargetLocked
                 ? double.MaxValue : plan.RebirthSelectedScorePerHour;
+            var recoveryMode = plan.RebirthRecoveryMode;
+            var resetRouteEtaSeconds = plan.RebirthRecoveryEtaSeconds;
+            var continueRouteEtaSeconds = -1;
             var liveDue = true;
             if (!plan.RebirthTargetLocked)
             {
@@ -241,6 +301,8 @@ namespace NGUInjector.Autopilot
                     var live = RebirthOptimizer.EarlyNormal(c);
                     liveDue = !live.ExecutionHold && live.TargetSeconds <= elapsed;
                     score = live.SelectedScorePerHour;
+                    recoveryMode = live.RecoveryMode;
+                    resetRouteEtaSeconds = live.RecoveryEtaSeconds;
                 }
                 else
                 {
@@ -255,7 +317,8 @@ namespace NGUInjector.Autopilot
                 c.defenseMulti > 0.0
                     ? c.nextDefenseMulti / c.defenseMulti : 0.0);
             var decision = RebirthOptimizer.EvaluateMutationPolicy(score,
-                finitePreview && liveDue, ratio, false, -1, -1);
+                finitePreview && liveDue, ratio, recoveryMode, resetRouteEtaSeconds,
+                continueRouteEtaSeconds);
             input.PreviewValid = finitePreview && liveDue;
             input.PolicyAuthorized = decision.Authorized;
             input.PolicyReason = decision.Reason;
@@ -271,17 +334,35 @@ namespace NGUInjector.Autopilot
             catch { return double.NaN; }
         }
 
-        private static bool TitanBoundaryClear(Character c)
+        private static bool TitanBoundaryClear(Character c, out string reason)
         {
+            TitanResetInterlock interlock;
+            if (Main.TryGetTitanResetInterlock(out interlock))
+            {
+                if (interlock == null)
+                {
+                    reason = "typed Titan reset interlock returned no state";
+                    return false;
+                }
+                reason = interlock.Reason;
+                return !interlock.HoldReset;
+            }
             try
             {
-                return c != null && ZoneHelpers.HighestAvailableTitan() < 0
-                       && !(ZoneHelpers.ZoneIsTitan(c.adventure.zone)
-                            && c.adventureController != null
-                            && (c.adventureController.currentEnemy != null
-                                || c.adventureController.fightInProgress));
+                var clear = c != null && ZoneHelpers.HighestAvailableTitan() < 0
+                            && !(ZoneHelpers.ZoneIsTitan(c.adventure.zone)
+                                 && c.adventureController != null
+                                 && (c.adventureController.currentEnemy != null
+                                     || c.adventureController.fightInProgress));
+                reason = clear ? "legacy viability-aware Titan boundary is clear"
+                    : "a source-proven executable/active Titan boundary must be resolved before reset";
+                return clear;
             }
-            catch { return false; }
+            catch
+            {
+                reason = "legacy Titan boundary capture failed";
+                return false;
+            }
         }
 
         private static bool HarvestBoundaryClear(Character c, AutopilotConfig config)
@@ -297,6 +378,15 @@ namespace NGUInjector.Autopilot
             return c != null && config != null
                    && (!config.ManageBloodMagic || c.bloodMagic != null
                        && c.bloodMagic.bloodPoints <= 0.0);
+        }
+
+        private static bool CanConsumeBoundaryBlood(Character c, AutopilotConfig config)
+        {
+            return c != null && config != null && config.ManageBloodMagic
+                   && c.bloodMagic != null && c.bloodSpells != null
+                   && c.bloodMagic.bloodPoints > 0.0
+                   && !double.IsNaN(c.bloodMagic.bloodPoints)
+                   && !double.IsInfinity(c.bloodMagic.bloodPoints);
         }
 
         private static bool GrbWindowClear(Character c, AutopilotPlan plan)
@@ -326,6 +416,123 @@ namespace NGUInjector.Autopilot
                 || double.IsInfinity(left) || double.IsInfinity(right)) return false;
             return Math.Abs(left - right) <= Math.Max(1e-12,
                 Math.Max(Math.Abs(left), Math.Abs(right)) * 2e-7);
+        }
+    }
+
+    internal sealed class RebirthBloodSpendState
+    {
+        internal double Blood;
+        internal double RebirthPower;
+    }
+
+    internal sealed class RebirthBloodSpendIntent :
+        IMutationIntent<RebirthBloodSpendState, bool, RebirthBloodSpendState>
+    {
+        private readonly Character _character;
+
+        internal RebirthBloodSpendIntent(Character character)
+        {
+            _character = character;
+        }
+
+        public string Id { get { return "ordinary-rebirth.blood-number"; } }
+        public MutationClass Class { get { return MutationClass.BloodMagic; } }
+        public MutationRisk Risk { get { return MutationRisk.FiniteResource; } }
+        public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
+        public string BindingId
+        {
+            get { return "RebirthPowerSpell.castRebirthSpell(double)/public-exact"; }
+        }
+        public bool Required { get { return true; } }
+        public bool CanCompensate { get { return false; } }
+        public bool CreatesNewEpoch { get { return false; } }
+        public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
+
+        public RebirthBloodSpendState CaptureBefore(MutationContext context)
+        {
+            return Capture();
+        }
+
+        public PreconditionResult CheckPreconditions(MutationContext context,
+            RebirthBloodSpendState before)
+        {
+            if (_character == null || _character.bloodMagic == null
+                || _character.bloodSpells == null)
+                return PreconditionResult.Hold("Blood spell controller state is unavailable.");
+            if (before == null || before.Blood <= 0.0 || double.IsNaN(before.Blood)
+                || double.IsInfinity(before.Blood))
+                return PreconditionResult.Hold("Remaining Blood is not finite positive state.");
+            // Item 494 is a terminal dependency and castEndSpell drains the whole pool.  Never
+            // destroy a fully-funded delivery merely to make an ordinary reset executable.
+            if (_character.settings.rebirthDifficulty == difficulty.sadistic
+                && !EndgameDependencyModel.IsOwned(_character,
+                    EndgameTransactionMechanics.EndBloodItemId)
+                && before.Blood >= MechanicsEndgame.EndBloodCost)
+                return PreconditionResult.Hold(
+                    "A fully-funded END Blood delivery must run before the NUMBER spell.");
+            return PreconditionResult.Ready();
+        }
+
+        public bool Apply(MutationContext context, RootTransactionToken token,
+            RebirthBloodSpendState before)
+        {
+            _character.bloodSpells.castRebirthSpell(before.Blood);
+            return true;
+        }
+
+        public VerificationResult<RebirthBloodSpendState> Verify(MutationContext context,
+            RebirthBloodSpendState before, MutationApplyObservation<bool> apply)
+        {
+            var after = Capture();
+            var expectedPower = before.RebirthPower + before.Blood;
+            return apply.ReturnedNormally && apply.Value && after.Blood == 0.0
+                   && after.RebirthPower == expectedPower
+                ? VerificationResult<RebirthBloodSpendState>.Satisfied(after,
+                    "Exact full-pool Blood debit became exact rebirth power.")
+                : VerificationResult<RebirthBloodSpendState>.Failed(
+                    "Blood debit or rebirth-power credit did not match the native full-pool transform.");
+        }
+
+        public CompensationResult Compensate(MutationContext context, RecoveryToken token,
+            RebirthBloodSpendState before, MutationApplyObservation<bool> apply)
+        {
+            return CompensationResult.NotSupported(
+                "The native NUMBER spell has no safe inverse after Blood is consumed.");
+        }
+
+        public bool BeforeStateMatches(RebirthBloodSpendState expected,
+            RebirthBloodSpendState observed)
+        {
+            return expected != null && observed != null && expected.Blood == observed.Blood
+                   && expected.RebirthPower == observed.RebirthPower;
+        }
+
+        public string FingerprintBefore(RebirthBloodSpendState state)
+        {
+            return Fingerprint(state);
+        }
+
+        public string FingerprintAfter(RebirthBloodSpendState state)
+        {
+            return Fingerprint(state);
+        }
+
+        private RebirthBloodSpendState Capture()
+        {
+            if (_character == null || _character.bloodMagic == null)
+                throw new InvalidOperationException("Blood spell state is unavailable.");
+            return new RebirthBloodSpendState
+            {
+                Blood = _character.bloodMagic.bloodPoints,
+                RebirthPower = _character.bloodMagic.rebirthPower
+            };
+        }
+
+        private static string Fingerprint(RebirthBloodSpendState state)
+        {
+            return state == null ? "missing" : "blood=" + state.Blood.ToString("R",
+                CultureInfo.InvariantCulture) + ";power=" + state.RebirthPower.ToString("R",
+                CultureInfo.InvariantCulture);
         }
     }
 
