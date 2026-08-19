@@ -227,6 +227,13 @@ internal static class ItopodPerkTests
                && optionalUnknown.Reason.Contains("optional collection"),
             "unknown optional-item time loses to exact steady ITOPOD perk progress");
 
+        var optionalProbe = ItopodPerkPlanner.ChooseAdventureRoute(4, 4, 2.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 1.6, false, false, -1, 0, -1, -1, .0001, true, true);
+        Assert(optionalProbe.Choice == AdventureRouteChoice.CollectionFarm
+               && optionalProbe.Reason.Contains("one easy source-zone kill"),
+            "an exact-law optional item may spend one cheap kill measuring its current cadence");
+
         var optionalFast = ItopodPerkPlanner.ChooseAdventureRoute(4, 4, 2.0,
             0L, 0L, 1L, .10, true, false, false,
             10.0, 1.6, false, false, -1, 0, -1, -1, .0001, true);
@@ -307,6 +314,8 @@ internal static class ItopodPerkTests
         var baseCapability = new ItopodTrialCapability(700.0, 650.0,
             2000.0, 1.5, .8, 3.0);
         var trial = new ItopodClimbTrialController();
+        Assert(ItopodClimbTrialController.FailureStreakLimit == 3,
+            "three exact-floor failures open the live climb breaker");
         var open = trial.Decide(40, 1600, baseCapability);
         Assert(open.ShouldClimb && open.TargetRecord == 50,
             "record forty opens a direct empirical push to the next valuable decade, floor fifty");
@@ -319,12 +328,13 @@ internal static class ItopodPerkTests
             // floor 49 itself became viable and therefore must not clear its death streak.
             trial.Observe(39, false, baseCapability);
             if (failure == ItopodClimbTrialController.FailureStreakLimit)
-                Assert(blockedNow, "eight confirmed deaths on the same deep floor open the farm breaker");
+                Assert(blockedNow, "three confirmed deaths on the same deep floor open the farm breaker");
         }
         var held = trial.Decide(40, 1600, baseCapability);
         Assert(!held.ShouldClimb && held.BlockedFloor == 49
                && held.ConsecutiveFailures == ItopodClimbTrialController.FailureStreakLimit
-               && trial.ObservedFailureFloor == 49,
+               && trial.ObservedFailureFloor == 49
+               && trial.HighestObservedClearFloor == 39,
             "the blocked route farms while preserving the exact failed floor and evidence count");
 
         var tooSmall = new ItopodTrialCapability(700.0, 650.0,
@@ -688,6 +698,13 @@ internal static class ItopodPerkTests
                && combatManager.Contains("if (CastHyperRegen()) return;")
                && manager.Contains("\\\"itopodRequiresFullHpOnEntry\\\": true"),
             "manual and idle ITOPOD retries hold Safe Zone for full HP and publish that exact policy");
+        Assert(combatManager.Contains("_forceFullRecoveryAfterFailure")
+               && combatManager.Contains("NeedsFullFailureRecovery()")
+               && combatManager.Contains("Recovering to full Adventure HP after a failed Adventure attempt")
+               && combatManager.Contains("if (playerDied)")
+               && combatManager.Contains("Recovering to full Adventure HP after a failed ITOPOD attempt")
+               && combatManager.Contains("native zero-delay ITOPOD respawn"),
+            "a defeat or no-progress failure exits ITOPOD and holds every next route until full HP");
         var loadout = File.ReadAllText("source/Managers/ProgressionLoadoutOptimizer.cs");
         Assert(loadout.Contains("if (itopodObjective)")
                && loadout.Contains("if (_leaseKind != \"itopod\") ClearObjectiveLease();")
@@ -717,6 +734,8 @@ internal static class ItopodPerkTests
                && zones.Contains("ItopodTrials.Decide(highest, maxFloor")
                && zones.Contains("trialDecision.TargetRecord")
                && zones.Contains("var farm = Math.Max(0, Math.Min(reachable, highest - 1))")
+               && zones.Contains("ItopodTrials.HighestObservedClearFloor")
+               && zones.Contains("trialDecision.BlockedFloor - 1")
                && manager.Contains("var valuedItopodReach = route.Climbing")
                && manager.Contains("valuedItopodReach,")
                && manager.Contains("route.TargetKillSeconds")
@@ -730,7 +749,7 @@ internal static class ItopodPerkTests
                && manager.Contains("\\\"itopodFailureFloor\\\"")
                && manager.Contains("\\\"itopodBlockedFloor\\\"")
                && manager.Contains("\\\"itopodEmpiricalTrial\\\""),
-            "open pushes value the next decade while telemetry keeps farm, diagnostic, and breaker state separate");
+            "open pushes value the next decade, then a blocked push farms a lower proven clear while telemetry keeps estimates separate");
         Assert(combatManager.Contains("_fightItopodFloor = zone >= 1000")
                && combatManager.Contains("ZoneHelpers.RecordItopodFightResult(_fightItopodFloor, died)")
                && zones.Contains("ItopodTrials.Observe(foughtFloor, died")

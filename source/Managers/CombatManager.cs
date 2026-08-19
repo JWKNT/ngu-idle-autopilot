@@ -13,7 +13,8 @@ FILE PURPOSE
 
 Purpose: CombatManager executes Adventure movement and source-backed tactical action state through
 native controllers. It owns manual/idle selection, Walderp response windows, reactive defense,
-terminal-Titan first-action reservation, observed fight timing, and confirmed fight reconciliation.
+terminal-Titan first-action reservation, observed fight timing, route/equipment-bound collection cadence,
+and confirmed fight reconciliation.
 
 Mechanism: Zone policy arrives from AutopilotManager. This manager classifies an objective enemy
 through TitanMechanics, performs at most one zone transition per policy pass, selects only currently
@@ -28,10 +29,13 @@ loadout-lock completion signals.
 
 ITOPOD is a continuous native floor state: ordinary recovery never exits it because re-entry resets
 the ten-kill counter. Enemy-free floor boundaries may spend ready Heal/Hyper Regen moves in place.
-After native defeat has already forced Safe Zone, every manual or idle ITOPOD entry waits for full
-Adventure HP and may use a ready Heal/Hyper Regen move before retrying the saved range.
+Native ITOPOD death actually keeps zone 1000 selected, resets the range, and leaves HP at zero; the
+manager therefore detects the confirmed defeat, explicitly exits once, and holds a full-HP recovery
+lease in Safe Zone before any retry. The same lease applies after every confirmed manual Adventure
+defeat, independent of the next route's ordinary recovery threshold.
 An open-ended record attempt also exits when enemy HP has made no new low for a full minute; that is
-a failed combat attempt, not a healing loop, and it feeds the same empirical circuit breaker as death.
+a failed combat attempt, not a healing loop, and it feeds the same empirical circuit breaker and
+full-HP Safe-Zone recovery lease as death.
 
 Invariants and safety: Regular Attack unlock is row 0 >= 5,000. A Walderp command permits exactly
 the requested move when Walderp Says and only a different damaging move otherwise; no buff or MOVE
@@ -63,7 +67,9 @@ namespace NGUInjector.Managers
         private float _expectedFightDamage;
         private int _expectedFightDamageZone = -2;
         private float _recoveryTargetHP;
+        private bool _forceFullRecoveryAfterFailure;
         private string _fightSignature = string.Empty;
+        private CollectionCombatSignature _fightCollectionSignature;
         private string _nextPolicySignature = string.Empty;
         private TerminalAttackReservation _terminalReservation;
 
@@ -286,6 +292,20 @@ namespace NGUInjector.Managers
                 return false;
             }
             RecoveryReason = "Recovering to full Adventure HP before entering ITOPOD";
+            return true;
+        }
+
+        private bool NeedsFullFailureRecovery()
+        {
+            _recoveryTargetHP = _character.totalAdvHP();
+            if (!ItopodEntryRecoveryPolicy.RequiresFullHp(
+                    _character.adventure.curHP, _recoveryTargetHP))
+            {
+                _forceFullRecoveryAfterFailure = false;
+                RecoveryReason = string.Empty;
+                return false;
+            }
+            RecoveryReason = "Recovering to full Adventure HP after a failed Adventure attempt";
             return true;
         }
 
@@ -919,6 +939,18 @@ namespace NGUInjector.Managers
                     return;
                 }
             }
+            // Idle ITOPOD uses the same native death path as manual combat: zone 1000 remains
+            // selected, the enemy disappears, and HP is exactly zero. Capture that source-exact
+            // signature before the native respawn can throw the character back in unhealed.
+            if (zone == 1000 && _character.adventure.zone == 1000
+                && _character.adventureController.currentEnemy == null
+                && _character.adventure.curHP <= 0.001f)
+            {
+                _forceFullRecoveryAfterFailure = true;
+                RecoveryReason = "Confirmed idle ITOPOD defeat; entering Safe Zone for full recovery";
+                MoveToZone(-1);
+                return;
+            }
             //Enable idle attack if its not on
             if (!_character.adventure.autoattacking)
             {
@@ -942,6 +974,13 @@ namespace NGUInjector.Managers
                 return;
             }
 
+            if (_character.adventure.zone == -1 && _forceFullRecoveryAfterFailure
+                && NeedsFullFailureRecovery())
+            {
+                if (CastHeal()) return;
+                if (CastHyperRegen()) return;
+                return;
+            }
             if (_character.adventure.zone == -1 && recoverHealth)
             {
                 if (zone == 1000 && NeedsFullItopodRecovery())
@@ -1019,6 +1058,7 @@ namespace NGUInjector.Managers
                 _terminalReservation = null;
                 _isFighting = false;
                 RecordObservedFight(true);
+                _forceFullRecoveryAfterFailure = true;
                 if (_fightTimer > 1)
                     LogCombat($"{_enemyName} defeated the player after {_fightTimer:00.0}s");
                 Main.LogAction("DEATH", "Adventure defeat by " + _enemyName
@@ -1124,6 +1164,12 @@ namespace NGUInjector.Managers
             //If we're in safe zone, recover health if needed. Also precast buffs
             if (_character.adventure.zone == -1)
             {
+                if (_forceFullRecoveryAfterFailure && NeedsFullFailureRecovery())
+                {
+                    if (CastHeal()) return;
+                    if (CastHyperRegen()) return;
+                    return;
+                }
                 if (recoverHealth && zone == 1000 && NeedsFullItopodRecovery())
                 {
                     if (CastHeal()) return;
@@ -1201,6 +1247,7 @@ namespace NGUInjector.Managers
                     _isFighting = false;
                     var playerDied = _character.adventure.curHP <= 0.001f;
                     RecordObservedFight(playerDied);
+                    if (playerDied) _forceFullRecoveryAfterFailure = true;
                     if (_fightTimer > 1)
                         LogCombat(playerDied
                             ? $"{_enemyName} defeated the player after {_fightTimer:00.0}s"
@@ -1228,6 +1275,16 @@ namespace NGUInjector.Managers
                         LoadoutManager.CompleteTitanFight(playerDied, _fightZone);
                         if (LoadoutManager.RestoreGear())
                             LoadoutManager.ReleaseLock();
+                    }
+
+                    // Ordinary death has already selected Safe Zone; ITOPOD death has not. Force
+                    // both through the same explicit Safe-Zone recovery lease and return before
+                    // the native zero-delay ITOPOD respawn can create another doomed attempt.
+                    if (playerDied)
+                    {
+                        RecoveryReason = "Confirmed Adventure defeat; entering Safe Zone for full recovery";
+                        MoveToZone(-1);
+                        return;
                     }
 
                     // Natural enemy-free frame: apply a queued exact-reference gear
@@ -1335,6 +1392,10 @@ namespace NGUInjector.Managers
                 var titanId = TitanIdForZone(zone);
                 _fightWasTitan = titanId > 0 && TitanMechanics.IsTitanEnemyType(titanId,
                     (int)_character.adventureController.currentEnemy.enemyType);
+                _fightCollectionSignature = zone < 1000
+                                            && LootSourceCatalog.OrdinaryZone(zone) != null
+                    ? AdventureCollectionPlanner.CaptureCadenceSignature(_character,
+                        zone, bossOnly) : null;
                 _fightSignature = PolicySignature(zone, bossOnly, fastCombat, beastMode) + "|enemy="
                                   + _character.adventureController.currentEnemy.spriteID + ":"
                                   + enemyTypeName + ":" + _character.adventureController.currentEnemy.name;
@@ -1349,6 +1410,8 @@ namespace NGUInjector.Managers
             {
                 var stalledFloor = _fightItopodFloor;
                 ZoneHelpers.RecordItopodNoProgressFailure(stalledFloor);
+                _forceFullRecoveryAfterFailure = true;
+                RecoveryReason = "Recovering to full Adventure HP after a failed ITOPOD attempt";
                 LogCombat(_enemyName + " abandoned on ITOPOD floor " + stalledFloor
                     + " after enemy HP made no new low for "
                     + ItopodFightProgressWatch.NoProgressSeconds.ToString("0") + "s");
@@ -1378,6 +1441,10 @@ namespace NGUInjector.Managers
             // forces Safe Zone. This is the sole empirical input to the decade-climb breaker.
             if (_fightZone >= 1000 && _fightItopodFloor >= 0)
                 ZoneHelpers.RecordItopodFightResult(_fightItopodFloor, died);
+            if (!died && _fightCollectionSignature != null && _fightTimer > 0f)
+                AdventureCollectionPlanner.RecordOnlineEligibleKill(
+                    _fightCollectionSignature, _fightTimer);
+            _fightCollectionSignature = null;
             _fightItopodFloor = -1;
             _itopodProgressWatch = null;
             var observedDamage = Math.Max(0f, _fightStartHP - _character.adventure.curHP);

@@ -239,8 +239,9 @@ chooses ITOPOD immediately when:
 - all fightable collection debt is complete; or
 - a required END item can only come from ITOPOD.
 
-The bot treats climbing and farming as different jobs. For steady farming, it chooses a floor that
-even a minimum-damage Regular Attack can defeat in one hit, so PP, EXP, AP, and boosts arrive quickly.
+The bot treats climbing and farming as different jobs. Before it has useful live evidence, steady
+farming uses a floor that even a minimum-damage Regular Attack can defeat in one hit, so PP, EXP,
+AP, and boosts arrive quickly.
 This number is about kill speed, not health: being at full HP on floor 48 can mean the armor is very
 safe even though each enemy still takes several attacks. Strong, Piercing, and Ultimate Attack can
 one-shot higher floors, but their cooldowns mean they are not ready for every new enemy. The dashboard
@@ -255,10 +256,19 @@ An unlucky enemy—especially an explosive one—can kill a character that is no
 so one death is not proof. The bot records the exact floor that was being fought. It also watches the
 enemy's HP. There is no maximum fight length while that HP continues reaching new lows. If it does
 not reach any new low for a full minute, the enemy is healing as fast as the current attacks can hurt
-it, so that attempt counts as a failure even if the player stays at full HP. After eight failures on
-the same floor without a kill there, the bot pauses the push and returns to its fast repeatable farm.
+it, so that attempt counts as a failure even if the player stays at full HP. After three failures on
+the same floor without a kill there, the bot pauses the push and returns to a lower floor it has
+actually cleared during the current game session. It will not farm the failed floor itself. If no
+lower live clear is available, it falls back to the minimum-damage one-hit estimate.
 Death or abandoning a stuck enemy restarts the range, so wins on lower replay floors do not erase the
 evidence for the difficult floor. A real kill on the difficult floor does erase it.
+
+Every confirmed defeat or abandoned no-progress fight creates a full-health recovery lease. ITOPOD's native death routine leaves
+the character in ITOPOD at zero HP and immediately restarts the selected range, so the bot explicitly
+moves to Safe Zone first. It may use Heal or Hyper Regeneration there, then waits for natural recovery
+if both are unavailable. No ordinary fight or ITOPOD retry is allowed until current HP is full. This
+is different from voluntary between-floor healing, which stays inside ITOPOD so it does not erase the
+current ten-kill floor counter.
 
 The paused push is tried again after effective offense or durability improves by at least five
 percent. “Improves” means the resulting Adventure combat stats, not merely a new piece of gear:
@@ -371,11 +381,30 @@ Adventure routing first checks for hard obligations:
 
 The collection planner tracks permanent Item List debt, but collection debt is not automatically a
 farming obligation. An unfinished core set, an unclaimed useful set reward, ordinary-enemy boosts
-for proven better gear, or a completed item that improves a real loadout may own Adventure. A rare
-optional item stays protected in inventory without taking combat time when even its MAXXED,
-fully-boosted version would not help the current route. For example, an unfinished Looty entry does
-not justify farming Sky merely because Looty can be completed; its real maximum value must beat the
-ITOPOD route the bot would give up.
+for proven better gear, or a completed item that improves a real loadout may own Adventure. The bot
+tests optional gear against two separate complete loadouts: the current combat job and a production
+job that values Energy, Magic, Resource 3, Gold, Drop Chance, and other useful special bonuses. This
+prevents an ITOPOD combat objective from making a real Magic or Energy accessory look worthless.
+
+Cross-zone rewards are stricter. The Normal Bonus Shinies reward gives +25% Drop Chance when IDs
+432 through 444 are all MAXXED, but an early Dragon Ball is not credited with that whole reward while
+later members are still missing. The reward becomes an Adventure reason only when finishing the
+selected item would make the native reward claimable immediately. Until then, optional pieces stay
+protected and merge any copies that happen to drop; they do not take combat time merely because they
+might matter much later, when stronger Drop Chance and faster kills will make the backfill cheaper.
+
+An optional combat or production improvement is still only a candidate. Its source-exact drop law
+must be paired with confirmed online kill cadence from the same zone, combat mode, and equipped item
+identities before its expected progress per second can be compared with ITOPOD. Normal item levels
+and character stats may rise without forcing another probe; the old sample is reused only when the
+current combat capability is no weaker. A weaker post-rebirth state or different equipped items need
+fresh evidence. Offline time and a broader zone-only sample are not counted. If the source has an
+audited drop law and the zone is already an easy fight, the bot may spend exactly one ordinary kill
+measuring the current route. It then immediately compares the resulting expected completion rate with ITOPOD;
+it does not remain there merely because the probe happened. If a safe cheap probe is unavailable,
+ITOPOD keeps the time.
+For example, an unfinished Looty entry does not justify farming Sky merely because Looty can be
+completed; its measured maximum value must beat the ITOPOD route the bot would give up.
 
 Boss-only mode is used when only a boss drop, important EXP, or a named unlock matters. Full-zone
 farming is used when ordinary enemies provide needed gear or boosts. Old zones are revisited only

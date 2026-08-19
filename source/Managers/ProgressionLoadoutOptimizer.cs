@@ -9,8 +9,10 @@ using static NGUInjector.Main;
 FILE PURPOSE
 
 ProgressionLoadoutOptimizer selects the best physical equipment objects for the active boss,
-explicit Adventure route, post-rebirth Gold bootstrap, major-unlock, ITOPOD, or resource-refill context, including ordered weapons and constrained
-accessories. One immutable objective/character snapshot feeds a Pareto branch-and-bound search over
+explicit Adventure route, post-rebirth Gold bootstrap, major-unlock, ITOPOD, or resource-refill
+context, including ordered weapons and constrained accessories. It also exposes separate combat and
+production projections for optional collection gear, so the active combat objective cannot erase a
+real Energy/Magic/Gold loadout improvement. One immutable objective/character snapshot feeds a Pareto branch-and-bound search over
 canonical accessory combinations; results report incumbent seconds, an admissible lower bound, and
 the remaining gap. Hard major-unlock combat uses target-enemy kill/survival math and excludes
 unrelated production bonuses; routine contexts may accept lower raw combat stats for a proven ETA
@@ -1854,26 +1856,60 @@ namespace NGUInjector.Managers
             }
         }
 
+        internal static double MaxxedFullyBoostedProductionLoadoutGain(Character c, Equipment e)
+        {
+            if (c == null || e == null || e.id <= 0 || MemberwiseCloneMethod == null)
+                return 0.0;
+            try
+            {
+                var projected = (Equipment)MemberwiseCloneMethod.Invoke(e, null);
+                projected.level = 100;
+                projected.curAttack = BoostCap(projected.capAttack, 100);
+                projected.curDefense = BoostCap(projected.capDefense, 100);
+                projected.spec1Cur = BoostCap(projected.spec1Cap, 100);
+                projected.spec2Cur = BoostCap(projected.spec2Cap, 100);
+                projected.spec3Cur = BoostCap(projected.spec3Cap, 100);
+                return ProjectedProductionLoadoutGain(c, e, projected);
+            }
+            catch
+            {
+                return 0.0;
+            }
+        }
+
         private static double ProjectedLoadoutGain(Character c, Equipment source,
             Equipment projected)
         {
+            return ProjectedPlanGain(c, source, projected, plan => Score(c, plan));
+        }
+
+        private static double ProjectedProductionLoadoutGain(Character c, Equipment source,
+            Equipment projected)
+        {
+            return ProjectedPlanGain(c, source, projected,
+                plan => ProductionLoadoutUtility(c, plan));
+        }
+
+        private static double ProjectedPlanGain(Character c, Equipment source,
+            Equipment projected, Func<Plan, double> score)
+        {
             var current = CurrentPlan(c, true);
-            var baseline = Score(c, current);
+            var baseline = score(current);
             var best = baseline;
-            if (source.type == part.Head) { var p = current.Clone(); p.Head = projected; best = Math.Max(best, Score(c, p)); }
-            else if (source.type == part.Chest) { var p = current.Clone(); p.Chest = projected; best = Math.Max(best, Score(c, p)); }
-            else if (source.type == part.Legs) { var p = current.Clone(); p.Legs = projected; best = Math.Max(best, Score(c, p)); }
-            else if (source.type == part.Boots) { var p = current.Clone(); p.Boots = projected; best = Math.Max(best, Score(c, p)); }
+            if (source.type == part.Head) { var p = current.Clone(); p.Head = projected; best = Math.Max(best, score(p)); }
+            else if (source.type == part.Chest) { var p = current.Clone(); p.Chest = projected; best = Math.Max(best, score(p)); }
+            else if (source.type == part.Legs) { var p = current.Clone(); p.Legs = projected; best = Math.Max(best, score(p)); }
+            else if (source.type == part.Boots) { var p = current.Clone(); p.Boots = projected; best = Math.Max(best, score(p)); }
             else if (source.type == part.Weapon)
             {
                 if (!PlanContainsIdOutside(current, source.id, current.Weapon))
                 {
-                    var p = current.Clone(); p.Weapon = projected; best = Math.Max(best, Score(c, p));
+                    var p = current.Clone(); p.Weapon = projected; best = Math.Max(best, score(p));
                 }
                 if (c.inventoryController.weapon2Unlocked()
                     && !PlanContainsIdOutside(current, source.id, current.Weapon2))
                 {
-                    var p = current.Clone(); p.Weapon2 = projected; best = Math.Max(best, Score(c, p));
+                    var p = current.Clone(); p.Weapon2 = projected; best = Math.Max(best, score(p));
                 }
             }
             else if (source.type == part.Accessory)
@@ -1883,7 +1919,7 @@ namespace NGUInjector.Managers
                     if (PlanContainsIdOutside(current, source.id, current.Accessories[i])) continue;
                     var p = current.Clone();
                     p.Accessories[i] = projected;
-                    best = Math.Max(best, Score(c, p));
+                    best = Math.Max(best, score(p));
                 }
             }
             return Math.Max(0.0, best - baseline);
@@ -2335,14 +2371,25 @@ namespace NGUInjector.Managers
                 case specType.EnergyPower:
                 case specType.EnergyPower2:
                 case specType.EnergyPower3:
+                case specType.MagicPower:
+                case specType.MagicPower2:
+                case specType.MagicPower3:
                 case specType.EnergyPerBar:
                 case specType.EnergyPerBar2:
                 case specType.EnergyPerBar3:
+                case specType.MagicPerBar:
+                case specType.MagicPerBar2:
+                case specType.MagicPerBar3:
                 case specType.EnergyCap:
                 case specType.EnergyCap3:
+                case specType.MagicCap:
+                case specType.MagicCap3:
                 case specType.AllPower:
                 case specType.AllPerBar:
                 case specType.AllCap:
+                case specType.Res3Power:
+                case specType.Res3Bar:
+                case specType.Res3Cap:
                     weight = 1.4;
                     break;
                 case specType.Respawn:
@@ -2369,6 +2416,17 @@ namespace NGUInjector.Managers
         still crediting its Magic and loot effects when productive resource sinks or collection/boost
         debt exist. Other special systems retain their separate horizon-aware policy weights above.
         */
+        private static double ProductionLoadoutUtility(Character c, Plan plan)
+        {
+            var items = plan.PrimaryItems().Where(x => x != null && x.id > 0).ToList();
+            var value = ProductionRateUtility(c, plan);
+            foreach (var item in items) value += SpecialUtility(c, item, 1.0);
+            if (plan.Weapon2 != null && plan.Weapon2.id > 0)
+                value += SpecialUtility(c, plan.Weapon2,
+                    c.inventoryController.weapon2Factor());
+            return value;
+        }
+
         private static double ProductionRateUtility(Character c, Plan plan)
         {
             var controller = c.inventoryController;

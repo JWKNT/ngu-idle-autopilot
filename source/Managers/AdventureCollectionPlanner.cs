@@ -9,10 +9,11 @@ FILE PURPOSE
 AdventureCollectionPlanner converts fightable zones and Item List state into permanent MAXX debt.
 It takes stronger forward gear first, then backfills older sets. Optional accessories and rare
 equipment remain protected collection debt, but own Adventure only when their completed physical
-copy has a proven loadout payoff; otherwise ITOPOD may outrank them. It also owns collection-aware
-inventory pressure and protection queries. Drop-source tables are audited from LootDrop;
-unknown/misc IDs are filtered by native item type. Never treat a set as disposable until its game
-completion flag is confirmed.
+copy improves a real combat/production loadout, finishes an immediately claimable permanent global
+reward, or has a source-probability plus exact online-cadence value that beats ITOPOD. It also owns
+collection-aware inventory pressure and protection queries. Drop-source tables are audited from
+LootDrop; unknown/misc IDs are filtered by native item type. Never treat a set as disposable until
+its game completion flag is confirmed, and never price inaccessible future set members as a reward.
 */
 namespace NGUInjector.Managers
 {
@@ -35,14 +36,20 @@ namespace NGUInjector.Managers
         internal double UsefulBoostDebt;
         internal double UsefulBoostGain;
         internal double SetRewardNativeMagnitude;
+        internal bool CoreSetIncomplete;
         internal bool StrategicDebt;
         internal double OptionalProgressionGain;
+        internal double OptionalCombatGain;
+        internal double OptionalProductionGain;
+        internal int OptionalProgressionItemId;
         internal string OptionalProgressionTarget = string.Empty;
+        internal string OptionalProgressionKind = string.Empty;
         internal string UsefulBoostTarget = string.Empty;
         internal string CadenceSignature = string.Empty;
         internal double ObservedKillSeconds = -1.0;
         internal double ExpectedTargetDropSeconds = -1.0;
         internal double TargetDropConfidenceSeconds = -1.0;
+        internal bool NeedsCadenceProbe;
         internal double BossSpawnShare;
         internal string StochasticEvidence = "No calibrated drop forecast is available";
         internal string SetReward = "No unclaimed core-set reward";
@@ -58,6 +65,19 @@ namespace NGUInjector.Managers
     internal static class AdventureCollectionPlanner
     {
         private static readonly CollectionCadenceLedger Cadence = new CollectionCadenceLedger();
+
+        private sealed class OptionalValue
+        {
+            internal ZoneDebt Debt;
+            internal int ItemId;
+            internal double Gain;
+            internal double CombatGain;
+            internal double ProductionGain;
+            internal double RewardMagnitude;
+            internal string Target = string.Empty;
+            internal string Kind = string.Empty;
+            internal string Reward = string.Empty;
+        }
 
         internal static AdventureCollectionTarget Evaluate(Character c, ZoneTarget front)
         {
@@ -77,18 +97,31 @@ namespace NGUInjector.Managers
             result.IncompleteZones = debts.Count;
 
             // Forward gear remains authoritative while the newest fightable set is
-            // incomplete.  Once it is finished (or the front has no set, like Sky),
-            // repay the oldest missing set before optional/bonus-item debt.  This is
-            // the guide's "snipe ahead, come back stronger" strategy rather than a
-            // greedy insistence on finishing weak gear before taking a major upgrade.
+            // incomplete. Once core sets are finished, optional debt is ranked by an
+            // immediately claimable global reward first, then by its best real combat or
+            // production-loadout gain. A valueless optional is retained as telemetry and
+            // inventory debt, but it cannot hide a valuable item in another reachable zone.
             var frontDebt = debts.FirstOrDefault(x => x.Zone == front.Zone);
             ZoneDebt selected = null;
+            OptionalValue selectedOptional = null;
             if (frontDebt != null && frontDebt.CoreSetIncomplete)
                 selected = frontDebt;
             if (selected == null)
                 selected = debts.Where(x => x.CoreSetIncomplete).OrderBy(x => x.Zone).FirstOrDefault();
-            if (selected == null && frontDebt != null)
-                selected = frontDebt;
+            if (selected == null)
+            {
+                var optional = debts.Where(x => !x.CoreSetIncomplete)
+                    .Select(x => AssessOptionalValue(c, x)).ToList();
+                selectedOptional = optional.Where(x => x.RewardMagnitude > 0.0)
+                    .OrderByDescending(x => x.RewardMagnitude)
+                    .ThenBy(x => x.Debt.Zone).FirstOrDefault();
+                if (selectedOptional == null)
+                    selectedOptional = optional.Where(x => x.Gain > 1e-7)
+                        .OrderByDescending(x => x.Gain)
+                        .ThenByDescending(x => x.Debt.Zone).FirstOrDefault();
+                if (selectedOptional != null) selected = selectedOptional.Debt;
+            }
+            if (selected == null && frontDebt != null) selected = frontDebt;
             if (selected == null)
                 selected = debts.OrderByDescending(x => x.Zone).FirstOrDefault();
 
@@ -107,10 +140,15 @@ namespace NGUInjector.Managers
                 FightType = stats.FightType(c.totalAdvAttack(), c.totalAdvDefense())
             };
             result.IsBackfill = selected.Zone < front.Zone;
+            result.CoreSetIncomplete = selected.CoreSetIncomplete;
+            if (!selected.CoreSetIncomplete && selectedOptional == null)
+                selectedOptional = AssessOptionalValue(c, selected);
             result.SetReward = selected.CoreSetIncomplete ? CoreSetReward(selected.Zone)
-                : "Core-set reward already claimed";
+                : selectedOptional != null && selectedOptional.RewardMagnitude > 0.0
+                    ? selectedOptional.Reward : "Core-set reward already claimed";
             result.SetRewardNativeMagnitude = selected.CoreSetIncomplete
-                ? selected.SetRewardNativeMagnitude : 0.0;
+                ? selected.SetRewardNativeMagnitude
+                : selectedOptional == null ? 0.0 : selectedOptional.RewardMagnitude;
             double usefulBoostDebt = 0.0;
             double usefulBoostGain = 0.0;
             string usefulBoostTarget = string.Empty;
@@ -120,14 +158,18 @@ namespace NGUInjector.Managers
             result.UsefulBoostDebt = needsNormalEnemyBoosts ? usefulBoostDebt : 0.0;
             result.UsefulBoostGain = needsNormalEnemyBoosts ? usefulBoostGain : 0.0;
             result.UsefulBoostTarget = needsNormalEnemyBoosts ? usefulBoostTarget : string.Empty;
-            var optionalGain = 0.0;
-            var optionalTarget = string.Empty;
-            var optionalProgression = !selected.CoreSetIncomplete
-                                      && TryGetOptionalProgressionValue(c, selected,
-                                          out optionalGain, out optionalTarget);
-            result.OptionalProgressionGain = optionalProgression ? optionalGain : 0.0;
+            var optionalProgression = !selected.CoreSetIncomplete && selectedOptional != null
+                                      && selectedOptional.Gain > 1e-7;
+            result.OptionalProgressionGain = optionalProgression ? selectedOptional.Gain : 0.0;
+            result.OptionalCombatGain = optionalProgression ? selectedOptional.CombatGain : 0.0;
+            result.OptionalProductionGain = optionalProgression
+                ? selectedOptional.ProductionGain : 0.0;
+            result.OptionalProgressionItemId = selectedOptional == null
+                ? 0 : selectedOptional.ItemId;
             result.OptionalProgressionTarget = optionalProgression
-                ? optionalTarget : string.Empty;
+                ? selectedOptional.Target : string.Empty;
+            result.OptionalProgressionKind = optionalProgression
+                ? selectedOptional.Kind : string.Empty;
             result.StrategicDebt = StrategicDebtOwnsAdventure(selected.CoreSetIncomplete,
                 result.SetRewardNativeMagnitude, result.UsefulBoostGain,
                 result.OptionalProgressionGain);
@@ -163,10 +205,13 @@ namespace NGUInjector.Managers
                       + " have a proven complete-loadout gain; unclaimed set reward is " + result.SetReward
                     : (result.IsBackfill ? "Full-clearing an older incomplete MAXX set because no source-derived boss-snipe advantage is proven; unclaimed set reward is " + result.SetReward
                         : "Full-clearing the newest incomplete MAXX set because no source-derived boss-snipe advantage is proven; unclaimed set reward is " + result.SetReward)
-                : optionalProgression
-                    ? "Optional MAXX debt is eligible for route comparison because completed "
-                      + optionalTarget + " has a proven loadout gain of "
-                      + optionalGain.ToString("0.######")
+                : result.SetRewardNativeMagnitude > 0.0
+                    ? "Completing " + (selectedOptional == null ? "this optional item"
+                        : selectedOptional.Target) + " would immediately claim " + result.SetReward
+                    : optionalProgression
+                    ? "Optional MAXX debt is eligible for measured route comparison because completed "
+                      + selectedOptional.Target + " improves the " + selectedOptional.Kind
+                      + " loadout by " + selectedOptional.Gain.ToString("0.######")
                     : "Optional MAXX debt is tracked and protected, but has no proven equipped, set-reward, or progression value; it does not outrank ITOPOD";
             return result;
         }
@@ -179,29 +224,90 @@ namespace NGUInjector.Managers
                    || usefulBoostGain > 0.0 || optionalProgressionGain > 1e-7;
         }
 
-        private static bool TryGetOptionalProgressionValue(Character c, ZoneDebt debt,
-            out double gain, out string target)
+        private static OptionalValue AssessOptionalValue(Character c, ZoneDebt debt)
         {
-            gain = 0.0;
-            target = string.Empty;
-            if (c == null || debt == null || debt.Items == null) return false;
+            var result = new OptionalValue {Debt = debt};
+            if (c == null || debt == null || debt.Items == null) return result;
             foreach (var state in debt.Items)
             {
                 if (state == null) continue;
                 var sources = state.Sources();
                 if (sources.Length == 0 || sources.Any(x => x.IsCoreSetItem)) continue;
+
+                CollectionSetRewardDescriptor globalReward;
+                if (TryGetImmediateGlobalReward(c, state.ItemId, out globalReward)
+                    && globalReward.NativeProgressionMagnitude > result.RewardMagnitude)
+                {
+                    result.ItemId = state.ItemId;
+                    result.Target = ItemName(c, state.ItemId);
+                    result.Gain = 0.0;
+                    result.CombatGain = 0.0;
+                    result.ProductionGain = 0.0;
+                    result.Kind = string.Empty;
+                    result.RewardMagnitude = globalReward.NativeProgressionMagnitude;
+                    result.Reward = globalReward.Description + " [becomes claimable when "
+                                    + result.Target + " reaches MAXX]";
+                }
+
+                if (result.RewardMagnitude > 0.0 && result.ItemId != state.ItemId)
+                    continue;
+
                 foreach (var copy in PhysicalCopiesFor(c, state.ItemId))
                 {
                     var equipment = copy.Identity as Equipment;
                     if (equipment == null) continue;
-                    var projected = ProgressionLoadoutOptimizer.MaxxedFullyBoostedLoadoutGain(
+                    var combat = ProgressionLoadoutOptimizer.MaxxedFullyBoostedLoadoutGain(
                         c, equipment);
-                    if (projected <= gain) continue;
-                    gain = projected;
-                    target = ItemName(c, state.ItemId);
+                    var production = ProgressionLoadoutOptimizer
+                        .MaxxedFullyBoostedProductionLoadoutGain(c, equipment);
+                    var projected = Math.Max(combat, production);
+                    if (result.RewardMagnitude > 0.0 && result.ItemId == state.ItemId)
+                    {
+                        result.CombatGain = Math.Max(result.CombatGain, combat);
+                        result.ProductionGain = Math.Max(result.ProductionGain, production);
+                        result.Gain = Math.Max(result.Gain, projected);
+                        result.Kind = production > combat ? "resource-production" : "combat";
+                        continue;
+                    }
+                    if (projected <= result.Gain) continue;
+                    result.ItemId = state.ItemId;
+                    result.Gain = projected;
+                    result.CombatGain = combat;
+                    result.ProductionGain = production;
+                    result.Target = ItemName(c, state.ItemId);
+                    result.Kind = production > combat ? "resource-production" : "combat";
                 }
             }
-            return gain > 1e-7;
+            return result;
+        }
+
+        private static bool TryGetImmediateGlobalReward(Character c, int developedItemId,
+            out CollectionSetRewardDescriptor reward)
+        {
+            reward = null;
+            if (c == null || c.inventory == null || c.inventory.itemList == null)
+                return false;
+            foreach (var global in LootSourceCatalog.GlobalSetsForItem(developedItemId))
+            {
+                if (GlobalSetRewardClaimed(c, global.SetKey)) continue;
+                if (!global.WouldComplete(developedItemId, id => IsMaxxed(c, id))) continue;
+                reward = global.Reward;
+                return reward != null && reward.NumericSourceExact;
+            }
+            return false;
+        }
+
+        private static bool GlobalSetRewardClaimed(Character c, string setKey)
+        {
+            if (c == null || c.inventory == null || c.inventory.itemList == null) return true;
+            switch (setKey)
+            {
+                case "normal-bonus-accessories":
+                    return c.inventory.itemList.normalBonusAccComplete;
+                default:
+                    // Unknown completion storage cannot safely authorize a repeated reward.
+                    return true;
+            }
         }
 
         internal static int FreeInventorySlots(Character c)
@@ -513,9 +619,10 @@ namespace NGUInjector.Managers
             var zone = target.Target.Zone;
             var signature = CaptureCadenceSignature(c, zone, target.BossOnly);
             target.CadenceSignature = signature == null ? string.Empty : signature.Key;
-            CollectionCadenceSample exactCadence = null;
-            var hasExactCadence = signature != null && Cadence.TryGet(signature, out exactCadence);
-            target.ObservedKillSeconds = hasExactCadence ? exactCadence.MeanSecondsPerTrial : -1.0;
+            CollectionCadenceSample cadence = null;
+            var hasCadence = signature != null
+                             && Cadence.TryGetConservativeCompatible(signature, out cadence);
+            target.ObservedKillSeconds = hasCadence ? cadence.MeanSecondsPerTrial : -1.0;
             try
             {
                 var enemies = c.adventureController.enemyList[zone];
@@ -531,20 +638,29 @@ namespace NGUInjector.Managers
             {
                 target.BossSpawnShare = 0.0;
             }
-            if (!hasExactCadence)
+            if (!hasCadence)
             {
+                target.NeedsCadenceProbe = target.OptionalProgressionGain > 1e-7
+                    && target.Target != null && target.Target.FightType == 2
+                    && HasIndependentOptionalProbability(target.Target.Zone,
+                        target.OptionalProgressionItemId);
                 var broadFallback = CombatManager.ObservedKillSeconds(zone, target.BossOnly);
-                target.StochasticEvidence = broadFallback > 0.0
+                target.StochasticEvidence = target.NeedsCadenceProbe
+                    ? "One easy online kill is needed to measure this route and equipped item set before optional farming can compete with ITOPOD"
+                    : broadFallback > 0.0
                     ? "A broad zone sample exists (" + broadFallback.ToString("0.00")
-                      + "s/kill) but does not match the full collection policy signature; no ETA is asserted"
-                    : "No exact online combat-signature sample; no equipment ETA is asserted";
+                      + "s/kill) but does not prove the current route/equipment capability; no ETA is asserted"
+                    : "No compatible online route/equipment sample; no equipment ETA is asserted";
                 return;
             }
 
+            if (TryPopulateIndependentOptionalForecast(c, target, debt, cadence))
+                return;
+
             if (zone != 43 || debt == null || debt.Items == null || debt.Items.Count == 0)
             {
-                target.StochasticEvidence = "Exact online signature mean is "
-                    + exactCadence.MeanSecondsPerTrial.ToString("0.00")
+                target.StochasticEvidence = "Conservative compatible online cadence is "
+                    + cadence.MeanSecondsPerTrial.ToString("0.00")
                     + "s/kill; this source has no exact branch probability model, so no ETA is asserted";
                 return;
             }
@@ -570,9 +686,9 @@ namespace NGUInjector.Managers
             {
                 Grade = ForecastEvidenceGrade.SourceExact,
                 ProbabilitySource = "LootDrop.zone43Drop Pirate one-of-eight",
-                CadenceSource = "exact collection combat signature",
+                CadenceSource = "same-route, same-equipped-items online cadence; current capability no weaker",
                 SourceHash = LootSourceCatalog.SourceHash,
-                SampleCount = exactCadence.OnlineSamples,
+                SampleCount = cadence.OnlineSamples,
                 OnlineOnly = true,
                 Notes = "Normal and boss group probabilities are mixed by the current enemy-list boss share."
             };
@@ -589,17 +705,87 @@ namespace NGUInjector.Managers
                         : "the current collection state has no finite admitted forecast");
                 return;
             }
-            target.ExpectedTargetDropSeconds = forecast.MeanTrials * exactCadence.MeanSecondsPerTrial;
+            target.ExpectedTargetDropSeconds = forecast.MeanTrials * cadence.MeanSecondsPerTrial;
             target.TargetDropConfidenceSeconds = forecast.P90Trials == long.MaxValue
-                ? -1.0 : forecast.P90Trials * exactCadence.MeanSecondsPerTrial;
+                ? -1.0 : forecast.P90Trials * cadence.MeanSecondsPerTrial;
             target.StochasticEvidence = (forecast.Exact ? "Exact" : "Bounded")
-                + " source-backed Pirate forecast from " + exactCadence.OnlineSamples
-                + " online signature samples; ordinary/Titan offline progress contributes zero trials";
+                + " source-backed Pirate forecast from " + cadence.OnlineSamples
+                + " compatible online samples; ordinary/Titan offline progress contributes zero trials";
+        }
+
+        private static bool TryPopulateIndependentOptionalForecast(Character c,
+            AdventureCollectionTarget target, ZoneDebt debt, CollectionCadenceSample cadence)
+        {
+            if (c == null || target == null || target.Target == null || debt == null
+                || debt.Items == null || cadence == null || target.OptionalProgressionItemId <= 0)
+                return false;
+            var item = debt.Items.FirstOrDefault(x => x != null
+                && x.ItemId == target.OptionalProgressionItemId);
+            var catalog = LootSourceCatalog.OrdinaryZone(target.Target.Zone);
+            var branch = catalog == null ? null : catalog.Branches().FirstOrDefault(x =>
+                x.Shape == LootBranchShape.Independent
+                && x.ContainsItem(target.OptionalProgressionItemId));
+            if (item == null || branch == null) return false;
+
+            double loot;
+            double rootedLoot;
+            try
+            {
+                loot = Math.Max(0.0, c.lootFactor());
+                rootedLoot = Math.Max(0.0, c.lootFactorRooted());
+            }
+            catch
+            {
+                loot = 0.0;
+                rootedLoot = 0.0;
+            }
+            var deficit = (byte)Math.Min(101,
+                item.RemainingContribution + (item.NeedsInitialCopy ? 1 : 0));
+            var outcomes = branch.BuildOutcomes(new[] {item.ItemId}, loot, rootedLoot);
+            var evidence = new ForecastEvidence
+            {
+                Grade = ForecastEvidenceGrade.SourceExact,
+                ProbabilitySource = branch.Id,
+                CadenceSource = "same-route, same-equipped-items online cadence; current capability no weaker",
+                SourceHash = LootSourceCatalog.SourceHash,
+                SampleCount = cadence.OnlineSamples,
+                OnlineOnly = true,
+                Notes = "Independent bonus-accessory roll with native level-two merge contribution."
+            };
+            var capacity = debt.Service == null
+                ? ForecastCapacityProof.Prove(debt.WorstCaseTransientSlots, 0, false, true,
+                    "No live ordinary topology was available.")
+                : debt.Service.ForecastProof();
+            var forecast = MechanicsStochastic.SparseMonotoneForecast(new[] {deficit},
+                outcomes, 50000, evidence, capacity);
+            if (!forecast.Valid || double.IsInfinity(forecast.MeanTrials))
+            {
+                target.StochasticEvidence = "The optional-item probability is source-exact and online-only, but "
+                    + (forecast.InvalidReason.Length > 0 ? forecast.InvalidReason
+                        : "the current collection state has no finite admitted forecast");
+                return true;
+            }
+            target.ExpectedTargetDropSeconds = forecast.MeanTrials * cadence.MeanSecondsPerTrial;
+            target.TargetDropConfidenceSeconds = forecast.P90Trials == long.MaxValue
+                ? -1.0 : forecast.P90Trials * cadence.MeanSecondsPerTrial;
+            target.StochasticEvidence = (forecast.Exact ? "Exact" : "Bounded")
+                + " source-backed optional-item forecast from " + cadence.OnlineSamples
+                + " compatible online samples; offline Adventure contributes zero trials";
+            return true;
+        }
+
+        private static bool HasIndependentOptionalProbability(int zone, int itemId)
+        {
+            if (zone < 0 || itemId <= 0) return false;
+            var catalog = LootSourceCatalog.OrdinaryZone(zone);
+            return catalog != null && catalog.Branches().Any(x =>
+                x.Shape == LootBranchShape.Independent && x.ContainsItem(itemId));
         }
 
         // Report hooks: combat integration may record only a confirmed eligible online kill. The
         // signature is supplied by CaptureCadenceSignature before the fight and is never collapsed
-        // to zone-only evidence.
+        // to zone-only evidence. Retrieval may reuse it only for the same route/mode/equipped item
+        // identities when the live character is no weaker than the recorded fight.
         internal static bool RecordOnlineEligibleKill(CollectionCombatSignature signature,
             double seconds)
         {
@@ -621,7 +807,7 @@ namespace NGUInjector.Managers
             }.Concat(c.inventory == null || c.inventory.accs == null
                 ? Enumerable.Empty<Equipment>() : c.inventory.accs)
                 .Where(x => x != null && x.id > 0)
-                .Select(x => x.id + ":" + x.level).ToArray();
+                .Select(x => x.id.ToString()).ToArray();
             var fast = ZoneStatHelper.UserOverrides != null
                        && ZoneStatHelper.UserOverrides.ContainsKey(zone)
                        && ZoneStatHelper.UserOverrides[zone]

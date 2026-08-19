@@ -3,15 +3,19 @@ FILE PURPOSE
 
 Purpose: Pure, build-pinned source catalog and collection-state model for ordinary Adventure and
 Titan equipment. It gives collection routing exact source identity, per-ID merge contribution,
-correlated branch shape, permanent reward transitions, online-only cadence evidence, Daycare
-ownership, and inventory-service state without reading or mutating a Character.
+correlated branch shape, cross-zone reward membership, permanent reward transitions, online-only
+cadence evidence, Daycare ownership, and inventory-service state without reading or mutating a
+Character.
 
 Mechanism: Immutable zone/source/branch descriptors mirror the installed 1.260 loot and Item List
 tables. CollectionItemState derives debt from itemMaxxed plus exact physical copies; itemDropped is
 retained only as telemetry. Pirate loot is represented as one uniform one-of-eight branch per
 eligible kill, while T12 END rolls retain their cumulative version predicates as independent
-branches. CollectionServiceState consumes PhysicalTopology and LootCapacity proofs. Exact-signature
-cadence samples never accept offline time.
+branches. CollectionServiceState consumes PhysicalTopology and LootCapacity proofs. Online cadence
+samples never accept offline time. A sample may be reused only for the same route, combat mode, and
+equipped item identities when the current combat capability is no worse than the sampled capability;
+this lets normal level/stat growth preserve a conservative observation without letting a weaker
+post-rebirth state inherit it.
 
 Inputs and outputs: Pure observations (MAXX/drop flags, exact physical copies, reference demand),
 rooted loot factor, combat signatures, and ordinary topology snapshots produce typed collection
@@ -20,8 +24,10 @@ items, sparse stochastic outcomes, numeric set rewards, cadence evidence, and ca
 Invariants and safety: A held level L has contribution deficit 100-L; a fresh level-zero object has
 deficit 100 and separately needs its first physical arrival. Daycare is ownership, not ordinary
 delivery capacity. Known sources exist before their first roll. Set rewards apply only on the
-false->true completion edge. Pirate completion has zero progression value. Ordinary and Titan
-equipment have zero offline eligible trials. No expected-value proof authorizes capacity.
+false->true completion edge. The Normal Bonus Shiny membership and each ID 432..444 probability
+law match the installed build; future value is not invented for inaccessible members. Pirate
+completion has zero progression value. Ordinary and Titan equipment have zero offline eligible
+trials. No expected-value proof authorizes capacity.
 
 Extension points and non-goals: Task 29 may wire report hooks and route-value seconds into the
 global scheduler. This catalog does not invoke loot, merge, Daycare, filter, loadout, or Titan
@@ -309,6 +315,44 @@ namespace NGUInjector.Managers
                             ? _effects[i].Amount - 1.0 : _effects[i].Amount);
                 return sum;
             }
+        }
+    }
+
+    internal sealed class CollectionGlobalSetDescriptor
+    {
+        private readonly int[] _itemIds;
+        internal readonly string SetKey;
+        internal readonly CollectionSetRewardDescriptor Reward;
+
+        internal CollectionGlobalSetDescriptor(string setKey, int[] itemIds,
+            CollectionSetRewardDescriptor reward)
+        {
+            if (string.IsNullOrEmpty(setKey))
+                throw new ArgumentException("Global set key required.", "setKey");
+            if (itemIds == null || itemIds.Length == 0 || itemIds.Any(x => x <= 0)
+                || itemIds.Distinct().Count() != itemIds.Length)
+                throw new ArgumentException("Global set item IDs must be distinct and positive.",
+                    "itemIds");
+            if (reward == null) throw new ArgumentNullException("reward");
+            SetKey = setKey;
+            _itemIds = (int[])itemIds.Clone();
+            Reward = reward;
+        }
+
+        internal int[] ItemIds()
+        {
+            return (int[])_itemIds.Clone();
+        }
+
+        internal bool Contains(int itemId)
+        {
+            return Array.IndexOf(_itemIds, itemId) >= 0;
+        }
+
+        internal bool WouldComplete(int developedItemId, Func<int, bool> isMaxxed)
+        {
+            if (!Contains(developedItemId) || isMaxxed == null) return false;
+            return _itemIds.All(id => id == developedItemId || isMaxxed(id));
         }
     }
 
@@ -638,6 +682,7 @@ namespace NGUInjector.Managers
     {
         private sealed class MutableSample
         {
+            internal CollectionCombatSignature Signature;
             internal double TotalSeconds;
             internal int Count;
         }
@@ -654,7 +699,7 @@ namespace NGUInjector.Managers
             MutableSample sample;
             if (!_samples.TryGetValue(signature.Key, out sample))
             {
-                sample = new MutableSample();
+                sample = new MutableSample {Signature = signature};
                 _samples[signature.Key] = sample;
             }
             sample.TotalSeconds += seconds;
@@ -675,6 +720,50 @@ namespace NGUInjector.Managers
             result = null;
             return false;
         }
+
+        internal bool TryGetConservativeCompatible(CollectionCombatSignature current,
+            out CollectionCadenceSample result)
+        {
+            if (current == null) throw new ArgumentNullException("current");
+            MutableSample worst = null;
+            var worstMean = -1.0;
+            var compatibleSamples = 0;
+            foreach (var pair in _samples)
+            {
+                var sample = pair.Value;
+                if (sample == null || sample.Signature == null || sample.Count <= 0
+                    || !CompatibleAndNoWeaker(current, sample.Signature))
+                    continue;
+                var mean = sample.TotalSeconds / sample.Count;
+                compatibleSamples += sample.Count;
+                if (mean <= worstMean) continue;
+                worst = sample;
+                worstMean = mean;
+            }
+            if (worst != null)
+            {
+                result = new CollectionCadenceSample(worst.Signature.Key,
+                    worstMean, compatibleSamples);
+                return true;
+            }
+            result = null;
+            return false;
+        }
+
+        private static bool CompatibleAndNoWeaker(CollectionCombatSignature current,
+            CollectionCombatSignature sampled)
+        {
+            return current.Zone == sampled.Zone
+                   && current.BossOnly == sampled.BossOnly
+                   && current.FastCombat == sampled.FastCombat
+                   && current.BeastMode == sampled.BeastMode
+                   && string.Equals(current.LoadoutSignature, sampled.LoadoutSignature,
+                       StringComparison.Ordinal)
+                   && current.Power + 1e-6 >= sampled.Power
+                   && current.Toughness + 1e-6 >= sampled.Toughness
+                   && current.MaximumHp + 1e-6 >= sampled.MaximumHp
+                   && current.Regen + 1e-6 >= sampled.Regen;
+        }
     }
 
     internal static class LootSourceCatalog
@@ -684,8 +773,8 @@ namespace NGUInjector.Managers
 
         private static readonly Dictionary<int, LootZoneDescriptor> Ordinary = BuildOrdinary();
         private static readonly Dictionary<int, LootZoneDescriptor> Titans = BuildTitans();
-        private static readonly Dictionary<string, CollectionSetRewardDescriptor> GlobalRewards =
-            BuildGlobalRewards();
+        private static readonly Dictionary<string, CollectionGlobalSetDescriptor> GlobalSets =
+            BuildGlobalSets();
 
         internal static LootZoneDescriptor OrdinaryZone(int zone)
         {
@@ -719,8 +808,21 @@ namespace NGUInjector.Managers
 
         internal static CollectionSetRewardDescriptor GlobalSetReward(string setKey)
         {
-            CollectionSetRewardDescriptor reward;
-            return setKey != null && GlobalRewards.TryGetValue(setKey, out reward) ? reward : null;
+            CollectionGlobalSetDescriptor set;
+            return setKey != null && GlobalSets.TryGetValue(setKey, out set)
+                ? set.Reward : null;
+        }
+
+        internal static CollectionGlobalSetDescriptor GlobalSet(string setKey)
+        {
+            CollectionGlobalSetDescriptor result;
+            return setKey != null && GlobalSets.TryGetValue(setKey, out result) ? result : null;
+        }
+
+        internal static CollectionGlobalSetDescriptor[] GlobalSetsForItem(int itemId)
+        {
+            return itemId <= 0 ? new CollectionGlobalSetDescriptor[0]
+                : GlobalSets.Values.Where(x => x.Contains(itemId)).ToArray();
         }
 
         internal static VectorOutcome[] PirateMixedOutcomes(int[] orderedDebtItemIds,
@@ -806,7 +908,7 @@ namespace NGUInjector.Managers
             {
                 int[] coreIds;
                 if (!core.TryGetValue(pair.Key, out coreIds)) coreIds = new int[0];
-                var branches = pair.Key == 43 ? PirateBranches() : new LootBranchDescriptor[0];
+                var branches = OrdinarySpecialBranches(pair.Key);
                 var worstBatch = pair.Key == 43 ? 3 : 1;
                 result[pair.Key] = BuildZone(pair.Key, LootSourceKind.OrdinaryZone,
                     "ordinary-zone-" + pair.Key, pair.Value, coreIds, branches, worstBatch,
@@ -815,15 +917,17 @@ namespace NGUInjector.Managers
             return result;
         }
 
-        private static Dictionary<string, CollectionSetRewardDescriptor> BuildGlobalRewards()
+        private static Dictionary<string, CollectionGlobalSetDescriptor> BuildGlobalSets()
         {
-            return new Dictionary<string, CollectionSetRewardDescriptor>
+            var reward = Reward("normal-bonus-accessories", "Normal Bonus Accessories", true,
+                false, "+25% drop chance after IDs 432..444 are all MAXXED",
+                E(CollectionRewardMetric.DropChance, .25));
+            return new Dictionary<string, CollectionGlobalSetDescriptor>
             {
                 {
                     "normal-bonus-accessories",
-                    Reward("normal-bonus-accessories", "Normal Bonus Accessories", true, false,
-                        "+25% drop chance after IDs 432..444 are all MAXXED",
-                        E(CollectionRewardMetric.DropChance, .25))
+                    new CollectionGlobalSetDescriptor("normal-bonus-accessories",
+                        Range(432, 444), reward)
                 }
             };
         }
@@ -904,6 +1008,50 @@ namespace NGUInjector.Managers
                     new LootProbabilityLaw(1.2e-8, .15, true,
                         "min(1.2e-8 * lootFactorRooted(), 0.15); one uniform ID 507..514"), ids)
             };
+        }
+
+        /*
+        NORMAL BONUS SHINY DROP LAWS
+
+        IDs 432..444 are thirteen independent extra rolls made after the ordinary/boss branch of
+        their source zone rejoins. Each successful call is makeLevelledLoot(id, 1), so a physical
+        drop contributes two merge levels. Zones 2..18 multiply the unrooted native lootFactor;
+        zone 20 explicitly uses lootFactorRooted. The last three source methods also apply the
+        shown Mathf.Min cap. These branches let an online, exact-signature kill cadence become an
+        expected completion time, but never turn offline time or a guessed combat rate into proof.
+        */
+        private static LootBranchDescriptor[] OrdinarySpecialBranches(int zone)
+        {
+            if (zone == 43) return PirateBranches();
+            switch (zone)
+            {
+                case 2: return new[] {IndependentOrdinaryBranch(zone, 432, .013, 1.0, false)};
+                case 3: return new[] {IndependentOrdinaryBranch(zone, 433, .0125, 1.0, false)};
+                case 4: return new[] {IndependentOrdinaryBranch(zone, 434, .01, 1.0, false)};
+                case 5: return new[] {IndependentOrdinaryBranch(zone, 435, .007, 1.0, false)};
+                case 7: return new[] {IndependentOrdinaryBranch(zone, 436, .005, 1.0, false)};
+                case 9: return new[] {IndependentOrdinaryBranch(zone, 437, .005, 1.0, false)};
+                case 10: return new[] {IndependentOrdinaryBranch(zone, 438, .0045, 1.0, false)};
+                case 12: return new[] {IndependentOrdinaryBranch(zone, 439, .004, 1.0, false)};
+                case 13: return new[] {IndependentOrdinaryBranch(zone, 440, .002, 1.0, false)};
+                case 15: return new[] {IndependentOrdinaryBranch(zone, 441, .0002, 1.0, false)};
+                case 17: return new[] {IndependentOrdinaryBranch(zone, 442, 1.2e-5, .03, false)};
+                case 18: return new[] {IndependentOrdinaryBranch(zone, 443, 6e-6, .02, false)};
+                case 20: return new[] {IndependentOrdinaryBranch(zone, 444, 8e-5, .016, true)};
+                default: return new LootBranchDescriptor[0];
+            }
+        }
+
+        private static LootBranchDescriptor IndependentOrdinaryBranch(int zone, int itemId,
+            double coefficient, double cap, bool rooted)
+        {
+            return new LootBranchDescriptor("zone" + zone + "-bonus-accessory-" + itemId,
+                zone, LootSourceKind.OrdinaryZone, LootEnemyClass.Any,
+                LootBranchShape.Independent, 0, 1, 1, true,
+                new LootProbabilityLaw(coefficient, cap, rooted,
+                    "min(" + coefficient.ToString("R") + " * "
+                    + (rooted ? "lootFactorRooted()" : "lootFactor()") + ", "
+                    + cap.ToString("R") + ")"), A(itemId));
         }
 
         private static LootBranchDescriptor IndependentTitanBranch(string id, int itemId,

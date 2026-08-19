@@ -754,6 +754,15 @@ namespace NGUInjector.Managers
             var climbing = trialDecision != null && trialDecision.ShouldClimb;
             var climbTarget = climbing ? trialDecision.TargetRecord : highest;
             var farm = Math.Max(0, Math.Min(reachable, highest - 1));
+            // The shipped formulas badly understate some live clears because manual skills,
+            // regeneration, and enemy-specific outcomes are not a closed simulator. Once three
+            // failures block a floor, prefer the highest lower floor that this process has actually
+            // killed. It is direct evidence of viability and avoids falling from floor 75 to a
+            // diagnostic one-hit estimate near floor 10. Never farm the blocked floor itself.
+            if (!climbing && trialDecision != null && trialDecision.BlockedFloor >= 0
+                && ItopodTrials.HighestObservedClearFloor >= 0)
+                farm = Math.Max(farm, Math.Min(trialDecision.BlockedFloor - 1,
+                    ItopodTrials.HighestObservedClearFloor));
             var terminalDropMissing = c.settings.rebirthDifficulty == difficulty.sadistic
                                       && !EndgameDependencyModel.IsOwned(c, 491);
             if (terminalDropMissing && reachable >= MechanicsEndgame.ItopodDropMinimumFloor
@@ -788,13 +797,14 @@ namespace NGUInjector.Managers
                   + ", using native range " + start + "-" + end
                   + "; diagnostic Regular-Attack model " + modeledPositiveDamage
                   + ", bounded frontier " + frontier
-                  + ", repeatable one-hit farm floor " + reachable
+                  + ", repeatable one-hit fallback " + reachable
                 : "farm floor " + farm + "; "
                   + (trialDecision == null ? "empirical climb state is unavailable"
                       : trialDecision.Reason)
                   + " (diagnostic Regular-Attack model " + modeledPositiveDamage
                   + ", bounded frontier " + frontier
-                  + ", repeatable one-hit farm floor " + reachable + ")";
+                  + ", repeatable one-hit fallback " + reachable
+                  + ", highest session clear " + ItopodTrials.HighestObservedClearFloor + ")";
 
             // Lazy ITOPOD invokes setOptimalFloor after deaths and can overwrite the deliberate climb range.
             // Full optimization owns the range, so disable that reversible toggle and confirm the live field.

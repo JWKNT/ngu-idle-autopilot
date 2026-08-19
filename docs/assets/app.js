@@ -176,7 +176,8 @@ exposes no mutation endpoint.
     const failureLimit = optionalNumber(s.itopodFailureLimit);
     const noProgressSeconds = optionalNumber(s.itopodNoProgressSeconds);
     const retryFraction = optionalNumber(s.itopodRetryImprovementFraction);
-    const farmFloor = optionalNumber(s.itopodReachableOneHitFloor);
+    const farmFloor = optionalNumber(s.itopodFarmFloor);
+    const oneHitFloor = optionalNumber(s.itopodReachableOneHitFloor);
     const shortFightFloor = optionalNumber(s.itopodFrontierFloor);
     const positiveDamageFloor = optionalNumber(s.itopodModeledPositiveDamageFloor);
     const liveOutcomesOwnLimit = s.itopodModelLimitsClimb === false;
@@ -217,11 +218,12 @@ exposes no mutation endpoint.
     }
 
     const estimateParts = [];
+    if (oneHitFloor !== null && oneHitFloor >= 0) estimateParts.push(`minimum-roll one-hit floor ${oneHitFloor}`);
     if (shortFightFloor !== null && shortFightFloor >= 0) estimateParts.push(`short-fight floor ${shortFightFloor}`);
     if (positiveDamageFloor !== null && positiveDamageFloor >= 0) estimateParts.push(`Regular-damage floor ${positiveDamageFloor}`);
     const estimates = estimateParts.length ? `${estimateParts.join(" · ")} · diagnostic only` : "Combat estimates unavailable";
     const farm = farmFloor !== null && farmFloor >= 0
-      ? `Floor ${farmFloor} · minimum-roll Regular Attack one-shot`
+      ? `Floor ${farmFloor}${oneHitFloor !== null && farmFloor > oneHitFloor ? " · chosen from confirmed live clears" : " · minimum-roll Regular Attack one-shot"}`
       : "Repeatable farm floor unavailable";
     const retryHealth = recovering
       ? `Safe Zone recovery ${currentHp === null ? "?" : shortNumber(currentHp)} / ${maxHp === null ? "?" : shortNumber(maxHp)} HP${recoveryEta !== null && recoveryEta > 0 ? ` · ${duration(recoveryEta, true)} remaining` : ""}`
@@ -684,7 +686,13 @@ exposes no mutation endpoint.
     setText("combat-zone", `${text(s.adventureTargetName, "—")} · ${text(s.adventureControlReason, "route pending")}`);
     setText("combat-stats", `${shortNumber(s.adventurePower)} / ${shortNumber(s.adventureToughness)}`);
     setText("combat-hp", `${shortNumber(s.adventureHP)} / ${shortNumber(s.adventureMaxHP)}`);
-    setText("combat-collection", s.collectionMissingSummary || s.collectionReason, "—");
+    let collection = text(s.collectionMissingSummary || s.collectionReason, "—");
+    if (s.collectionNeedsCadenceProbe) {
+      collection += " · measuring one online kill before deciding whether to stay";
+    } else if (number(s.collectionExpectedTargetDropSeconds, -1) > 0) {
+      collection += ` · expected completion ${duration(s.collectionExpectedTargetDropSeconds, true)}`;
+    }
+    setText("combat-collection", collection);
     setText("combat-reason", sentence(s.bossViabilityReason));
 
     const stats = s.characterStats || {};

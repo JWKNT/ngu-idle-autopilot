@@ -24,15 +24,22 @@ audited Normal challenge subset are also live behind their
 separate explicit flags; AP/QP purchases, difficulty, T13/T14, MOVE69, END, and the global scheduler
 remain fail-closed for this deploy. Legacy direct mutation helpers are not called; staged authority
 can expand only through typed postconditions and copied-save/backtest evidence.
-ITOPOD telemetry and valuation report the repeatable one-hit farm floor, conservative combat
-frontier, diagnostic Regular-Attack reach, and empirical failure breaker separately. Open pushes price
-and schedule the next record divisible by ten; repeated confirmed floor deaths pause that push. Continuous
+ITOPOD telemetry and valuation report the active farm floor, repeatable one-hit fallback,
+conservative combat frontier, diagnostic Regular-Attack reach, and empirical failure breaker
+separately. Open pushes price and schedule the next record divisible by ten; repeated confirmed
+floor deaths pause that push on a lower session-proven clear when one exists. Continuous
 ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
 ten-kill floor counter; floor-boundary healing happens in place without erasing partial progress.
 After a rebirth, ordinary Adventure briefly preempts ITOPOD only when a source-proved Augment or
 Blood purchase can finish inside the run but has no Gold. Before the native Time Machine record
 gate this farms only the required liquid Gold; afterward one enemy drop seeds positive passive GPS.
 Once the purchase is funded or GPS is positive, ITOPOD immediately regains priority.
+Any ordinary-zone route selected while another zone has an active enemy first settles through one
+native Safe-Zone frame. The following root enters the selected zone, so an ITOPOD-to-collection
+probe cannot be rejected by the game or quarantine Adventure merely because combat was in progress.
+Optional collection telemetry also exposes the compatible online kill cadence and source-backed
+mean/P90 completion times so the dashboard can explain whether a one-kill probe ended in farming or
+an immediate return to ITOPOD.
 */
 namespace NGUInjector.Autopilot
 {
@@ -1203,7 +1210,9 @@ namespace NGUInjector.Autopilot
                     Main.Character.adventureController.itopodKillCount,
                     Main.Character.adventure.itopodStart,
                     Main.Character.adventure.itopodEnd,
-                    ordinaryPpPerSecond, optionalOnly);
+                    ordinaryPpPerSecond, optionalOnly,
+                    optionalOnly && _collectionTarget != null
+                    && _collectionTarget.NeedsCadenceProbe);
                 var chooseItopod = routePlan.Choice == AdventureRouteChoice.ItopodFrontier
                                    || routePlan.Choice == AdventureRouteChoice.ItopodFarm;
                 if (!chooseItopod)
@@ -1305,6 +1314,22 @@ namespace NGUInjector.Autopilot
                     true, _collectionTarget != null && _collectionTarget.BossOnly, false);
             }
 
+            // Native Adventure can reject a direct zone replacement while the current enemy owns
+            // combat. This is especially visible when the route selector asks for a one-kill
+            // collection cadence probe while ITOPOD is streaming. Publish `best` as the durable
+            // target, settle one root in Safe Zone, and enter it on the following root. The typed
+            // outer intent deliberately accepts Zone=-1 as useful transition progress.
+            if (best.Zone >= 0 && Main.Character.adventure.zone != best.Zone
+                && Main.Character.adventure.zone != -1)
+            {
+                Main.LogAction("ADVENTURE", "Leaving "
+                    + GameNames.Zone(Main.Character, Main.Character.adventure.zone)
+                    + " through Safe Zone before routing to "
+                    + GameNames.Zone(Main.Character, best.Zone));
+                combat.MoveToZone(-1);
+                CaptureRecovery(combat);
+                return true;
+            }
             if (best.Zone != _loggedAdventureZone || best.FightType != _loggedAdventureFightType)
             {
                 var collectionDetail = _collectionTarget == null ? string.Empty
@@ -1991,6 +2016,7 @@ namespace NGUInjector.Autopilot
                        + "  \"itopodEmpiricalTrial\": " + itopodRoute.EmpiricalTrial.ToString().ToLowerInvariant() + ",\n"
                        + "  \"itopodRangeStart\": " + c.adventure.itopodStart + ",\n"
                        + "  \"itopodRangeEnd\": " + c.adventure.itopodEnd + ",\n"
+                       + "  \"itopodFarmFloor\": " + itopodRoute.FarmFloor + ",\n"
                        + "  \"itopodKillsOnFloor\": " + c.adventureController.itopodKillCount + ",\n"
                        + "  \"itopodPerkPoints\": " + c.adventure.itopod.perkPoints + ",\n"
                        + "  \"itopodPointProgress\": " + c.adventure.itopod.pointProgress + ",\n"
@@ -2017,8 +2043,18 @@ namespace NGUInjector.Autopilot
                        + "  \"collectionUsefulBoostGain\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.UsefulBoostGain).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"collectionUsefulBoostTarget\": \"" + EscapeJson(_collectionTarget == null ? string.Empty : _collectionTarget.UsefulBoostTarget) + "\",\n"
                        + "  \"collectionStrategicDebt\": " + (_collectionTarget != null && _collectionTarget.StrategicDebt).ToString().ToLowerInvariant() + ",\n"
+                       + "  \"collectionCoreSetIncomplete\": " + (_collectionTarget != null && _collectionTarget.CoreSetIncomplete).ToString().ToLowerInvariant() + ",\n"
                        + "  \"collectionOptionalProgressionGain\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.OptionalProgressionGain).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionOptionalCombatGain\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.OptionalCombatGain).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionOptionalProductionGain\": " + (_collectionTarget == null ? 0.0 : _collectionTarget.OptionalProductionGain).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionOptionalProgressionItemId\": " + (_collectionTarget == null ? 0 : _collectionTarget.OptionalProgressionItemId) + ",\n"
+                       + "  \"collectionNeedsCadenceProbe\": " + (_collectionTarget != null && _collectionTarget.NeedsCadenceProbe).ToString().ToLowerInvariant() + ",\n"
+                       + "  \"collectionObservedKillSeconds\": " + (_collectionTarget == null ? -1.0 : _collectionTarget.ObservedKillSeconds).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionExpectedTargetDropSeconds\": " + (_collectionTarget == null || double.IsInfinity(_collectionTarget.ExpectedTargetDropSeconds) ? -1.0 : _collectionTarget.ExpectedTargetDropSeconds).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionTargetDropConfidenceSeconds\": " + (_collectionTarget == null || double.IsInfinity(_collectionTarget.TargetDropConfidenceSeconds) ? -1.0 : _collectionTarget.TargetDropConfidenceSeconds).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"collectionStochasticEvidence\": \"" + EscapeJson(_collectionTarget == null ? string.Empty : _collectionTarget.StochasticEvidence) + "\",\n"
                        + "  \"collectionOptionalProgressionTarget\": \"" + EscapeJson(_collectionTarget == null ? string.Empty : _collectionTarget.OptionalProgressionTarget) + "\",\n"
+                       + "  \"collectionOptionalProgressionKind\": \"" + EscapeJson(_collectionTarget == null ? string.Empty : _collectionTarget.OptionalProgressionKind) + "\",\n"
                        + "  \"collectionSetReward\": \"" + EscapeJson(collectionSetReward) + "\",\n"
                        + "  \"collectionReason\": \"" + EscapeJson(collectionReason) + "\",\n"
                        + "  \"collectionMissingSummary\": \"" + EscapeJson(collectionMissing) + "\",\n"

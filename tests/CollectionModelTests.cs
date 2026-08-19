@@ -4,8 +4,8 @@ FILE PURPOSE
 Pure regression executable for the source-backed collection model. It loads no Unity/game assembly,
 save, runtime config, or process. Goldens cover Pirate's correlated one-of-eight law, merge deficits,
 unseen optional debt, once-only numeric rewards, cosmetic Pirate valuation through the immutable
-loadout objective, exact-signature online cadence, Daycare ownership, capacity service state, and
-the audited zero offline equipment-trial rule.
+loadout objective, exact Normal Bonus Shiny membership/drop laws, exact-signature online cadence,
+Daycare ownership, capacity service state, and the audited zero offline equipment-trial rule.
 */
 using System;
 using System.Linq;
@@ -136,6 +136,44 @@ internal static class CollectionModelTests
             "cross-zone Normal Bonus Accessory reward is numeric source metadata");
         Near(.25, bonusAccessories.NativeProgressionMagnitude, 1e-15,
             "Normal Bonus Accessory completion carries its exact +25% drop reward");
+        var global = LootSourceCatalog.GlobalSet("normal-bonus-accessories");
+        True(global != null && global.ItemIds().SequenceEqual(Enumerable.Range(432, 13)),
+            "Normal Bonus Shiny membership is exactly IDs 432..444");
+        True(global.WouldComplete(434, id => id != 434),
+            "developing the sole remaining Dragon Ball would complete the global set");
+        False(global.WouldComplete(434, id => id != 434 && id != 444),
+            "an inaccessible/future unMAXXED member prevents immediate reward credit");
+        True(LootSourceCatalog.GlobalSetsForItem(434).Single().SetKey
+             == "normal-bonus-accessories",
+            "Dragon Ball resolves to its one exact global reward membership");
+    }
+
+    private static void NormalBonusAccessoryDropLaws()
+    {
+        var zones = new[] {2,3,4,5,7,9,10,12,13,15,17,18,20};
+        var ids = Enumerable.Range(432, 13).ToArray();
+        var coefficients = new[] {.013,.0125,.01,.007,.005,.005,.0045,.004,.002,
+            .0002,1.2e-5,6e-6,8e-5};
+        var caps = new[] {1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,.03,.02,.016};
+        for (var i = 0; i < zones.Length; i++)
+        {
+            var branch = LootSourceCatalog.OrdinaryZone(zones[i]).Branches()
+                .Single(x => x.ContainsItem(ids[i]));
+            True(branch.EnemyClass == LootEnemyClass.Any
+                 && branch.Shape == LootBranchShape.Independent,
+                "bonus accessory is an independent post-branch roll in zone " + zones[i]);
+            Near(Math.Min(caps[i], coefficients[i] * 10.0),
+                branch.Probability.Evaluate(10.0, 10.0), 1e-15,
+                "bonus accessory native probability in zone " + zones[i]);
+            var outcomes = branch.BuildOutcomes(new[] {ids[i]}, 1.0, 1.0);
+            Equal(2, outcomes[1].Contributions()[0],
+                "makeLevelledLoot(id, 1) contributes two merge levels for ID " + ids[i]);
+        }
+        True(!LootSourceCatalog.OrdinaryZone(18).Branches()[0]
+                 .Probability.UsesRootedLootFactor
+             && LootSourceCatalog.OrdinaryZone(20).Branches()[0]
+                 .Probability.UsesRootedLootFactor,
+            "only the final Normal bonus accessory uses rooted loot factor");
     }
 
     private static CollectionCombatSignature Signature(double power, string gear)
@@ -159,6 +197,16 @@ internal static class CollectionModelTests
         Equal(2, sample.OnlineSamples, "only confirmed online samples count");
         False(ledger.TryGet(b, out sample),
             "materially changed combat signature cannot reuse stale cadence");
+        True(ledger.TryGetConservativeCompatible(b, out sample),
+            "a stronger character may conservatively reuse the same route and equipped item identities");
+        Near(3.0, sample.MeanSecondsPerTrial, 0.0,
+            "compatible reuse retains the observed online cadence instead of requesting endless probes");
+        var weaker = Signature(9, "507:99");
+        False(ledger.TryGetConservativeCompatible(weaker, out sample),
+            "a weaker post-rebirth state cannot inherit stronger combat cadence");
+        var changedGear = Signature(11, "508:99");
+        False(ledger.TryGetConservativeCompatible(changedGear, out sample),
+            "different equipped item identities require a fresh online sample");
 
         var pirateBranch = LootSourceCatalog.OrdinaryZone(43).Branches()[0];
         Near(0.0, pirateBranch.EligibleTrials(86400, 2.0, false), 0.0,
@@ -202,6 +250,7 @@ internal static class CollectionModelTests
         PirateOneOfEight();
         DeficitsAndUnseenOptionalDebt();
         RewardOnceAndPirateCosmeticValue();
+        NormalBonusAccessoryDropLaws();
         SignatureCadenceAndNoOfflineTrials();
         DaycareOwnershipAndCapacityService();
         Console.WriteLine("Collection model tests passed: " + _assertions + " assertions");

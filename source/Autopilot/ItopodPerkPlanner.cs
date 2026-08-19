@@ -12,8 +12,9 @@ without reading or changing a live Character.
 Mechanism: A climb plan uses the native-valid H-1 start and aims at the next ten-floor permanent-PP
 boundary.  Combat formulas remain useful diagnostics but never cap exploration; a session-local
 controller stops only after repeated confirmed deaths or no-enemy-HP-progress attempts on one fought
-floor, farms the separate repeatable Regular-Attack one-hit floor, and reopens when effective Adventure
-offense or durability materially improves.  The online transition simulator preserves native enemy-death ordering:
+floor, farms the best lower floor actually cleared during the session (falling back to the separate
+repeatable Regular-Attack one-hit floor), and reopens when effective Adventure offense or durability
+materially improves.  The online transition simulator preserves native enemy-death ordering:
 ordinary PP is calculated from the fought floor; the ten-kill move, wrap, and record award happen
 next; AP, EXP, boosts, clues, and special-drop probabilities use the post-move floor.  A de-duplicated
 post-kill gate requests a synchronous exit before an unproved sentinel can respawn.  Offline
@@ -249,7 +250,7 @@ namespace NGUInjector.Autopilot
     otherwise capable character, while a death forces the configured lower floors to be replayed.
     A fight where enemy HP stops reaching a new low is also a real failure even if high defense keeps
     the player alive forever. This controller therefore aims at the next record divisible by ten and
-    blocks only after eight failed attempts on the same fought floor without an intervening kill on
+    blocks only after three failed attempts on the same fought floor without an intervening kill on
     that floor. Successful replay kills on lower floors do not erase that evidence. While blocked,
     farming continues on the separately proven repeatable one-hit floor. A five-percent improvement in effective
     positive-damage throughput or effective durability reopens the trial, regardless of whether that
@@ -343,12 +344,13 @@ namespace NGUInjector.Autopilot
 
     internal sealed class ItopodClimbTrialController
     {
-        internal const int FailureStreakLimit = 8;
+        internal const int FailureStreakLimit = 3;
         internal const double ReadmissionImprovement = .05;
 
         private int _observedFloor = -1;
         private int _consecutiveFailures;
         private int _blockedFloor = -1;
+        private int _highestObservedClearFloor = -1;
         private int _lastHighestRecord = -1;
         private double _blockedOffense;
         private double _blockedDurability;
@@ -361,6 +363,7 @@ namespace NGUInjector.Autopilot
             if (_blockedFloor >= 0) return false;
             if (!failedAttempt)
             {
+                _highestObservedClearFloor = Math.Max(_highestObservedClearFloor, foughtFloor);
                 // A native defeat restarts the configured range. Kills on those replayed lower
                 // floors are mandatory recovery work, not evidence that the deeper failed floor
                 // became viable. Only a kill on that exact floor clears its failure streak.
@@ -427,6 +430,7 @@ namespace NGUInjector.Autopilot
         }
 
         internal int BlockedFloor { get { return _blockedFloor; } }
+        internal int HighestObservedClearFloor { get { return _highestObservedClearFloor; } }
         internal int ObservedFailureFloor { get { return _observedFloor; } }
         internal int ConsecutiveFailures { get { return _consecutiveFailures; } }
 
@@ -458,6 +462,7 @@ namespace NGUInjector.Autopilot
         private void Reset()
         {
             ResetBlock();
+            _highestObservedClearFloor = -1;
             _lastHighestRecord = -1;
         }
     }
@@ -1087,9 +1092,11 @@ namespace NGUInjector.Autopilot
         discrete perk gate or terminal END route proves ITOPOD should preempt it. Optional item
         debt is stricter: a merely positive finished-item score cannot own Adventure without a
         source-calibrated ETA that beats exact ordinary ITOPOD PP progress toward the next typed
-        perk. Rates compare logarithmic permanent progression gain per second only when both sides
-        have source-backed time/value inputs; incomparable native reward units are never silently
-        added together.
+        perk. When an audited optional drop law lacks only current cadence, one explicitly requested
+        easy-zone kill may measure it; this is a probe action, not an invented ETA or an open-ended
+        farming lease. Rates compare logarithmic permanent progression gain per second only when
+        both sides have source-backed time/value inputs; incomparable native reward units are never
+        silently added together.
         */
         internal static AdventureRoutePlan ChooseAdventureRoute(int highestRecord,
             int provenFrontierFloor, double itopodCycleSeconds, long currentPerkPoints,
@@ -1100,7 +1107,8 @@ namespace NGUInjector.Autopilot
             int liveFloor = -1, int killCounter = 0,
             int savedStart = -1, int savedEnd = -1,
             double ordinaryItopodPpPerSecond = 0.0,
-            bool collectionOptionalOnly = false)
+            bool collectionOptionalOnly = false,
+            bool collectionNeedsCadenceProbe = false)
         {
             ValidateFloor(highestRecord, "highestRecord");
             ValidateFloor(provenFrontierFloor, "provenFrontierFloor");
@@ -1176,6 +1184,11 @@ namespace NGUInjector.Autopilot
                     + " PP in " + seconds.ToString("0.##")
                     + "s and completes the next typed perk gate",
                     awardFloor, award, kills, seconds, true, itopodRate, collectionRate);
+            if (collectionOptionalOnly && collectionNeedsCadenceProbe)
+                return Route(AdventureRouteChoice.CollectionFarm,
+                    "take one easy source-zone kill to measure the exact optional-item cadence; "
+                    + "the next decision will compare its source-backed rate with ITOPOD",
+                    awardFloor, award, kills, seconds, false, itopodRate, collectionRate);
             if (collectionOptionalOnly && itopodRate > 0.0 && collectionRate < 0.0)
                 return Route(awardFloor > 0 ? AdventureRouteChoice.ItopodFrontier
                         : AdventureRouteChoice.ItopodFarm,

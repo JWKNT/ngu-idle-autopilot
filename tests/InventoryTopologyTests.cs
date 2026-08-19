@@ -11,10 +11,11 @@ guards the live Inventory/Daycare/progression integrations that protect irrevers
 state and the routed ITOPOD range.
 
     Mechanism: Primitive arrays exercise all-39 boost gating, native merge arithmetic, transform-chain
-    successors, collection retention, per-loadout retarget legality, and exact progression-unlock
-    postconditions. Read-only source checks ensure the live managers use pairwise merges, build-pinned
-    consumption, usable-slot Daycare retrieval, selector restoration, every audited state-machine ID,
-    and exact ITOPOD range/Lazy ownership settlement.
+    successors, collection retention, optional combat/production/global-reward routing, per-loadout
+    retarget legality, and exact progression-unlock postconditions. Read-only source checks ensure
+    the live managers use pairwise merges, build-pinned consumption, usable-slot Daycare retrieval,
+    selector restoration, exact online collection cadence, every audited state-machine ID, and exact
+    ITOPOD range/Lazy ownership settlement.
 
 Inputs and outputs: Inputs are in-memory Boolean/integer fixtures and maintained integration sources.
 Output is an assertion count/process status. The suite does not load Unity, a save, runtime telemetry,
@@ -211,6 +212,21 @@ internal static class InventoryTopologyTests
             "hard Boss, ITOPOD, and major-unlock development ignore unrelated production specials");
         Assert(ProgressionLoadoutOptimizer.ShouldValueProductionInDevelopment(false, false, false),
             "routine farming development may value resource-production specials");
+
+        var planner = File.ReadAllText("source/Managers/AdventureCollectionPlanner.cs");
+        var loadout = File.ReadAllText("source/Managers/ProgressionLoadoutOptimizer.cs");
+        var combat = File.ReadAllText("source/Managers/CombatManager.cs");
+        Assert(planner.Contains("MaxxedFullyBoostedProductionLoadoutGain")
+               && planner.Contains("TryGetImmediateGlobalReward")
+               && planner.Contains("global.WouldComplete"),
+            "optional collection checks real production loadouts and only immediately completable global rewards");
+        Assert(loadout.Contains("case specType.MagicPower:")
+               && loadout.Contains("case specType.MagicCap:")
+               && loadout.Contains("ProductionLoadoutUtility"),
+            "Magic Power/Cap gear participates in the independent production-loadout projection");
+        Assert(combat.Contains("RecordOnlineEligibleKill(")
+               && combat.Contains("_fightCollectionSignature"),
+            "confirmed ordinary kills feed the exact-signature collection cadence ledger");
     }
 
     private static void TestLiveIntegrationStructure()
@@ -250,6 +266,10 @@ internal static class InventoryTopologyTests
         Assert(safeZoneHop >= 0 && itopodStage > safeZoneHop
                && autopilot.Contains("Main.Character.adventure.zone != -1"),
             "ITOPOD entry deliberately takes a Safe-Zone frame before loadout staging");
+        Assert(autopilot.Contains("best.Zone >= 0 && Main.Character.adventure.zone != best.Zone")
+               && autopilot.Contains("through Safe Zone before routing to")
+               && autopilot.Contains("GameNames.Zone(Main.Character, best.Zone)"),
+            "ordinary targets selected during live combat settle through Safe Zone before entry");
         Assert(autopilot.Contains("var manualItopod = Main.Settings.ITOPODCombatMode != 1")
                && autopilot.Contains("var fightType = move69Pending || manualItopod ? 2 : 0"),
             "configured Manual ITOPOD combat is retained for farms as well as record climbs");
