@@ -3,7 +3,8 @@ FILE PURPOSE
 
 This dependency-free client discovers and polls the laptop's current read-only public tunnel,
 validates its telemetry envelope, and renders the full confirmed NGU state into a hierarchy led by
-plain game facts and rebirth/challenge/difficulty/END decisions. Machine-level epoch/hash, root,
+the selected Boss and record, ranked priorities, complete resource allocation, active growth,
+Adventure outcomes, and inventory. Machine-level epoch/hash, root,
 staged-authority, and shadow-scheduler diagnostics live in one collapsed disclosure. Missing
 optional fields stay visibly unavailable rather than becoming false zero values or ETAs. Challenge
 reset legality comes only from an active challenge plus challengeAllowsRebirth, never a negative
@@ -367,12 +368,13 @@ exposes no mutation endpoint.
       ? `entry ${optionalDuration(challenge.entryEtaSeconds)}` : text(challenge.reason, "admission evidence unavailable"));
 
     const selectedBoss = optionalNumber(s.bossSelectedId);
+    const highestBoss = optionalNumber(s.highestBoss);
     const recordBoss = optionalNumber(s.bossRecordTargetId ?? s.nextBoss);
-    setText("metric-boss-label", "Current boss");
+    setText("metric-boss-label", "Boss progress");
     setText("metric-boss", selectedBoss === null ? "Unavailable" : `#${selectedBoss.toLocaleString()}`);
-    const bossNote = recordBoss === null ? "record target unavailable"
-      : `${s.bossTargetMatchesSelected ? "next record" : "record target"} #${recordBoss.toLocaleString()}`;
-    setText("metric-boss-note", `${bossNote} · ${optionalDuration(s.bossDefeatEtaSeconds, "ETA unavailable")}`);
+    setText("metric-boss-record", highestBoss === null ? "Unavailable" : `#${highestBoss.toLocaleString()}`);
+    const bossNote = recordBoss === null ? "next record unavailable" : `next record #${recordBoss.toLocaleString()}`;
+    setText("metric-boss-note", `${bossNote} · target ETA ${optionalDuration(s.bossDefeatEtaSeconds, "unavailable")}`);
 
     setText("metric-adventure", s.adventureTargetName, "Selecting route");
     const routeMode = number(s.adventureTargetZone, -1) >= 1000 || number(s.adventureZone, -1) >= 1000
@@ -385,6 +387,50 @@ exposes no mutation endpoint.
     const expShortfall = number(s.expShortfall);
     setText("metric-exp", expShortfall > 0 ? `${shortNumber(expShortfall)} XP` : "Ready");
     setText("metric-exp-note", `${expShortfall > 0 ? "until" : "for"} ${expName}`);
+  }
+
+  function derivePriorities(s, observability) {
+    const priorities = [];
+    const challenge = observability.challenge;
+    if (challenge.active) {
+      const target = challenge.targetBoss === null || challenge.targetBoss === undefined
+        ? text(challenge.rulesSummary, "complete its exact objective") : `reach Boss #${Number(challenge.targetBoss).toLocaleString()}`;
+      priorities.push({ score: 100, tone: "challenge", title: `Finish ${text(challenge.label, "the active challenge")}`, detail: `${target}; ${text(challenge.rebirthPolicy, "follow the challenge's rebirth rule")}` });
+    } else if (challenge.admitted) {
+      priorities.push({ score: 96, tone: "challenge", title: `Prepare ${text(challenge.label, "the next challenge")}`, detail: `${text(challenge.reason, "The route has admission evidence")} · clear ${optionalDuration(challenge.clearEtaSeconds)}.` });
+    }
+
+    const itopodMode = text(s.itopodMode, "").toLowerCase();
+    if (number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm")) {
+      const targetFloor = Math.max(number(s.itopodRangeEnd), number(s.itopodNextAwardFloor));
+      priorities.push({ score: itopodMode.includes("climb") ? 94 : 80, tone: "itopod", title: itopodMode.includes("climb") ? `Claim ITOPOD floor ${targetFloor}` : "Farm ITOPOD efficiently", detail: `${text(s.itopodRouteReason, "Earn PP and permanent Perks")} · floor ${number(s.itopodCurrentFloor)} now.` });
+    }
+
+    if (s.majorUnlockActive) priorities.push({ score: 91, tone: "route", title: `Unlock ${text(s.majorUnlockName, "the next system")}`, detail: text(s.majorUnlockReason || s.adventureControlReason, "Push the Adventure gate that opens the next mechanic.") });
+    else if (!(number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm"))) priorities.push({ score: 78, tone: "route", title: text(s.loadoutObjective || s.adventureTargetName, "Keep progressing Adventure"), detail: text(s.adventureControlReason || s.loadoutDecision, "Use the strongest useful loadout for the selected route.") });
+
+    if (!observability.rebirth.noResetHold && observability.rebirth.resetEtaSeconds !== null) {
+      priorities.push({ score: 72, tone: "rebirth", title: "Rebirth at the selected checkpoint", detail: `${optionalDuration(observability.rebirth.resetEtaSeconds)} remaining · ${text(observability.rebirth.reason, "value checked at the boundary")}.` });
+    }
+
+    const expShortfall = number(s.expShortfall);
+    priorities.push({ score: 60, tone: "purchase", title: expShortfall > 0 ? `Save ${shortNumber(expShortfall)} XP for ${purchaseName(s, "exp")}` : `Buy ${purchaseName(s, "exp")}`, detail: text(s.expDecision, "The next permanent purchase is continuously re-priced.") });
+    return priorities.sort((a, b) => b.score - a.score).slice(0, 3);
+  }
+
+  function renderPriorities(s, observability) {
+    const priorities = derivePriorities(s, observability);
+    const list = byId("priority-list");
+    list?.replaceChildren(...priorities.map((priority, index) => {
+      const item = document.createElement("li");
+      item.dataset.tone = priority.tone;
+      const rank = document.createElement("span"); rank.className = "priority-rank"; rank.textContent = String(index + 1);
+      const copy = document.createElement("div");
+      const title = document.createElement("strong"); title.textContent = priority.title;
+      const detail = document.createElement("p"); detail.textContent = sentence(priority.detail);
+      copy.append(title, detail); item.append(rank, copy); return item;
+    }));
+    setText("priority-summary", "Ranked from active gates and verified live state; local utility is not a global speedrun proof.");
   }
 
   function renderRoute(s, observability) {
@@ -550,6 +596,7 @@ exposes no mutation endpoint.
     setText("energy-bt", shortNumber(s.energyBasicTrainingAllocated));
     setText("energy-other", shortNumber(s.energyNonBasicTrainingAllocated));
     setText("energy-idle", shortNumber(s.energyIdle));
+    renderAllocationList("energy-allocation-list", allocationGroups(s, "energy"), energyCurrent);
 
     setText("magic-value", `${shortNumber(magicAllocated)} / ${shortNumber(magicCurrent)}`);
     setText("magic-rate", `+${shortNumber(s.magicIncomePerSecond)}/s`);
@@ -559,6 +606,7 @@ exposes no mutation endpoint.
     setText("magic-blood", shortNumber(s.magicBloodAllocated));
     setText("magic-tm", shortNumber(s.magicTimeMachineAllocated));
     setText("magic-idle", shortNumber(s.magicIdle));
+    renderAllocationList("magic-allocation-list", allocationGroups(s, "magic"), magicCurrent);
 
     setText("exp-balance", `${shortNumber(s.exp)} XP`);
     setText("exp-decision", sentence(s.expDecision));
@@ -579,6 +627,7 @@ exposes no mutation endpoint.
     setText("res3-cap", res3Unlocked ? shortNumber(stats.res3Cap) : "—");
     setText("res3-idle", res3Unlocked ? shortNumber(stats.res3Idle) : "—");
     byId("res3-meter").style.width = `${res3Unlocked ? percent(number(stats.res3Current) - number(stats.res3Idle), stats.res3Current) : 0}%`;
+    renderAllocationList("res3-allocation-list", res3Unlocked ? allocationGroups(s, "resource3") : [], number(stats.res3Current));
 
     setText("pp-balance", `${shortNumber(s.itopodPerkPoints)} PP`);
     setText("pp-decision", sentence(s.itopodRouteReason));
@@ -589,6 +638,86 @@ exposes no mutation endpoint.
     setText("seed-blood-balance", `${shortNumber(stats.seeds)} seeds · ${shortNumber(stats.blood)} blood`);
     setText("seed-blood-decision", s.yggFruitDecision || s.bloodMagicAllocationDecision, "Persistent-resource policy pending.");
     setText("seed-blood-detail", `${text(s.yggSeedDecision, "Yggdrasil locked")} · ${text(s.bloodMagicAllocationDecision, "Blood Magic locked")}`);
+  }
+
+  function allocationGroups(s, resource) {
+    const summary = s.resourceAllocationSummary && typeof s.resourceAllocationSummary === "object" ? s.resourceAllocationSummary[resource] : null;
+    if (summary && Array.isArray(summary.groups)) {
+      const groups = summary.groups.filter((entry) => number(entry.allocated) > 0).map((entry) => ({ name: text(entry.name, "Other"), amount: number(entry.allocated) }));
+      if (number(summary.idle) > 0 || !groups.length) groups.push({ name: "Idle", amount: number(summary.idle) });
+      return groups;
+    }
+    if (resource === "energy") return [
+      { name: "Basic Training", amount: number(s.energyBasicTrainingAllocated) },
+      { name: "Other systems", amount: number(s.energyNonBasicTrainingAllocated) },
+      { name: "Idle", amount: number(s.energyIdle) },
+    ].filter((entry) => entry.amount > 0);
+    if (resource === "magic") return [
+      { name: "Wandoos", amount: number(s.magicWandoosAllocated) },
+      { name: "Time Machine", amount: number(s.magicTimeMachineAllocated) },
+      { name: "Blood Magic", amount: number(s.magicBloodAllocated) },
+      { name: "Idle", amount: number(s.magicIdle) },
+    ].filter((entry) => entry.amount > 0);
+    return [];
+  }
+
+  function renderAllocationList(id, groups, capacity) {
+    const list = byId(id);
+    if (!list) return;
+    if (!groups.length) {
+      const empty = document.createElement("li"); empty.className = "allocation-empty"; empty.textContent = "No unlocked allocation sinks yet."; list.replaceChildren(empty); return;
+    }
+    list.replaceChildren(...groups.map((group) => {
+      const item = document.createElement("li");
+      const label = document.createElement("span"); label.textContent = group.name;
+      const amount = document.createElement("strong"); amount.textContent = `${shortNumber(group.amount)} · ${compactDecimal(percent(group.amount, capacity), 1)}%`;
+      const bar = document.createElement("i"); bar.style.width = `${percent(group.amount, capacity)}%`;
+      item.append(label, amount, bar); return item;
+    }));
+  }
+
+  function renderGrowth(s) {
+    const setGrowth = (key, active, value, detail) => {
+      const card = byId(`growth-${key}`); if (card) card.dataset.state = active ? "active" : "held";
+      setText(`growth-${key}-value`, value); setText(`growth-${key}-detail`, detail);
+    };
+    const augmentEnergy = number(s.augmentEnergy);
+    setGrowth("augment", augmentEnergy > 0, augmentEnergy > 0 ? `${shortNumber(augmentEnergy)} Energy` : "Waiting", `${text(s.augmentDecision, "No active Augment target")} · ${compactDecimal(number(s.augmentProgress) * 100, 1)}%${number(s.augmentEtaSeconds, -1) >= 0 ? ` · ${duration(s.augmentEtaSeconds, true)}` : ""}`);
+    const wandoosTotal = number(s.wandoosEnergyAllocated) + number(s.magicWandoosAllocated);
+    const osNames = ["Wandoos 98", "Wandoos MEH", "Wandoos XL"];
+    setGrowth("wandoos", wandoosTotal > 0, wandoosTotal > 0 ? `${shortNumber(wandoosTotal)} E + M` : "Waiting", `${osNames[number(s.wandoosOsType)] || "Wandoos"} · Energy level ${shortNumber(s.wandoosEnergyLevel)} · Magic level ${shortNumber(s.wandoosMagicLevel)}`);
+    const tmTotal = number(s.timeMachineEnergyAllocated) + number(s.magicTimeMachineAllocated);
+    setGrowth("tm", tmTotal > 0, tmTotal > 0 ? `${shortNumber(tmTotal)} E + M` : "Waiting", `Speed level ${shortNumber(s.timeMachineSpeedLevel)} · Gold level ${shortNumber(s.timeMachineGoldLevel)} · ${text(s.timeMachineHorizonDecision, "horizon pending")}`);
+    const atActive = number(s.advancedTrainingAttackTarget) + number(s.advancedTrainingDefenseTarget) > 0;
+    setGrowth("at", atActive, atActive ? `${shortNumber(s.advancedTrainingAttackTarget)} A / ${shortNumber(s.advancedTrainingDefenseTarget)} D` : "Waiting", `${text(s.advancedTrainingHorizonDecision, "No reset-local target")} ${number(s.advancedTrainingCompletionEtaSeconds, -1) >= 0 ? `· ${duration(s.advancedTrainingCompletionEtaSeconds, true)}` : ""}`);
+    const ngus = Array.isArray(s.nguProgress) ? s.nguProgress : [];
+    const activeNgus = ngus.filter((entry) => number(entry.allocated) > 0);
+    setGrowth("ngu", activeNgus.length > 0, activeNgus.length ? `${activeNgus.length} active` : "Waiting", activeNgus.length ? activeNgus.slice(0, 3).map((entry) => `${entry.name} ${shortNumber(entry.allocated)}`).join(" · ") : "No Energy or Magic is currently assigned to NGUs.");
+    setText("growth-summary", `${[augmentEnergy > 0, wandoosTotal > 0, tmTotal > 0, atActive, activeNgus.length > 0].filter(Boolean).length} of 5 displayed systems active now.`);
+  }
+
+  function renderActivity(s, events) {
+    const journal = byId("adventure-log-list");
+    const records = Array.isArray(events) ? events : [];
+    if (journal) journal.replaceChildren(...(records.length ? records.slice(0, 18).map((event) => {
+      const item = document.createElement("li"); item.dataset.tone = text(event.tone, "route");
+      const meta = document.createElement("span"); meta.textContent = `${text(event.clock, "—")} · ${text(event.category, "Adventure")}`;
+      const message = document.createElement("p"); message.textContent = text(event.message, "—");
+      item.append(meta, message); return item;
+    }) : [(() => { const item = document.createElement("li"); item.dataset.tone = "route"; item.textContent = "No Adventure outcomes have been recorded in this session yet."; return item; })()]));
+    setText("activity-summary", records.length ? `${records.length} useful outcomes from the current bot session · newest first` : "No current-session Adventure outcomes yet.");
+
+    const inventory = Array.isArray(s.inventoryItems) ? s.inventoryItems : [];
+    setText("inventory-glance-summary", `${number(s.inventoryUsedSlots)} used · ${number(s.inventoryFreeSlots)} free`);
+    setText("inventory-glance-policy", `${text(s.inventoryPressure, "pressure unknown")} · ${text(s.boostDecision || s.loadoutDecision, "policy pending")}`);
+    const chosen = [...inventory].sort((a, b) => Number(a.maxxed) - Number(b.maxxed) || number(b.level) - number(a.level)).slice(0, 7);
+    const glance = byId("inventory-glance-list");
+    glance?.replaceChildren(...(chosen.length ? chosen.map((item) => {
+      const row = document.createElement("li");
+      const name = document.createElement("span"); name.textContent = text(item.name, `Item #${number(item.id)}`);
+      const state = document.createElement("strong"); state.textContent = `Lv ${number(item.level)}${item.maxxed ? " · MAXX" : " · leveling"}`;
+      row.append(name, state); return row;
+    }) : [(() => { const row = document.createElement("li"); row.textContent = "No physical inventory items."; return row; })()]));
   }
 
   function renderCombatInventory(s) {
@@ -926,9 +1055,12 @@ exposes no mutation endpoint.
     errorBanner.textContent = transactionAlert
       ? `Latest automation transaction ${text(observability.transaction.status, "failure")}: ${text(observability.transaction.error, "inspect root epoch and quarantined-step counts")}` : "";
     renderHeadline(s, observability);
+    renderPriorities(s, observability);
     renderRoute(s, observability);
     renderExecution(envelope, observability);
     renderResources(s);
+    renderGrowth(s);
+    renderActivity(s, envelope.adventureLog);
     renderCombatInventory(s);
     renderRebirth(s, observability);
     renderChallenge(observability);

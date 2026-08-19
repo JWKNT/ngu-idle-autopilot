@@ -14,7 +14,9 @@ FILE PURPOSE
 AutopilotManager is the task-29 integration surface: it reloads and installs pure plans, exposes the
 single GameEpoch-bound MutationCoordinator root used by Main, invokes only typed child-intent
 managers, emits exact shadow/transaction/native-binding telemetry, and records sparse verified
-progression events. Planning is separate from mutation execution. Build-pinned EXP atoms, PP perk
+progression events. Its read-only dashboard envelope also publishes the complete grouped native
+Energy/Magic/Resource 3 allocation vector and live Wandoos levels so the player can account for
+every resource without weakening the exact transaction proof. Planning is separate from mutation execution. Build-pinned EXP atoms, PP perk
 purchases, T1-T12 execution, and ordinary rebirth are live behind explicit authority and fresh
 postconditions. PP execution buys only the audited early sequence or terminal item; later PP is
 saved until typed downstream-time quotes replace name/effect heuristics. Exact Money Pit and the
@@ -1515,6 +1517,7 @@ namespace NGUInjector.Autopilot
                 : productiveTrainingHeadroom > 0 ? "productive-basic-training-headroom-unallocated"
                 : "all-unlocked-basic-training-speed-capped-no-other-admitted-target";
             var energyBreakdown = EnergyAllocationBreakdown(c);
+            var resourceAllocationSummary = ResourceAllocationSummaryJson(c);
             var basicTrainingEnergy = BasicTrainingEnergy(c);
             var nonBasicTrainingEnergy = Math.Max(0L,
                 Math.Max(0L, c.curEnergy - c.idleEnergy) - basicTrainingEnergy);
@@ -1821,6 +1824,7 @@ namespace NGUInjector.Autopilot
                        + "  \"advancedTrainingPolicy\": \"reset-local: allocate only when the exact paired zone threshold plus a productive farm window completes before rebirth\",\n"
                        + "  \"timeMachineHorizonDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.TimeMachineBP.LastHorizonDecision) + "\",\n"
                        + "  \"energyAllocationBreakdown\": " + energyBreakdown + ",\n"
+                       + "  \"resourceAllocationSummary\": " + resourceAllocationSummary + ",\n"
                        + "  \"energyBasicTrainingAllocated\": " + basicTrainingEnergy + ",\n"
                        + "  \"energyNonBasicTrainingAllocated\": " + nonBasicTrainingEnergy + ",\n"
                        + "  \"magicCurrent\": " + c.magic.curMagic + ",\n"
@@ -1832,6 +1836,9 @@ namespace NGUInjector.Autopilot
                        + "  \"magicBaseCap\": " + c.magic.capMagic + ",\n"
                        + "  \"magicBaseBars\": " + c.magic.magicPerBar + ",\n"
                        + "  \"magicTimeMachineAllocated\": " + c.machine.goldMultiMagic + ",\n"
+                       + "  \"timeMachineEnergyAllocated\": " + c.machine.speedEnergy + ",\n"
+                       + "  \"timeMachineSpeedLevel\": " + c.machine.levelSpeed + ",\n"
+                       + "  \"timeMachineSpeedProgress\": " + c.machine.speedProgress.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"timeMachineGoldLevel\": " + c.machine.levelGoldMulti + ",\n"
                        + "  \"timeMachineGoldProgress\": " + c.machine.goldMultiProgress.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"timeMachineNextGoldCost\": " + c.timeMachineController.machineGoldMultiCost().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
@@ -1840,6 +1847,13 @@ namespace NGUInjector.Autopilot
                        + "  \"grossGoldPerSecond\": " + c.grossGoldPerSecond().ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"magicBloodAllocated\": " + (c.bloodMagic == null || c.bloodMagic.ritual == null ? 0L : c.bloodMagic.ritual.Sum(x => Math.Max(0L, x.magic))) + ",\n"
                        + "  \"magicWandoosAllocated\": " + c.wandoos98.wandoosMagic + ",\n"
+                       + "  \"wandoosEnergyAllocated\": " + c.wandoos98.wandoosEnergy + ",\n"
+                       + "  \"wandoosEnergyLevel\": " + c.wandoos98.energyLevel + ",\n"
+                       + "  \"wandoosMagicLevel\": " + c.wandoos98.magicLevel + ",\n"
+                       + "  \"wandoosEnergyProgress\": " + c.wandoos98.energyProgress.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"wandoosMagicProgress\": " + c.wandoos98.magicProgress.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"wandoosOsLevel\": " + c.wandoos98.OSlevel + ",\n"
+                       + "  \"wandoosOsType\": " + (int)c.wandoos98.os + ",\n"
                        + "  \"magicAllocationDecision\": \"" + EscapeJson(CustomAllocation.LastMagicAllocationDecision) + "\",\n"
                        + "  \"res3AllocationDecision\": \"" + EscapeJson(CustomAllocation.LastR3AllocationDecision) + "\",\n"
                        + "  \"bloodMagicAllocationDecision\": \"" + EscapeJson(AllocationProfiles.BreakpointTypes.BR.LastDecision) + "\",\n"
@@ -3086,6 +3100,55 @@ namespace NGUInjector.Autopilot
                          + ",\"defenseLevelsPerSecond\":" + defenseRate.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "}");
             }
             return "[" + string.Join(",", rows.ToArray()) + "]";
+        }
+
+        private static string ResourceAllocationSummaryJson(Character c)
+        {
+            // Reuse the same complete native target capture that settles Allocation mutations.
+            // This is a read-only presentation projection: the dashboard receives grouped labels,
+            // while the transaction layer continues to prove the full stable-key vector.
+            var snapshot = LiveResourceAllocationProof.Capture(c, 1L, "dashboard-read-only");
+            if (snapshot == null)
+                return "{\"available\":false,\"energy\":null,\"magic\":null,\"resource3\":null}";
+            return "{\"available\":true,\"energy\":"
+                   + AllocationGroupsJson(snapshot.Energy)
+                   + ",\"magic\":" + AllocationGroupsJson(snapshot.Magic)
+                   + ",\"resource3\":" + AllocationGroupsJson(snapshot.Resource3) + "}";
+        }
+
+        private static string AllocationGroupsJson(ExactAllocationVector vector)
+        {
+            if (vector == null) return "null";
+            var grouped = new SortedDictionary<string, long>(StringComparer.Ordinal);
+            foreach (var pair in vector.TargetsCopy())
+            {
+                if (pair.Value <= 0L) continue;
+                var label = AllocationGroupLabel(pair.Key);
+                long current;
+                grouped.TryGetValue(label, out current);
+                grouped[label] = current + pair.Value;
+            }
+            var rows = new List<string>();
+            foreach (var pair in grouped.OrderByDescending(x => x.Value).ThenBy(x => x.Key))
+                rows.Add("{\"name\":\"" + EscapeJson(pair.Key) + "\",\"allocated\":"
+                         + pair.Value + "}");
+            return "{\"capacity\":" + vector.Capacity + ",\"idle\":" + vector.Idle
+                   + ",\"conserved\":" + vector.IsConserved().ToString().ToLowerInvariant()
+                   + ",\"groups\":[" + string.Join(",", rows.ToArray()) + "]}";
+        }
+
+        private static string AllocationGroupLabel(string key)
+        {
+            if (key.StartsWith("training.", StringComparison.Ordinal)) return "Basic Training";
+            if (key.StartsWith("augment.", StringComparison.Ordinal)) return "Augments";
+            if (key.StartsWith("advanced-training.", StringComparison.Ordinal)) return "Advanced Training";
+            if (key.StartsWith("wandoos.", StringComparison.Ordinal)) return "Wandoos";
+            if (key.StartsWith("time-machine.", StringComparison.Ordinal)) return "Time Machine";
+            if (key.StartsWith("ngu.", StringComparison.Ordinal)) return "NGUs";
+            if (key.StartsWith("blood.", StringComparison.Ordinal)) return "Blood Magic";
+            if (key.StartsWith("hack.", StringComparison.Ordinal)) return "Hacks";
+            if (key.StartsWith("wish.", StringComparison.Ordinal)) return "Wishes";
+            return "Other systems";
         }
 
         private static long BasicTrainingEnergy(Character c)

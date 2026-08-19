@@ -7,7 +7,9 @@ bot's confirmed telemetry to that shell through a small read-only HTTP API.
 
 Mechanism: a loopback-only ThreadingHTTPServer serves the repository's docs/ tree
 and builds /api/state from the matching runtime/deployment.json + decision.json epoch
-and an explicitly session-bound tail of runtime/logs/actions.log.  A derived
+and an explicitly session-bound tail of runtime/logs/actions.log.  That tail produces both a
+sparse consequential-event ledger and a denser, player-facing Adventure journal containing kills,
+defeats, route changes, ITOPOD boundaries, loot, and item growth.  A derived
 observability view normalizes optional rebirth, challenge, difficulty, terminal,
 capacity, scheduler, transaction, producer-identity, loaded-assembly binding-health, and explicit
 challenge rebirth-policy fields
@@ -855,6 +857,54 @@ def recent_key_events(
     return events
 
 
+def recent_adventure_log(
+    path: Path, maximum: int = 24, session_id: str | None = None
+) -> list[dict[str, str]]:
+    """Return a readable, current-session Adventure feed without ability-button spam."""
+    entries: list[dict[str, str]] = []
+    lines, _ = session_tail_lines(path, session_id)
+    for line in reversed(lines):
+        match = EVENT_LINE.match(line.strip())
+        if not match:
+            continue
+        category = match.group("category").upper()
+        message = EVIDENCE_SUFFIX.sub("", match.group("message")).strip()
+        lowered = message.lower()
+
+        include = False
+        tone = "route"
+        if category == "COMBAT":
+            include = " killed in " in lowered or "defeated the player" in lowered
+            tone = "danger" if "defeated the player" in lowered else "victory"
+        elif category in {"ZONE", "ITOPOD", "ADVENTURE"}:
+            include = True
+            tone = "route"
+        elif category in {"LOOT", "COLLECTION", "DISCOVERY", "TITAN"}:
+            include = True
+            tone = "loot"
+        elif category in {"INVENTORY", "TRASH"}:
+            include = any(
+                term in lowered
+                for term in ("applied boosts", "maxxed", "consumed", "trashed", "merged")
+            )
+            tone = "loot"
+        if not include:
+            continue
+
+        entries.append(
+            {
+                "clock": match.group("clock"),
+                "run": match.group("run") or "",
+                "category": category,
+                "tone": tone,
+                "message": message,
+            }
+        )
+        if len(entries) >= maximum:
+            break
+    return entries
+
+
 def recent_action_errors(
     path: Path, maximum: int = 12, session_id: str | None = None
 ) -> list[dict[str, Any]]:
@@ -996,6 +1046,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         action_log = self.runtime_dir / "logs" / "actions.log"
         _, tail_status = session_tail_lines(action_log, session_id)
         events = recent_key_events(action_log, session_id=session_id)
+        adventure_log = recent_adventure_log(action_log, session_id=session_id)
         action_errors = recent_action_errors(action_log, session_id=session_id)
 
         timestamp = (
@@ -1017,9 +1068,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "status": tail_status if session_id else identity["joinStatus"],
                 "producerSessionId": session_id,
                 "eventCount": len(events),
+                "adventureCount": len(adventure_log),
                 "errorCount": len(action_errors),
             },
             "events": events,
+            "adventureLog": adventure_log,
             "actionErrors": action_errors,
         }
         self._send_json(payload)

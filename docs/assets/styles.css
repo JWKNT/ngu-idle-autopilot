@@ -2,8 +2,9 @@
 FILE PURPOSE
 
 This stylesheet adds NGU-specific information architecture to the shared JWKNT v1 foundation.
-It keeps a very large game-state reference calm through plain headings, typographic hierarchy,
-hairline structure, native disclosure controls, compact tables, and semantic reset states. The
+It makes the current target, ranked priorities, resource flows, active leveling, Adventure journal,
+and inventory glance easy to scan through restrained color, typographic hierarchy, hairline
+structure, native disclosure controls, compact tables, and semantic reset states. The
 default view emphasizes game facts; epoch/hash, root, scheduler, and authority diagnostics share
 one collapsed technical disclosure. Held, Pending, and Quarantined remain deliberately distinct,
 and responsive layouts hide no data.
@@ -17,6 +18,11 @@ and responsive layouts hide no data.
   --held: #8a651c;
   --quarantined: #8b3939;
   --meter-track: #e8e8e8;
+  --energy-accent: #a87316;
+  --magic-accent: #7757a8;
+  --r3-accent: #3f7b63;
+  --route-accent: #47759f;
+  --panel-tint: rgba(83, 111, 143, .045);
 }
 
 :root[data-theme="dark"] {
@@ -27,6 +33,11 @@ and responsive layouts hide no data.
   --held: #d6b568;
   --quarantined: #e08f8f;
   --meter-track: #292d31;
+  --energy-accent: #e0ae50;
+  --magic-accent: #b69be0;
+  --r3-accent: #78b99e;
+  --route-accent: #85aed3;
+  --panel-tint: rgba(136, 168, 209, .055);
 }
 
 body { padding-bottom: 40px; font-size: 15px; line-height: 1.5; }
@@ -53,6 +64,11 @@ body { padding-bottom: 40px; font-size: 15px; line-height: 1.5; }
 .headline-metrics dt { color: var(--muted); font-size: 10px; font-variant: small-caps; letter-spacing: .45px; }
 .headline-metrics dd { margin: 3px 0 1px; overflow: hidden; color: var(--blue-dark); font: 600 clamp(16px, 2vw, 22px)/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .headline-metrics .metric-note { display: block; overflow: hidden; margin: 0; color: var(--muted); font: 11px/1.5 var(--serif); text-overflow: ellipsis; white-space: nowrap; }
+.boss-comparison { display: flex; gap: 18px; overflow: visible !important; }
+.boss-comparison span { display: grid; gap: 1px; min-width: 0; }
+.boss-comparison strong { color: var(--blue-dark); font: inherit; }
+.boss-comparison span + span { padding-left: 16px; border-left: 1px solid var(--line); }
+.boss-comparison small { color: var(--muted); font: 8px/1.2 var(--mono); font-weight: 400; text-transform: uppercase; }
 
 .notice { margin-top: 13px; padding: 8px 10px; border-left: 2px solid var(--warn); background: var(--surface); color: var(--muted-strong); font-size: 12px; }
 .notice-error { border-left-color: var(--bad); color: var(--bad); }
@@ -63,6 +79,18 @@ body { padding-bottom: 40px; font-size: 15px; line-height: 1.5; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 13px; }
 .section-heading h2 { margin: 0; font-size: 20px; font-weight: 500; line-height: 1.25; }
 .section-meta { max-width: 52%; margin: 0; color: var(--muted); font: 10px/1.4 var(--mono); text-align: right; }
+
+.priority-section { padding-top: 28px; }
+.priority-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; padding: 0; border-top: 1px solid var(--line-strong); list-style: none; }
+.priority-list li { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; min-width: 0; padding: 14px 18px 14px 0; border-bottom: 1px solid var(--line-strong); border-top: 2px solid var(--route-accent); background: linear-gradient(180deg, var(--panel-tint), transparent 72%); }
+.priority-list li + li { padding-left: 18px; border-left: 1px solid var(--line); }
+.priority-list li[data-tone="challenge"] { border-top-color: var(--warn); }
+.priority-list li[data-tone="itopod"] { border-top-color: var(--r3-accent); }
+.priority-list li[data-tone="purchase"] { border-top-color: var(--energy-accent); }
+.priority-list li[data-tone="rebirth"] { border-top-color: var(--magic-accent); }
+.priority-rank { display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid currentColor; color: var(--route-accent); font: 700 12px/1 var(--mono); }
+.priority-list strong { display: block; font-size: 14px; line-height: 1.35; }
+.priority-list p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
 
 .route-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(360px, 1fr); gap: 32px; }
 .route-primary h3 { margin: 0; font-size: 17px; font-weight: 600; }
@@ -159,6 +187,43 @@ body { padding-bottom: 40px; font-size: 15px; line-height: 1.5; }
 
 .allocation-row-wide { grid-column: 1 / -1; padding-right: 0; padding-left: 0 !important; border-left: 0 !important; }
 .purchase-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.energy-allocation .meter span { background: var(--energy-accent); }
+.magic-allocation .meter span { background: var(--magic-accent); }
+.res3-allocation .meter span { background: var(--r3-accent); }
+.allocation-flow { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 18px; margin: 0; padding: 0; list-style: none; }
+.allocation-flow li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; overflow: hidden; padding: 5px 0 6px; border-bottom: 1px solid var(--line); }
+.allocation-flow li span, .allocation-flow li strong { position: relative; z-index: 1; font-size: 10px; }
+.allocation-flow li span { color: var(--muted-strong); }
+.allocation-flow li strong { color: var(--blue-dark); font: 600 9px/1.5 var(--mono); }
+.allocation-flow li i { position: absolute; bottom: 0; left: 0; height: 2px; max-width: 100%; background: var(--route-accent); opacity: .75; }
+.energy-allocation .allocation-flow li i { background: var(--energy-accent); }
+.magic-allocation .allocation-flow li i { background: var(--magic-accent); }
+.res3-allocation .allocation-flow li i { background: var(--r3-accent); }
+.allocation-flow .allocation-empty { display: block; color: var(--muted); font-size: 10px; }
+
+.growth-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--line-strong); }
+.growth-grid article { min-width: 0; padding: 13px 15px 12px 0; border-bottom: 1px solid var(--line-strong); border-top: 2px solid var(--line); }
+.growth-grid article + article { padding-left: 15px; border-left: 1px solid var(--line); }
+.growth-grid article[data-state="active"] { border-top-color: var(--ok); background: linear-gradient(180deg, color-mix(in srgb, var(--ok) 7%, transparent), transparent 75%); }
+.growth-grid article > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.growth-grid span { color: var(--muted); font-size: 9px; font-variant: small-caps; letter-spacing: .35px; }
+.growth-grid strong { color: var(--blue-dark); font: 600 11px/1.35 var(--mono); text-align: right; }
+.growth-grid p { margin: 7px 0 0; color: var(--muted-strong); font-size: 10px; overflow-wrap: anywhere; }
+
+.activity-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .75fr); gap: 32px; }
+.activity-grid > article { min-width: 0; }
+.activity-grid > article + article { padding-left: 28px; border-left: 1px solid var(--line); }
+.activity-grid h3 { margin: 0 0 9px; font-size: 15px; }
+.adventure-log { max-height: 380px; overflow: auto; margin: 0; padding: 0; border-top: 1px solid var(--line-strong); list-style: none; scrollbar-width: thin; }
+.adventure-log li { padding: 7px 9px 7px 11px; border-bottom: 1px solid var(--line); border-left: 2px solid var(--route-accent); }
+.adventure-log li[data-tone="victory"] { border-left-color: var(--ok); }
+.adventure-log li[data-tone="danger"] { border-left-color: var(--bad); }
+.adventure-log li[data-tone="loot"] { border-left-color: var(--energy-accent); }
+.adventure-log span { color: var(--muted); font: 8px/1.4 var(--mono); text-transform: uppercase; }
+.adventure-log p { margin: 1px 0 0; color: var(--muted-strong); font-size: 11px; }
+.inventory-glance { margin: 10px 0 0; padding: 0; border-top: 1px solid var(--line-strong); list-style: none; }
+.inventory-glance li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 11px; }
+.inventory-glance strong { color: var(--blue-dark); font: 600 9px/1.5 var(--mono); }
 
 .three-column { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
 .three-column > article { min-width: 0; padding: 13px 20px 0 0; }
@@ -217,7 +282,12 @@ tr[hidden] { display: none; }
   .headline-metrics > div:nth-child(-n + 4) { border-bottom: 1px solid var(--line); }
   .headline-metrics > div:nth-child(odd) { padding-left: 0; }
   .route-grid { grid-template-columns: 1fr; }
-  .allocation-grid, .two-column, .three-column, .execution-grid { grid-template-columns: 1fr; }
+  .allocation-grid, .two-column, .three-column, .execution-grid, .activity-grid { grid-template-columns: 1fr; }
+  .priority-list { grid-template-columns: 1fr; }
+  .priority-list li + li { padding-left: 0; border-left: 0; }
+  .growth-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .growth-grid article:nth-child(odd) { padding-left: 0; border-left: 0; }
+  .activity-grid > article + article { margin-top: 22px; padding-top: 20px; padding-left: 0; border-top: 1px solid var(--line); border-left: 0; }
   .allocation-row + .allocation-row, .two-column .section-block + .section-block { padding-left: 0; border-left: 0; }
   .allocation-row, .allocation-row + .allocation-row { padding-right: 0; }
   .purchase-list { grid-template-columns: 1fr; }
@@ -257,6 +327,10 @@ tr[hidden] { display: none; }
   .authority-list li:nth-child(n) { padding-left: 0; border-left: 0; }
   .branch-grid { grid-template-columns: 1fr; }
   .branch-grid article:nth-child(n) { padding-left: 0; border-left: 0; }
+  .allocation-flow, .growth-grid { grid-template-columns: 1fr; }
+  .growth-grid article:nth-child(n) { padding-left: 0; border-left: 0; }
+  .boss-comparison { gap: 11px; }
+  .boss-comparison span + span { padding-left: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

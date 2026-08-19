@@ -1,8 +1,9 @@
 <!--
 FILE PURPOSE
 
-This is the public and locally served NGU Idle dashboard shell. It leads with plain current-run,
-Boss, route, reset, challenge, resource, and inventory facts. Deployment/decision epochs, hashes,
+This is the public and locally served NGU Idle dashboard shell. It leads with the current target
+and Boss record, three ranked priorities, complete resource allocation, active growth systems,
+an Adventure journal, and a compact inventory glance. Deployment/decision epochs, hashes,
 root transactions, staged authority, binding coverage, and the shadow scheduler remain available
 inside one collapsed technical-diagnostics disclosure instead of dominating the default view. The
 large gear, inventory, and permanent-system ledgers are also closed by default so the decisions stay
@@ -24,8 +25,8 @@ mutation controls.
     <title>NGU Idle Dashboard</title>
     <script src="https://jehlp.net/site-theme/v1/theme.js"></script>
     <link rel="stylesheet" href="https://jehlp.net/site-theme/v1/base.css">
-    <link rel="stylesheet" href="assets/styles.css?v=20260818.3">
-    <script src="assets/app.js?v=20260818.3" defer></script>
+    <link rel="stylesheet" href="assets/styles.css?v=20260818.5">
+    <script src="assets/app.js?v=20260818.5" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#dashboard">Skip to dashboard</a>
@@ -48,13 +49,54 @@ mutation controls.
       <dl class="headline-metrics" aria-label="Current progression summary">
         <div><dt>Rebirth</dt><dd id="metric-rebirth">—</dd><dd id="metric-rebirth-note" class="metric-note">waiting for optimizer</dd></div>
         <div><dt>Challenge</dt><dd id="metric-challenge">—</dd><dd id="metric-challenge-note" class="metric-note">waiting for admission evidence</dd></div>
-        <div><dt id="metric-boss-label">Current boss</dt><dd id="metric-boss">—</dd><dd id="metric-boss-note" class="metric-note">waiting for current selection</dd></div>
+        <div class="boss-headline"><dt id="metric-boss-label">Boss progress</dt><dd class="boss-comparison"><span><strong id="metric-boss">—</strong><small>current target</small></span><span><strong id="metric-boss-record">—</strong><small>record</small></span></dd><dd id="metric-boss-note" class="metric-note">waiting for current selection</dd></div>
         <div><dt>Adventure</dt><dd id="metric-adventure">—</dd><dd id="metric-adventure-note" class="metric-note">waiting for route</dd></div>
         <div><dt>EXP purchase</dt><dd id="metric-exp">—</dd><dd id="metric-exp-note" class="metric-note">waiting for purchase model</dd></div>
       </dl>
       <div id="stale-banner" class="notice" role="status" aria-live="polite" hidden></div>
       <div id="action-error-banner" class="notice notice-error" role="alert" aria-live="assertive" hidden></div>
-      <nav class="section-index" aria-label="Dashboard sections"><a href="#now">Now</a><a href="#execution">Safety</a><a href="#alerts">Problems</a><a href="#resources">Resources</a><a href="#combat">Combat</a><a href="#character">Character</a><a href="#inventory">Inventory</a><a href="#permanent">Permanent</a><a href="#unlocks">Unlocks</a><a href="#events">Events</a></nav>
+      <nav class="section-index" aria-label="Dashboard sections"><a href="#priorities">Priorities</a><a href="#resources">Resources</a><a href="#growth">Growth</a><a href="#activity">Adventure log</a><a href="#now">Now</a><a href="#inventory">Inventory</a><a href="#execution">Safety</a><a href="#alerts">Problems</a><a href="#combat">Combat</a><a href="#character">Character</a><a href="#permanent">Permanent</a><a href="#unlocks">Unlocks</a><a href="#events">Events</a></nav>
+
+      <section id="priorities" class="section-block priority-section" aria-labelledby="priorities-heading">
+        <div class="section-heading"><div><p class="section-kicker">Right now</p><h2 id="priorities-heading">Top three priorities</h2></div><p id="priority-summary" class="section-meta">Ranked from the current progression gates.</p></div>
+        <ol id="priority-list" class="priority-list"><li><span class="priority-rank">1</span><div><strong>Waiting for live priorities</strong><p>The next synchronized snapshot will explain what matters most.</p></div></li></ol>
+      </section>
+
+      <section id="resources" class="section-block" aria-labelledby="resources-heading">
+        <div class="section-heading"><div><p class="section-kicker">Resources</p><h2 id="resources-heading">Where every resource is working</h2></div><p id="resource-summary" class="section-meta">—</p></div>
+        <div class="allocation-grid">
+          <article class="allocation-row energy-allocation"><div class="allocation-copy"><h3>Energy</h3><p id="energy-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="energy-value">—</strong><span id="energy-rate">—</span></div><div class="meter" aria-hidden="true"><span id="energy-meter"></span></div><ul id="energy-allocation-list" class="allocation-flow"><li><span>Waiting for allocation map</span><strong>—</strong></li></ul><span id="energy-bt" hidden></span><span id="energy-other" hidden></span><span id="energy-idle" hidden></span></article>
+          <article class="allocation-row magic-allocation"><div class="allocation-copy"><h3>Magic</h3><p id="magic-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="magic-value">—</strong><span id="magic-rate">—</span></div><div class="meter" aria-hidden="true"><span id="magic-meter"></span></div><ul id="magic-allocation-list" class="allocation-flow"><li><span>Waiting for allocation map</span><strong>—</strong></li></ul><span id="magic-blood" hidden></span><span id="magic-tm" hidden></span><span id="magic-idle" hidden></span></article>
+          <article class="allocation-row allocation-row-wide res3-allocation"><div class="allocation-copy"><h3 id="res3-name">Resource 3</h3><p id="res3-decision">Not yet unlocked.</p></div><div class="allocation-value"><strong id="res3-value">—</strong><span id="res3-rate">persistent systems</span></div><div class="meter" aria-hidden="true"><span id="res3-meter"></span></div><ul id="res3-allocation-list" class="allocation-flow"><li><span>Not yet unlocked</span><strong>—</strong></li></ul><span id="res3-power" hidden></span><span id="res3-cap" hidden></span><span id="res3-idle" hidden></span></article>
+        </div>
+        <div class="purchase-list" aria-label="Resource purchase targets">
+          <article><h3>EXP</h3><strong id="exp-balance">—</strong><p id="exp-decision">Waiting for purchase model.</p><span id="exp-eta">—</span></article>
+          <article><h3>AP</h3><strong id="ap-balance">—</strong><p id="ap-decision">Waiting for purchase model.</p><span id="ap-eta">—</span></article>
+          <article><h3>Gold</h3><strong id="gold-balance">—</strong><p id="gold-decision">Waiting for horizon model.</p><span id="gold-rate">—</span></article>
+          <article><h3>ITOPOD</h3><strong id="pp-balance">—</strong><p id="pp-decision">Waiting for floor model.</p><span id="pp-progress">—</span></article>
+          <article><h3>Quests</h3><strong id="qp-balance">—</strong><p id="qp-decision">Waiting for quest state.</p><span id="qp-progress">—</span></article>
+          <article><h3>Yggdrasil / Blood</h3><strong id="seed-blood-balance">—</strong><p id="seed-blood-decision">Permanent resources survive rebirth.</p><span id="seed-blood-detail">—</span></article>
+        </div>
+      </section>
+
+      <section id="growth" class="section-block" aria-labelledby="growth-heading">
+        <div class="section-heading"><div><p class="section-kicker">Leveling now</p><h2 id="growth-heading">What is getting stronger</h2></div><p id="growth-summary" class="section-meta">Reset-local systems are shown separately from permanent progress.</p></div>
+        <div class="growth-grid">
+          <article id="growth-augment" data-state="held"><div><span>Augments</span><strong id="growth-augment-value">—</strong></div><p id="growth-augment-detail">Waiting for Augment telemetry.</p></article>
+          <article id="growth-wandoos" data-state="held"><div><span>Wandoos</span><strong id="growth-wandoos-value">—</strong></div><p id="growth-wandoos-detail">Waiting for Wandoos telemetry.</p></article>
+          <article id="growth-tm" data-state="held"><div><span>Time Machine</span><strong id="growth-tm-value">—</strong></div><p id="growth-tm-detail">Waiting for Time Machine telemetry.</p></article>
+          <article id="growth-at" data-state="held"><div><span>Advanced Training</span><strong id="growth-at-value">—</strong></div><p id="growth-at-detail">Waiting for training telemetry.</p></article>
+          <article id="growth-ngu" data-state="held"><div><span>NGUs</span><strong id="growth-ngu-value">—</strong></div><p id="growth-ngu-detail">Waiting for NGU telemetry.</p></article>
+        </div>
+      </section>
+
+      <section id="activity" class="section-block" aria-labelledby="activity-heading">
+        <div class="section-heading"><div><p class="section-kicker">Adventure</p><h2 id="activity-heading">Recent fights, travel, and loot</h2></div><p id="activity-summary" class="section-meta">Useful outcomes only; ordinary attack-button spam is hidden.</p></div>
+        <div class="activity-grid">
+          <article><h3>Adventure journal</h3><ol id="adventure-log-list" class="adventure-log"><li data-tone="route"><span>—</span><p>Waiting for the current session.</p></li></ol></article>
+          <article><div class="card-heading"><h3>Inventory at a glance</h3><strong id="inventory-glance-summary">—</strong></div><p id="inventory-glance-policy" class="section-note">Waiting for the boost and collection policy.</p><ul id="inventory-glance-list" class="inventory-glance"><li><span>Waiting for inventory</span><strong>—</strong></li></ul></article>
+        </div>
+      </section>
 
       <section id="now" class="section-block" aria-labelledby="route-heading">
         <div class="section-heading"><div><p class="section-kicker">Now</p><h2 id="route-heading">What the bot is doing</h2></div><p id="run-stage" class="section-meta">—</p></div>
@@ -112,23 +154,6 @@ mutation controls.
         <div class="section-heading"><div><p class="section-kicker">Problems</p><h2 id="alerts-heading">Recent errors and blocked actions</h2></div><p id="alerts-summary" class="section-meta">—</p></div>
         <p class="lead-note">Repeated identical messages are grouped; counts cover only the exact deployment-bound producer session.</p>
         <ol id="action-error-list" class="event-list alert-list"><li>No action failures are present in the current feed.</li></ol>
-      </section>
-
-      <section id="resources" class="section-block" aria-labelledby="resources-heading">
-        <div class="section-heading"><div><p class="section-kicker">Resources</p><h2 id="resources-heading">Allocation, balances, and horizon</h2></div><p id="resource-summary" class="section-meta">—</p></div>
-        <div class="allocation-grid">
-          <article class="allocation-row"><div class="allocation-copy"><h3>Energy</h3><p id="energy-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="energy-value">—</strong><span id="energy-rate">—</span></div><div class="meter" aria-hidden="true"><span id="energy-meter"></span></div><dl class="allocation-parts"><div><dt>Basic Training</dt><dd id="energy-bt">—</dd></div><div><dt>Other systems</dt><dd id="energy-other">—</dd></div><div><dt>Idle</dt><dd id="energy-idle">—</dd></div></dl></article>
-          <article class="allocation-row"><div class="allocation-copy"><h3>Magic</h3><p id="magic-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="magic-value">—</strong><span id="magic-rate">—</span></div><div class="meter" aria-hidden="true"><span id="magic-meter"></span></div><dl class="allocation-parts"><div><dt>Blood</dt><dd id="magic-blood">—</dd></div><div><dt>Time Machine</dt><dd id="magic-tm">—</dd></div><div><dt>Idle</dt><dd id="magic-idle">—</dd></div></dl></article>
-          <article class="allocation-row allocation-row-wide"><div class="allocation-copy"><h3 id="res3-name">Resource 3</h3><p id="res3-decision">Not yet unlocked.</p></div><div class="allocation-value"><strong id="res3-value">—</strong><span id="res3-rate">persistent systems</span></div><div class="meter" aria-hidden="true"><span id="res3-meter"></span></div><dl class="allocation-parts"><div><dt>Power</dt><dd id="res3-power">—</dd></div><div><dt>Cap</dt><dd id="res3-cap">—</dd></div><div><dt>Idle</dt><dd id="res3-idle">—</dd></div></dl></article>
-        </div>
-        <div class="purchase-list" aria-label="Resource purchase targets">
-          <article><h3>EXP</h3><strong id="exp-balance">—</strong><p id="exp-decision">Waiting for purchase model.</p><span id="exp-eta">—</span></article>
-          <article><h3>AP</h3><strong id="ap-balance">—</strong><p id="ap-decision">Waiting for purchase model.</p><span id="ap-eta">—</span></article>
-          <article><h3>Gold</h3><strong id="gold-balance">—</strong><p id="gold-decision">Waiting for horizon model.</p><span id="gold-rate">—</span></article>
-          <article><h3>ITOPOD</h3><strong id="pp-balance">—</strong><p id="pp-decision">Waiting for floor model.</p><span id="pp-progress">—</span></article>
-          <article><h3>Quests</h3><strong id="qp-balance">—</strong><p id="qp-decision">Waiting for quest state.</p><span id="qp-progress">—</span></article>
-          <article><h3>Yggdrasil / Blood</h3><strong id="seed-blood-balance">—</strong><p id="seed-blood-decision">Permanent resources survive rebirth.</p><span id="seed-blood-detail">—</span></article>
-        </div>
       </section>
 
       <section id="combat" class="section-block" aria-labelledby="combat-heading">

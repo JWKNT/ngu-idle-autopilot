@@ -4,6 +4,8 @@ FILE PURPOSE
 These unit tests pin the dashboard's consequential-event definition and normalized observability
 contract. Routine catch-up traffic and reset-local milestones must stay out of the public ledger,
 while records, permanent progression, irreversible safety failures, and resets remain visible.
+The denser Adventure journal must include kills, deaths, route changes, and useful loot while
+filtering ordinary ability-button spam.
 Missing telemetry must remain unknown rather than turning into a false zero-second ETA. Challenge
 rebirth legality must come only from its explicit telemetry, and the browser shell must keep
 machine diagnostics collapsed while showing the currently selected Boss as the headline value.
@@ -21,6 +23,7 @@ from monitor.dashboard_server import (
     event_importance,
     is_key_event,
     recent_key_events,
+    recent_adventure_log,
     recent_action_errors,
     session_bound_lines,
     session_tail_lines,
@@ -421,10 +424,52 @@ class DashboardMarkupTests(unittest.TestCase):
         self.assertNotIn('target !== null && target < 0 ? "no-reset-challenge"', source)
         self.assertIn('const selectedBoss = optionalNumber(s.bossSelectedId);', source)
         self.assertIn('setText("metric-boss", selectedBoss === null', source)
+        self.assertIn('setText("metric-boss-record", highestBoss === null', source)
         self.assertNotIn('const boss = number(s.bossRecordTargetId || s.nextBoss);', source)
+
+    def test_player_facing_overview_has_priorities_allocations_growth_and_journal(self) -> None:
+        html = Path("docs/index.html").read_text(encoding="utf-8")
+        source = Path("docs/assets/app.js").read_text(encoding="utf-8")
+        for element_id in (
+            "metric-boss-record",
+            "priority-list",
+            "energy-allocation-list",
+            "magic-allocation-list",
+            "growth-augment",
+            "growth-wandoos",
+            "growth-tm",
+            "adventure-log-list",
+            "inventory-glance-list",
+        ):
+            self.assertEqual(html.count(f'id="{element_id}"'), 1, element_id)
+        self.assertIn("function renderPriorities", source)
+        self.assertIn("function renderAllocationList", source)
+        self.assertIn("function renderGrowth", source)
+        self.assertIn("function renderActivity", source)
+        self.assertIn("envelope.adventureLog", source)
 
 
 class ActionErrorTests(unittest.TestCase):
+    def test_adventure_journal_keeps_outcomes_and_filters_ability_spam(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "actions.log"
+            path.write_text(
+                "=== SESSION 2026-08-18T02:00:00Z id current build b pid 11 ===\n"
+                "13:00:00.000 [COMBAT] (20s) Used Strong Attack for 900 damage\n"
+                "13:00:01.000 [COMBAT] (21s) Ghost killed in 3.0s\n"
+                "13:00:02.000 [ZONE] (22s) Safe Zone -> THE ITOPOD\n"
+                "13:00:03.000 [INVENTORY] (23s) Applied boosts to Cheese Chestplate\n"
+                "13:00:04.000 [COMBAT] (24s) Enemy defeated the player after 4.0s\n",
+                encoding="utf-8",
+            )
+            entries = recent_adventure_log(path, session_id="current")
+        self.assertEqual(len(entries), 4)
+        self.assertEqual(entries[0]["tone"], "danger")
+        self.assertEqual(entries[1]["tone"], "loot")
+        self.assertEqual(entries[2]["tone"], "route")
+        self.assertEqual(entries[3]["tone"], "victory")
+        self.assertFalse(any("Strong Attack" in entry["message"] for entry in entries))
+
     def test_native_monitor_normalizes_windows_crlf_before_session_admission(self) -> None:
         source = (Path(__file__).parent / "ActionMonitor.swift").read_text(encoding="utf-8")
         self.assertIn('rawLine.hasSuffix("\\r")', source)
