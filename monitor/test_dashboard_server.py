@@ -7,8 +7,8 @@ while records, permanent progression, irreversible safety failures, and resets r
 The denser Adventure journal must include kills, deaths, route changes, and useful loot while
 filtering ordinary ability-button spam.
 Missing telemetry must remain unknown rather than turning into a false zero-second ETA. Challenge
-rebirth legality must come only from its explicit telemetry, and the browser shell must keep
-machine diagnostics collapsed while showing the currently selected Boss as the headline value.
+rebirth legality must come only from its explicit telemetry, and the browser shell must keep the
+current route beside the ranked priorities while showing the selected Boss as the headline value.
 The tests never contact the live bot, mutate telemetry, or turn a missing field into an admission,
 reset schedule, or deployment-verification claim.
 """
@@ -376,29 +376,17 @@ class ObservabilityTests(unittest.TestCase):
 
 
 class DashboardMarkupTests(unittest.TestCase):
-    def test_machine_diagnostics_share_one_collapsed_disclosure(self) -> None:
+    def test_current_route_immediately_follows_priorities_without_redundant_next_section(self) -> None:
         html = Path("docs/index.html").read_text(encoding="utf-8")
-        marker = '<details id="technical-diagnostics" class="technical-diagnostics">'
-        self.assertIn(marker, html)
-        start = html.index(marker)
-        end = html.index("</details>", start)
-        disclosure = html[start:end]
-        self.assertNotIn(" open", marker)
-        for element_id in (
-            "fact-snapshot",
-            "fact-build",
-            "fact-disk",
-            "fact-game",
-            "fact-producer",
-            "fact-identity",
-            "transaction-card",
-            "scheduler-card",
-            "authority-list",
-        ):
-            self.assertIn(f'id="{element_id}"', disclosure, element_id)
-            self.assertEqual(html.count(f'id="{element_id}"'), 1, element_id)
+        priorities = html.index('id="priorities"')
+        now = html.index('id="now"')
+        resources = html.index('id="resources"')
+        self.assertLess(priorities, now)
+        self.assertLess(now, resources)
         self.assertIn("What the bot is doing", html)
-        self.assertIn("What can happen next", html)
+        self.assertNotIn("What can happen next", html)
+        self.assertNotIn('id="execution"', html)
+        self.assertNotIn('id="technical-diagnostics"', html)
         self.assertIn("Recent errors and blocked actions", html)
         self.assertNotIn("<details open", html)
 
@@ -440,6 +428,8 @@ class DashboardMarkupTests(unittest.TestCase):
             "growth-tm",
             "adventure-log-list",
             "inventory-glance-list",
+            "gear-glance-summary",
+            "gear-glance-list",
         ):
             self.assertEqual(html.count(f'id="{element_id}"'), 1, element_id)
         self.assertIn("function renderPriorities", source)
@@ -447,6 +437,8 @@ class DashboardMarkupTests(unittest.TestCase):
         self.assertIn("function renderGrowth", source)
         self.assertIn("function renderActivity", source)
         self.assertIn("envelope.adventureLog", source)
+        self.assertIn("Array.isArray(s.equippedGear)", source)
+        self.assertNotIn("function renderExecution", source)
 
 
 class ActionErrorTests(unittest.TestCase):

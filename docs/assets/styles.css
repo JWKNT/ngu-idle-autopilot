@@ -3,11 +3,9 @@ FILE PURPOSE
 
 This stylesheet adds NGU-specific information architecture to the shared JWKNT v1 foundation.
 It makes the current target, ranked priorities, resource flows, active leveling, Adventure journal,
-and inventory glance easy to scan through restrained color, typographic hierarchy, hairline
-structure, native disclosure controls, compact tables, and semantic reset states. The
-default view emphasizes game facts; epoch/hash, root, scheduler, and authority diagnostics share
-one collapsed technical disclosure. Held, Pending, and Quarantined remain deliberately distinct,
-and responsive layouts hide no data.
+inventory and equipped-gear glances easy to scan through restrained color, typographic hierarchy,
+hairline structure, native disclosure controls, compact tables, and semantic reset states.
+Responsive layouts hide no player-facing data.
 */
 
 :root {
@@ -210,9 +208,9 @@ body { padding-bottom: 40px; font-size: 15px; line-height: 1.5; }
 .growth-grid strong { color: var(--blue-dark); font: 600 11px/1.35 var(--mono); text-align: right; }
 .growth-grid p { margin: 7px 0 0; color: var(--muted-strong); font-size: 10px; overflow-wrap: anywhere; }
 
-.activity-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .75fr); gap: 32px; }
+.activity-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) repeat(2, minmax(230px, .75fr)); gap: 22px; }
 .activity-grid > article { min-width: 0; }
-.activity-grid > article + article { padding-left: 28px; border-left: 1px solid var(--line); }
+.activity-grid > article + article { padding-left: 20px; border-left: 1px solid var(--line); }
 .activity-grid h3 { margin: 0 0 9px; font-size: 15px; }
 .adventure-log { max-height: 380px; overflow: auto; margin: 0; padding: 0; border-top: 1px solid var(--line-strong); list-style: none; scrollbar-width: thin; }
 .adventure-log li { padding: 7px 9px 7px 11px; border-bottom: 1px solid var(--line); border-left: 2px solid var(--route-accent); }
@@ -267,6 +265,7 @@ tr[hidden] { display: none; }
 
 .event-list { margin: 0; padding: 0; border-top: 1px solid var(--line); list-style: none; }
 .event-list li { display: grid; grid-template-columns: 76px 95px minmax(0, 1fr); gap: 12px; padding: 7px 4px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.event-list .empty-event { display: block; color: var(--muted); }
 .event-time, .event-kind { color: var(--muted); font: 9px/1.5 var(--mono); }
 .event-kind { color: var(--blue-dark); text-transform: uppercase; }
 .alert-list li[data-severity="critical"] { border-left: 2px solid var(--bad); padding-left: 8px; }

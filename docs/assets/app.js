@@ -3,9 +3,8 @@ FILE PURPOSE
 
 This dependency-free client discovers and polls the laptop's current read-only public tunnel,
 validates its telemetry envelope, and renders the full confirmed NGU state into a hierarchy led by
-the selected Boss and record, ranked priorities, complete resource allocation, active growth,
-Adventure outcomes, and inventory. Machine-level epoch/hash, root,
-staged-authority, and shadow-scheduler diagnostics live in one collapsed disclosure. Missing
+the selected Boss and record, ranked priorities, the current route, complete resource allocation,
+active growth, Adventure outcomes, inventory, and equipped gear. Missing
 optional fields stay visibly unavailable rather than becoming false zero values or ETAs. Challenge
 reset legality comes only from an active challenge plus challengeAllowsRebirth, never a negative
 rebirth target. Held,
@@ -434,7 +433,6 @@ exposes no mutation endpoint.
   }
 
   function renderRoute(s, observability) {
-    const identity = observability.identity;
     setText("objective", s.objective, "Re-evaluating progression route.");
     setText("run-stage", `${text(s.stage, "unknown stage")} · ${text(s.syncState, "unsynchronized")}`);
     setText("route-title", s.loadoutObjective || s.objective, "Waiting for a synchronized transaction");
@@ -444,141 +442,6 @@ exposes no mutation endpoint.
     setText("fact-difficulty", ["Normal", "Evil", "Sadistic"][number(s.difficulty, -1)] || "Unavailable");
     setText("fact-selected-boss", optionalNumber(s.bossSelectedId) === null
       ? "Unavailable" : `Boss #${Number(s.bossSelectedId).toLocaleString()}`);
-    setText("fact-snapshot", `#${number(s.decisionSequence).toLocaleString()}`);
-    setText("fact-build", text(identity.buildId, "unavailable").slice(0, 12));
-    setText("fact-disk", text(identity.diskArtifactSha256, "unavailable").slice(0, 12));
-    setText("fact-game", text(identity.gameAssemblySha256, "unavailable").slice(0, 12));
-    setText("fact-producer", identity.producerPid && identity.producerSessionId
-      ? `${identity.producerPid.toLocaleString()} · ${identity.producerSessionId.slice(0, 12)}` : "unverified");
-    setText("fact-identity", `${identity.verifiedEnvelope ? "epoch verified" : "epoch incomplete"} · ${text(identity.activeMatchesDisk, "disk match unknown").replaceAll("-", " ")}`);
-  }
-
-  function renderExecution(envelope, observability) {
-    const identity = observability.identity;
-    const transaction = observability.transaction;
-    const scheduler = observability.scheduler;
-    const bindings = observability.bindings || {};
-    const capacity = observability.capacity;
-    const authority = observability.authority;
-    const actionTail = envelope.actionTail && typeof envelope.actionTail === "object" ? envelope.actionTail : {};
-    const transactionToken = stateToken(transaction.status);
-    const transactionCard = byId("transaction-card");
-    if (transactionCard) transactionCard.dataset.state = transactionToken;
-    setText("transaction-state", transaction.status, "Unavailable");
-    setText("transaction-root-id", transaction.rootId === null || transaction.rootId === undefined ? "Unavailable" : `#${Number(transaction.rootId).toLocaleString()}`);
-    setText("transaction-root-state", transaction.rootState, "Unavailable");
-    const stepParts = [
-      ["committed", transaction.committedSteps], ["pending", transaction.pendingSteps],
-      ["rejected", transaction.rejectedSteps], ["quarantined", transaction.quarantinedSteps],
-    ].filter(([, value]) => optionalNumber(value) !== null).map(([label, value]) => `${label} ${Number(value).toLocaleString()}`);
-    setText("transaction-counts", stepParts.length ? stepParts.join(" · ") : "Unavailable");
-    setText("decision-epoch", shortIdentity(identity.decisionEpochFingerprint));
-    setText("root-epoch", identity.rootEpochFingerprint
-      ? `${shortIdentity(identity.rootEpochFingerprint)} · ${identity.rootEpochMatchesDecision === true ? "matched" : identity.rootEpochMatchesDecision === false ? "mismatch" : "unverified"}`
-      : "Unavailable");
-    setText("action-tail-state", actionTail.status
-      ? `${text(actionTail.status)}${actionTail.producerSessionId ? ` · ${shortIdentity(actionTail.producerSessionId)}` : ""}`
-      : "Unavailable");
-    setText("binding-state", `${text(bindings.status, "Unavailable")}${bindings.knownBuild === true ? " · audited build" : bindings.knownBuild === false ? " · unknown build" : ""}`);
-    const bindingCounts = optionalNumber(bindings.descriptorCount) === null
-      ? "Unavailable"
-      : `${Number(bindings.boundCount || 0).toLocaleString()} / ${Number(bindings.descriptorCount).toLocaleString()} bound · ${Number(bindings.failureCount || 0).toLocaleString()} failures`;
-    setText("binding-coverage", bindings.failureSummary ? `${bindingCounts} · ${bindings.failureSummary}` : bindingCounts);
-    const capacityParts = capacity.freeSlots === null || capacity.freeSlots === undefined
-      ? [] : [`${Number(capacity.freeSlots).toLocaleString()} free`];
-    if (capacity.requiredReserve !== null && capacity.requiredReserve !== undefined) capacityParts.push(`reserve ${Number(capacity.requiredReserve).toLocaleString()}`);
-    if (capacity.marginSlots !== null && capacity.marginSlots !== undefined) capacityParts.push(`margin ${Number(capacity.marginSlots).toLocaleString()}`);
-    if (capacity.provenance) capacityParts.push(capacity.provenance);
-    if (capacity.confidence !== null && capacity.confidence !== undefined) capacityParts.push(`${confidence(capacity.confidence)} observed-state confidence`);
-    capacityParts.push(capacity.exactDeliveryProof === true ? "exact delivery proof" : capacity.exactDeliveryProof === false ? "delivery proof rejected" : "delivery proof unavailable");
-    setText("capacity-state", `${text(capacity.status, "Unavailable")}${capacityParts.length ? ` · ${capacityParts.join(" · ")}` : ""}`);
-
-    setText("execution-summary", `${text(identity.joinStatus, "Pending")} deployment/decision join · ${text(transaction.status, "Unavailable")} root`);
-    const schedulerCard = byId("scheduler-card");
-    if (schedulerCard) schedulerCard.dataset.state = scheduler.authority === "ShadowOnly" ? "held" : stateToken(scheduler.status);
-    setText("scheduler-status", scheduler.status, "Unavailable");
-    setText("scheduler-authority", `${text(scheduler.authority, "Unavailable")}${scheduler.canExecute === false ? " · cannot execute" : scheduler.canExecute === true ? " · executable" : ""}`);
-    setText("scheduler-action", scheduler.action ? `${scheduler.action}${scheduler.actionId ? ` · ${scheduler.actionId}` : ""}` : "Unavailable");
-    setText("scheduler-event", scheduler.nextEvent ? `${scheduler.nextEvent}${scheduler.eventId ? ` · ${scheduler.eventId}` : ""}` : "Unavailable");
-    const provenanceParts = [];
-    if (scheduler.provenance) provenanceParts.push(scheduler.provenance);
-    if (scheduler.sampleCount !== null && scheduler.sampleCount !== undefined) provenanceParts.push(`${Number(scheduler.sampleCount).toLocaleString()} samples`);
-    if (scheduler.confidence !== null && scheduler.confidence !== undefined) provenanceParts.push(`${confidence(scheduler.confidence)} confidence`);
-    setText("scheduler-provenance", provenanceParts.length ? provenanceParts.join(" · ") : "Unavailable");
-    const hashes = [scheduler.snapshotHash, scheduler.modelHash, scheduler.objectiveHash];
-    setText("scheduler-hashes", hashes.some(Boolean) ? hashes.map(shortIdentity).join(" / ") : "Unavailable");
-    setText("scheduler-mean", optionalDuration(scheduler.meanSeconds));
-    setText("scheduler-p50", optionalDuration(scheduler.p50Seconds));
-    setText("scheduler-p90", optionalDuration(scheduler.p90Seconds));
-    setText("scheduler-lower", optionalDuration(scheduler.lowerBoundSeconds));
-    setText("scheduler-gap", optionalDuration(scheduler.gapSeconds));
-    setText("scheduler-regret", optionalDuration(scheduler.regretSeconds));
-    setText("scheduler-blocker", scheduler.blocker
-      ? `${scheduler.blocker}${scheduler.blockerDetail ? ` — ${scheduler.blockerDetail}` : ""}`
-      : "No named scheduler blocker was emitted.");
-
-    setText("authority-stage", authority.stage, "Unavailable");
-    const labels = {
-      verifiedReversible: "Verified reversible", permanentPurchases: "Permanent purchases",
-      moneyPit: "Money Pit", challenges: "Challenges", difficulty: "Difficulty",
-      titan1Through12: "Titans 1–12", titan13Through14: "Titans 13–14",
-      move69: "MOVE69", endSequence: "END sequence",
-    };
-    const authorityList = byId("authority-list");
-    const routes = authority.routes && typeof authority.routes === "object" ? authority.routes : {};
-    authorityList?.replaceChildren(...Object.entries(labels).map(([key, label]) => {
-      const item = document.createElement("li");
-      const routeState = text(routes[key], "Unavailable");
-      item.dataset.state = routeState.toLowerCase();
-      const name = document.createElement("strong"); name.textContent = label;
-      const state = document.createElement("span"); state.textContent = routeState;
-      item.append(name, state);
-      return item;
-    }));
-
-    const branches = [
-      {
-        key: "rebirth", state: observability.rebirth.actionLabel,
-        status: observability.rebirth.action,
-        eta: observability.rebirth.resetEtaSeconds,
-        detail: observability.rebirth.model || observability.rebirth.provenance,
-        confidence: observability.rebirth.confidence,
-      },
-      {
-        key: "challenge", state: observability.challenge.label,
-        status: observability.challenge.status,
-        eta: observability.challenge.clearEtaSeconds,
-        detail: observability.challenge.provenance,
-        confidence: observability.challenge.confidence,
-      },
-      {
-        key: "difficulty", state: observability.difficulty.target
-          ? `${text(observability.difficulty.current, "Unavailable")} → ${observability.difficulty.target}`
-          : `${text(observability.difficulty.current, "Unavailable")} · ${text(observability.difficulty.status, "Unavailable")}`,
-        status: observability.difficulty.status,
-        eta: observability.difficulty.etaSeconds,
-        detail: observability.difficulty.blocker || observability.difficulty.provenance,
-        confidence: observability.difficulty.confidence,
-      },
-      {
-        key: "end", state: observability.end.status,
-        status: observability.end.status,
-        eta: observability.end.p90Seconds,
-        detail: observability.end.missing || observability.end.provenance,
-        confidence: observability.end.confidence,
-      },
-    ];
-    for (const branch of branches) {
-      const article = byId(`branch-${branch.key}`);
-      if (article) article.dataset.state = stateToken(branch.status);
-      setText(`branch-${branch.key}-state`, branch.state, "Unavailable");
-      const etaLabel = branch.key === "end" ? "p90" : branch.key === "challenge" ? "clear" : "ETA";
-      setText(`branch-${branch.key}-eta`, `${etaLabel} ${optionalDuration(branch.eta)}`);
-      const proof = [];
-      if (branch.detail) proof.push(branch.detail);
-      if (branch.confidence !== null && branch.confidence !== undefined) proof.push(`${confidence(branch.confidence)} confidence`);
-      setText(`branch-${branch.key}-proof`, proof.length ? proof.join(" · ") : "Provenance unavailable");
-    }
   }
 
   function renderResources(s) {
@@ -718,6 +581,17 @@ exposes no mutation endpoint.
       const state = document.createElement("strong"); state.textContent = `Lv ${number(item.level)}${item.maxxed ? " · MAXX" : " · leveling"}`;
       row.append(name, state); return row;
     }) : [(() => { const row = document.createElement("li"); row.textContent = "No physical inventory items."; return row; })()]));
+
+    const equipped = (Array.isArray(s.equippedGear) ? s.equippedGear : []).filter((item) => number(item.id) > 0);
+    setText("gear-glance-summary", `${equipped.length} equipped`);
+    setText("gear-glance-policy", text(s.loadoutObjective || s.loadoutDecision, "Active loadout objective pending."));
+    const gearGlance = byId("gear-glance-list");
+    gearGlance?.replaceChildren(...(equipped.length ? equipped.map((item) => {
+      const row = document.createElement("li");
+      const name = document.createElement("span"); name.textContent = `${text(item.slot, "Gear")} · ${text(item.name, `Item #${number(item.id)}`)}`;
+      const state = document.createElement("strong"); state.textContent = `Lv ${number(item.level)}${item.maxxed ? " · MAXX" : ""}`;
+      row.append(name, state); return row;
+    }) : [(() => { const row = document.createElement("li"); row.textContent = "No gear is currently equipped."; return row; })()]));
   }
 
   function renderCombatInventory(s) {
@@ -971,7 +845,7 @@ exposes no mutation endpoint.
   function renderEvents(events) {
     const list = byId("event-list");
     if (!Array.isArray(events) || !events.length) {
-      list.innerHTML = "<li>No key events have been recorded by the live feed yet.</li>";
+      list.innerHTML = '<li class="empty-event">No key events have been recorded by the live feed yet.</li>';
       return;
     }
     list.replaceChildren(...events.slice(0, 30).map((event) => {
@@ -1005,7 +879,7 @@ exposes no mutation endpoint.
       ? `${displayed.length} distinct recent signal${displayed.length === 1 ? "" : "s"}`
       : "no current action errors");
     if (!displayed.length) {
-      list.innerHTML = "<li>No action failures or safety rejections are present in the current feed.</li>";
+      list.innerHTML = '<li class="empty-event">No action failures or safety rejections are present in the current feed.</li>';
       return;
     }
     list.replaceChildren(...displayed.map((entry) => {
@@ -1057,7 +931,6 @@ exposes no mutation endpoint.
     renderHeadline(s, observability);
     renderPriorities(s, observability);
     renderRoute(s, observability);
-    renderExecution(envelope, observability);
     renderResources(s);
     renderGrowth(s);
     renderActivity(s, envelope.adventureLog);
