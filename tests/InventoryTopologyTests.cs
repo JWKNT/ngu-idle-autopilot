@@ -260,7 +260,7 @@ internal static class InventoryTopologyTests
                && loadout.Contains("objective.Projection.ItopodTargetAttackFactor")
                && loadout.Contains("itopodManual = Main.Settings.ITOPODCombatMode != 1")
                && loadout.Contains("failed its live ")
-               && loadout.Contains("? \"bounded frontier\" : \"one-hit farm\""),
+               && loadout.Contains("? \"finite empirical trial\" : \"one-hit farm\""),
             "ITOPOD staging evaluates physical combat in the requested Beast state and requires the route-specific live proof");
         Assert(inventory.Contains("AllBoostEntriesMaxxed(maxxed)")
                && inventory.Contains("selectAutoNoneTransform"),

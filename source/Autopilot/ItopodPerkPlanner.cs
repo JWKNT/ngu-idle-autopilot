@@ -9,9 +9,11 @@ climbing, online/offline reward forecasts, the T6 clue-four naked session, typed
 asynchronous perk-231 item delivery.  It complements MechanicsItopod's installed-build PP formulas
 without reading or changing a live Character.
 
-Mechanism: A climb plan uses the native-valid H-1 start and a target no higher than a bounded
-finite-clear/survival frontier plus one; steady farming still uses the separate guaranteed one-hit
-ceiling.  The online transition simulator preserves native enemy-death ordering:
+Mechanism: A climb plan uses the native-valid H-1 start and aims at the next ten-floor permanent-PP
+boundary.  A finite positive-damage trial gate permits exploration beyond the conservative combat
+frontier; a session-local controller stops only after repeated confirmed deaths on one fought floor,
+farms the separate guaranteed one-hit ceiling, and reopens when effective Adventure offense or
+durability materially improves.  The online transition simulator preserves native enemy-death ordering:
 ordinary PP is calculated from the fought floor; the ten-kill move, wrap, and record award happen
 next; AP, EXP, boosts, clues, and special-drop probabilities use the post-move floor.  A de-duplicated
 post-kill gate requests a synchronous exit before an unproved sentinel can respawn.  Offline
@@ -43,17 +45,19 @@ namespace NGUInjector.Autopilot
         internal readonly int Floor;
         internal readonly bool OneHit;
         internal readonly bool FrontierClear;
+        internal readonly bool TrialClear;
         internal readonly int Hits;
         internal readonly double KillSeconds;
         internal readonly double WorstIncomingDamage;
         internal readonly string Reason;
 
-        internal ItopodFloorCombatProof(int floor, bool oneHit, bool frontierClear,
+        internal ItopodFloorCombatProof(int floor, bool oneHit, bool frontierClear, bool trialClear,
             int hits, double killSeconds, double worstIncomingDamage, string reason)
         {
             Floor = floor;
             OneHit = oneHit;
             FrontierClear = frontierClear;
+            TrialClear = trialClear;
             Hits = hits;
             KillSeconds = killSeconds;
             WorstIncomingDamage = worstIncomingDamage;
@@ -65,15 +69,19 @@ namespace NGUInjector.Autopilot
     {
         internal readonly int OneHitFloor;
         internal readonly int FrontierFloor;
+        internal readonly int TrialFloor;
         internal readonly double FrontierKillSeconds;
+        internal readonly double TrialKillSeconds;
         internal readonly string FrontierReason;
 
-        internal ItopodCombatReachProof(int oneHitFloor, int frontierFloor,
-            double frontierKillSeconds, string frontierReason)
+        internal ItopodCombatReachProof(int oneHitFloor, int frontierFloor, int trialFloor,
+            double frontierKillSeconds, double trialKillSeconds, string frontierReason)
         {
             OneHitFloor = oneHitFloor;
             FrontierFloor = frontierFloor;
+            TrialFloor = trialFloor;
             FrontierKillSeconds = frontierKillSeconds;
+            TrialKillSeconds = trialKillSeconds;
             FrontierReason = frontierReason ?? string.Empty;
         }
     }
@@ -83,12 +91,13 @@ namespace NGUInjector.Autopilot
 
     Native ITOPOD enemies scale their 10/10/1/600 base stats by 1.05^floor and independently roll
     each stat through [0.98,1.02].  The old router required one minimum-roll player hit to exceed
-    worst-roll HP.  That is the right farm-throughput plateau but it stranded record climbing even
-    when two or three hits were trivially safe.  This pure proof keeps that one-hit value intact and
-    adds a deliberately short multi-hit window.  It proves positive damage after continuous enemy
-    regeneration, completes before the third native enemy action (where paralyze/charger/rapid
-    escalation begins), and survives worst-roll normal damage, grower's second-action 1.2x hit,
-    and poison's defense-bypassing direct Adventure-HP rider without using player regeneration.
+    worst-roll HP.  That remains the right farm-throughput plateau but it stranded record climbing.
+    This pure proof now reports three different facts: the one-hit farm ceiling, the old short
+    conservative frontier, and the farthest floor where every later hit still beats regeneration.
+    The conservative frontier completes before the third native enemy action and survives
+    worst-roll normal damage, grower's second-action 1.2x hit, and poison's defense-bypassing direct
+    Adventure-HP rider. The broader positive-damage result is only permission to gather empirical
+    outcomes; the failure circuit breaker, not this formula, decides whether to keep pushing.
     Target Beast Mode's native 3x PlayerController multiplier applies to ordinary/grower hits but
     not that direct poison subtraction. A ten-percent HP reserve covers frame-order uncertainty.
     */
@@ -135,12 +144,18 @@ namespace NGUInjector.Autopilot
                 var netLaterHit = minimumHit - enemyRegen * attackCadence;
                 if (netLaterHit <= 0.0)
                     return Rejected(floor, "enemy regeneration meets or exceeds later minimum-roll hits");
-                hits += (int)Math.Ceiling(Math.Max(0.0, enemyHp - minimumHit) / netLaterHit);
+                var laterHits = Math.Ceiling(Math.Max(0.0, enemyHp - minimumHit) / netLaterHit);
+                if (double.IsNaN(laterHits) || double.IsInfinity(laterHits)
+                    || laterHits > int.MaxValue - 1)
+                    return Rejected(floor, "finite clear exceeds the representable hit horizon");
+                hits += (int)laterHits;
             }
             var killSeconds = hits * attackCadence;
+            var trialClear = !double.IsNaN(killSeconds) && !double.IsInfinity(killSeconds);
             if (killSeconds > FrontierKillHorizonSeconds)
-                return new ItopodFloorCombatProof(floor, oneHit, false, hits,
-                    killSeconds, 0.0, "finite clear exceeds the pre-escalation 4.1s horizon");
+                return new ItopodFloorCombatProof(floor, oneHit, false, trialClear, hits,
+                    killSeconds, 0.0,
+                    "finite positive-damage trial exceeds the conservative 4.1s frontier");
 
             var enemyActions = killSeconds < EnemyFirstActionSeconds ? 0
                 : 1 + (int)Math.Floor((killSeconds - EnemyFirstActionSeconds)
@@ -158,7 +173,7 @@ namespace NGUInjector.Autopilot
             }
             var survives = availableHp > 0.0
                            && worstIncoming <= availableHp * SurvivalFraction;
-            return new ItopodFloorCombatProof(floor, oneHit, survives, hits,
+            return new ItopodFloorCombatProof(floor, oneHit, survives, trialClear, hits,
                 killSeconds, worstIncoming, survives
                     ? oneHit ? "guaranteed one-hit farm plateau and bounded survivable frontier"
                       : "bounded multi-hit clear before special-AI escalation with 10% HP reserve"
@@ -173,7 +188,9 @@ namespace NGUInjector.Autopilot
                 throw new ArgumentOutOfRangeException("maximumFloor");
             var oneHitFloor = 0;
             var frontierFloor = 0;
+            var trialFloor = 0;
             var frontierSeconds = attackCadence;
+            var trialSeconds = attackCadence;
             var frontierReason = "floor zero has not been evaluated";
             var frontierOpen = true;
             for (var floor = 0; floor <= maximumFloor; floor++)
@@ -181,6 +198,11 @@ namespace NGUInjector.Autopilot
                 var proof = EvaluateFloor(floor, adventureAttack, adventureDefense,
                     availableHp, attackPower, attackCadence, incomingBeastFactor);
                 if (proof.OneHit) oneHitFloor = floor;
+                if (proof.TrialClear)
+                {
+                    trialFloor = floor;
+                    trialSeconds = proof.KillSeconds;
+                }
                 if (frontierOpen && !proof.FrontierClear)
                 {
                     frontierReason = proof.Reason;
@@ -192,15 +214,15 @@ namespace NGUInjector.Autopilot
                     frontierSeconds = proof.KillSeconds;
                     frontierReason = proof.Reason;
                 }
-                if (!frontierOpen && !proof.OneHit) break;
+                if (!frontierOpen && !proof.OneHit && !proof.TrialClear) break;
             }
-            return new ItopodCombatReachProof(oneHitFloor, frontierFloor,
-                frontierSeconds, frontierReason);
+            return new ItopodCombatReachProof(oneHitFloor, frontierFloor, trialFloor,
+                frontierSeconds, trialSeconds, frontierReason);
         }
 
         private static ItopodFloorCombatProof Rejected(int floor, string reason)
         {
-            return new ItopodFloorCombatProof(floor, false, false, 0,
+            return new ItopodFloorCombatProof(floor, false, false, false, 0,
                 double.PositiveInfinity, 0.0, reason);
         }
 
@@ -208,6 +230,224 @@ namespace NGUInjector.Autopilot
         {
             if (double.IsNaN(value) || double.IsInfinity(value) || value < 0.0)
                 throw new ArgumentOutOfRangeException(name);
+        }
+    }
+
+    /*
+    EMPIRICAL DECADE CLIMB CIRCUIT BREAKER
+
+    ITOPOD deaths are samples, not proof that a floor is impossible: explosive enemies can kill an
+    otherwise capable character, while a death forces the configured lower floors to be replayed. This controller
+    therefore aims at the next record divisible by ten and blocks only after eight confirmed deaths
+    on the same fought floor without an intervening kill on that floor.  Successful replay kills on
+    lower floors do not erase that evidence.  While blocked, farming
+    continues on the separately proven one-hit floor.  A five-percent improvement in effective
+    positive-damage throughput or effective durability reopens the trial, regardless of whether that
+    improvement came from gear, EXP, perks, fruit, cube stats, Advanced Training, or another system.
+
+    This type is deliberately pure and session-local.  The live adapter must supply the exact fought
+    floor captured at enemy spawn and a capability projection based on one physically realizable owned
+    loadout.  It must never infer a death from a planned move or leave ITOPOD midway through a live
+    ten-kill floor merely to heal.
+    */
+    internal sealed class ItopodTrialCapability
+    {
+        internal readonly int MaximumTrialFloor;
+        internal readonly double AdventureAttack;
+        internal readonly double AdventureDefense;
+        internal readonly double MaximumHp;
+        internal readonly double AttackPower;
+        internal readonly double AttackCadence;
+        internal readonly double IncomingBeastFactor;
+
+        internal ItopodTrialCapability(int maximumTrialFloor, double adventureAttack,
+            double adventureDefense, double maximumHp, double attackPower,
+            double attackCadence, double incomingBeastFactor)
+        {
+            if (maximumTrialFloor < 0 || maximumTrialFloor > ItopodPerkPlanner.MaximumFloor)
+                throw new ArgumentOutOfRangeException("maximumTrialFloor");
+            RequireFiniteNonNegative(adventureAttack, "adventureAttack");
+            RequireFiniteNonNegative(adventureDefense, "adventureDefense");
+            RequireFiniteNonNegative(maximumHp, "maximumHp");
+            RequireFiniteNonNegative(attackPower, "attackPower");
+            if (!FinitePositive(attackCadence)) throw new ArgumentOutOfRangeException("attackCadence");
+            if (!FinitePositive(incomingBeastFactor))
+                throw new ArgumentOutOfRangeException("incomingBeastFactor");
+            MaximumTrialFloor = maximumTrialFloor;
+            AdventureAttack = adventureAttack;
+            AdventureDefense = adventureDefense;
+            MaximumHp = maximumHp;
+            AttackPower = attackPower;
+            AttackCadence = attackCadence;
+            IncomingBeastFactor = incomingBeastFactor;
+        }
+
+        internal double OffenseScore(int floor)
+        {
+            var scale = Math.Pow(1.05, floor);
+            var enemyDefense = 10.0 * scale * 1.02;
+            var enemyRegen = scale * 1.02;
+            var minimumHit = .8 * Math.Max(0.0,
+                AdventureAttack - enemyDefense / 2.0) * AttackPower;
+            return Math.Max(0.0, minimumHit - enemyRegen * AttackCadence)
+                   / Math.Max(.02, AttackCadence);
+        }
+
+        internal double DurabilityScore(int floor)
+        {
+            var enemyAttack = 10.0 * Math.Pow(1.05, floor) * 1.02;
+            var ordinaryWorst = 1.2 * Math.Max(enemyAttack * .1,
+                enemyAttack - AdventureDefense / 2.0) * IncomingBeastFactor;
+            var poisonRider = enemyAttack * .2 * 1.2;
+            return MaximumHp / Math.Max(1.0, ordinaryWorst + poisonRider);
+        }
+
+        private static bool FinitePositive(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0.0;
+        }
+
+        private static void RequireFiniteNonNegative(double value, string name)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0.0)
+                throw new ArgumentOutOfRangeException(name);
+        }
+    }
+
+    internal sealed class ItopodTrialDecision
+    {
+        internal readonly bool ShouldClimb;
+        internal readonly bool Reopened;
+        internal readonly int TargetRecord;
+        internal readonly int BlockedFloor;
+        internal readonly int ConsecutiveDeaths;
+        internal readonly string Reason;
+
+        internal ItopodTrialDecision(bool shouldClimb, bool reopened, int targetRecord,
+            int blockedFloor, int consecutiveDeaths, string reason)
+        {
+            ShouldClimb = shouldClimb;
+            Reopened = reopened;
+            TargetRecord = targetRecord;
+            BlockedFloor = blockedFloor;
+            ConsecutiveDeaths = consecutiveDeaths;
+            Reason = reason ?? string.Empty;
+        }
+    }
+
+    internal sealed class ItopodClimbTrialController
+    {
+        internal const int FailureStreakLimit = 8;
+        internal const double ReadmissionImprovement = .05;
+
+        private int _observedFloor = -1;
+        private int _consecutiveDeaths;
+        private int _blockedFloor = -1;
+        private int _lastHighestRecord = -1;
+        private double _blockedOffense;
+        private double _blockedDurability;
+
+        internal bool Observe(int foughtFloor, bool died, ItopodTrialCapability capability)
+        {
+            if (foughtFloor < 0 || foughtFloor > ItopodPerkPlanner.MaximumFloor)
+                throw new ArgumentOutOfRangeException("foughtFloor");
+            if (capability == null) throw new ArgumentNullException("capability");
+            if (_blockedFloor >= 0) return false;
+            if (!died)
+            {
+                // A native defeat restarts the configured range. Kills on those replayed lower
+                // floors are mandatory recovery work, not evidence that the deeper failed floor
+                // became viable. Only a kill on that exact floor clears its failure streak.
+                if (_observedFloor == foughtFloor)
+                {
+                    _observedFloor = -1;
+                    _consecutiveDeaths = 0;
+                }
+                return false;
+            }
+            if (_observedFloor != foughtFloor)
+            {
+                _observedFloor = foughtFloor;
+                _consecutiveDeaths = 0;
+            }
+            _consecutiveDeaths++;
+            if (_consecutiveDeaths < FailureStreakLimit) return false;
+            _blockedFloor = foughtFloor;
+            _blockedOffense = capability.OffenseScore(foughtFloor);
+            _blockedDurability = capability.DurabilityScore(foughtFloor);
+            return true;
+        }
+
+        internal ItopodTrialDecision Decide(int highestRecord, int maximumFloor,
+            ItopodTrialCapability capability)
+        {
+            if (highestRecord < 0 || highestRecord > ItopodPerkPlanner.MaximumFloor)
+                throw new ArgumentOutOfRangeException("highestRecord");
+            if (maximumFloor < 0 || maximumFloor > ItopodPerkPlanner.MaximumFloor)
+                throw new ArgumentOutOfRangeException("maximumFloor");
+            if (capability == null) throw new ArgumentNullException("capability");
+            if (_lastHighestRecord >= 0 && highestRecord < _lastHighestRecord) Reset();
+            _lastHighestRecord = highestRecord;
+
+            var reopened = false;
+            if (_blockedFloor >= 0)
+            {
+                var passed = highestRecord > _blockedFloor;
+                var offense = capability.OffenseScore(_blockedFloor);
+                var durability = capability.DurabilityScore(_blockedFloor);
+                var improved = offense >= _blockedOffense * (1.0 + ReadmissionImprovement)
+                               || durability >= _blockedDurability
+                                   * (1.0 + ReadmissionImprovement);
+                if (passed || capability.MaximumTrialFloor >= _blockedFloor && improved)
+                {
+                    ResetBlock();
+                    reopened = true;
+                }
+                else
+                {
+                    return new ItopodTrialDecision(false, false,
+                        NextDecade(highestRecord, maximumFloor), _blockedFloor,
+                        _consecutiveDeaths, "farm while floor " + _blockedFloor
+                        + " remains empirically blocked after " + _consecutiveDeaths
+                        + " consecutive deaths; retry after a 5% offense or durability gain");
+                }
+            }
+
+            var target = NextDecade(highestRecord, maximumFloor);
+            var shouldClimb = target > highestRecord
+                              && capability.MaximumTrialFloor >= target - 1;
+            return new ItopodTrialDecision(shouldClimb, reopened, target, -1,
+                _consecutiveDeaths, shouldClimb
+                    ? "empirical climb open through the next permanent-PP boundary"
+                    : target <= highestRecord
+                        ? "installed ITOPOD record cap reached"
+                        : "the next ten-floor boundary has no finite positive-damage trial path");
+        }
+
+        internal int BlockedFloor { get { return _blockedFloor; } }
+        internal int ConsecutiveDeaths { get { return _consecutiveDeaths; } }
+
+        private static int NextDecade(int highestRecord, int maximumFloor)
+        {
+            if (highestRecord >= maximumFloor) return maximumFloor;
+            var next = highestRecord % 10 == 0
+                ? highestRecord + 10 : ((highestRecord / 10) + 1) * 10;
+            return Math.Min(maximumFloor, next);
+        }
+
+        private void ResetBlock()
+        {
+            _observedFloor = -1;
+            _consecutiveDeaths = 0;
+            _blockedFloor = -1;
+            _blockedOffense = 0.0;
+            _blockedDurability = 0.0;
+        }
+
+        private void Reset()
+        {
+            ResetBlock();
+            _lastHighestRecord = -1;
         }
     }
 

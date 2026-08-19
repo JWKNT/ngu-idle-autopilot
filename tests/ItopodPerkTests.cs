@@ -2,8 +2,9 @@
 FILE PURPOSE
 
 ItopodPerkTests is the isolated pure/fault-injection suite for reconciled task 26.  It proves the
-record-4-to-10 continuous range, separate one-hit farm and bounded multi-hit frontier reach, exact
-decade awards and fought/drop-floor ordering, 8.4% boost
+record-4-to-10 continuous range, separate one-hit farm/conservative frontier/empirical trial reach,
+the same-floor failure circuit breaker and all-source capability readmission, exact decade awards
+and fought/drop-floor ordering, 8.4% boost
 table, clue-four naked session, online/offline estimator split, floor-1600 bounds and END forecast,
 typed perk/ID/Fibonacci behavior, asynchronous perk-231 slot lifetime, MOVE69 idle charging/strict
 cooldown/ETA/capacity/post-69 retry, timer cancellation/restart telemetry, and exactly one verified
@@ -257,7 +258,7 @@ internal static class ItopodPerkTests
             "the exclusive Sadistic END source dominates even a high-valued collection candidate");
     }
 
-    private static void TestBoundedMultiHitFrontier()
+    private static void TestCombatReachAndEmpiricalBreaker()
     {
         var reach = ItopodCombatOracle.ProveReach(542.495, 450.135, 1734.5,
             1.5, .8, 3.0, 50);
@@ -265,6 +266,8 @@ internal static class ItopodPerkTests
             "the observed early-game stats retain the native-compatible one-hit farm ceiling");
         Assert(reach.FrontierFloor >= 9 && reach.FrontierFloor > reach.OneHitFloor,
             "the same stats prove a conservative multi-hit climb through the first PP decade");
+        Assert(reach.TrialFloor > reach.FrontierFloor,
+            "finite positive-damage trials extend record exploration beyond the conservative frontier");
         var floorTen = ItopodCombatOracle.EvaluateFloor(10, 542.495, 450.135,
             1734.5, 1.5, .8, 3.0);
         Assert(!floorTen.OneHit && floorTen.FrontierClear && floorTen.Hits == 2
@@ -292,8 +295,52 @@ internal static class ItopodPerkTests
             "a finite multi-hit kill is rejected when conservative incoming damage is lethal");
         var tooSlow = ItopodCombatOracle.EvaluateFloor(10, 542.495, 10000.0,
             10000.0, 1.5, 2.2, 1.0);
-        Assert(!tooSlow.FrontierClear && tooSlow.Reason.Contains("4.1s"),
-            "frontier admission stops before paralyze/charger/rapid escalation begins");
+        Assert(!tooSlow.FrontierClear && tooSlow.TrialClear
+               && tooSlow.Reason.Contains("4.1s"),
+            "a slow fight stays outside the conservative frontier but remains an empirical trial");
+
+        var baseCapability = new ItopodTrialCapability(100, 700.0, 650.0,
+            2000.0, 1.5, .8, 3.0);
+        var trial = new ItopodClimbTrialController();
+        var open = trial.Decide(40, 1600, baseCapability);
+        Assert(open.ShouldClimb && open.TargetRecord == 50,
+            "record forty opens a direct empirical push to the next valuable decade, floor fifty");
+        for (var failure = 1; failure <= ItopodClimbTrialController.FailureStreakLimit; failure++)
+        {
+            var blockedNow = trial.Observe(49, true, baseCapability);
+            if (failure < ItopodClimbTrialController.FailureStreakLimit)
+                Assert(!blockedNow, "a small number of RNG deaths does not abandon the decade push");
+            // Native death restarts the range. Replayed lower-floor wins are not evidence that
+            // floor 49 itself became viable and therefore must not clear its death streak.
+            trial.Observe(39, false, baseCapability);
+            if (failure == ItopodClimbTrialController.FailureStreakLimit)
+                Assert(blockedNow, "eight confirmed deaths on the same deep floor open the farm breaker");
+        }
+        var held = trial.Decide(40, 1600, baseCapability);
+        Assert(!held.ShouldClimb && held.BlockedFloor == 49
+               && held.ConsecutiveDeaths == ItopodClimbTrialController.FailureStreakLimit,
+            "the blocked route farms while preserving the exact failed floor and evidence count");
+
+        var tooSmall = new ItopodTrialCapability(100, 700.0, 650.0,
+            2000.0 * 1.04, 1.5, .8, 3.0);
+        Assert(!trial.Decide(40, 1600, tooSmall).ShouldClimb,
+            "sub-material Adventure growth does not thrash a known failed climb");
+        var improvedElsewhere = new ItopodTrialCapability(100, 700.0, 650.0,
+            2000.0 * 1.06, 1.5, .8, 3.0);
+        var reopened = trial.Decide(40, 1600, improvedElsewhere);
+        Assert(reopened.ShouldClimb && reopened.Reopened && reopened.TargetRecord == 50,
+            "a material durability gain reopens the push regardless of which game system supplied it");
+
+        var exactFloorSuccess = new ItopodClimbTrialController();
+        for (var failure = 0; failure < ItopodClimbTrialController.FailureStreakLimit - 1; failure++)
+            exactFloorSuccess.Observe(49, true, baseCapability);
+        exactFloorSuccess.Observe(49, false, baseCapability);
+        Assert(!exactFloorSuccess.Observe(49, true, baseCapability)
+               && exactFloorSuccess.ConsecutiveDeaths == 1,
+            "an actual kill on the difficult floor clears its failure streak");
+        Assert(trial.Decide(43, 1600, improvedElsewhere).TargetRecord == 50
+               && trial.Decide(50, 1600, improvedElsewhere).TargetRecord == 60,
+            "non-decade records finish their current boundary and completed decades advance by ten");
     }
 
     private static void TestBoostsClueAndFloorBounds()
@@ -614,23 +661,33 @@ internal static class ItopodPerkTests
                && loadout.Contains("No owned physical set proves the configured ITOPOD combat floor")
                && loadout.Contains("ItopodTargetAttackFactor = ZoneHelpers.ItopodTargetAttackFactor()")
                && loadout.Contains("targetAttack = projection.AdventureAttack")
-               && loadout.Contains("ZoneHelpers.CalculateBestItopodFrontierLevel()")
-               && loadout.Contains("combat.FrontierClear : combat.OneHit")
+               && loadout.Contains("ZoneHelpers.CalculateBestItopodTrialLevel()")
+               && loadout.Contains("combat.TrialClear : combat.OneHit")
                && loadout.Contains("? Math.Max(0, route.End - 1)"),
-            "a bounded-search miss uses strongest Attack under the target Beast state and verifies climb/farm through distinct live proofs");
+            "a search miss uses strongest Attack under the target Beast state and verifies empirical climb/farm through distinct live proofs");
         var zones = File.ReadAllText("source/Managers/ZoneHelpers.cs");
         Assert(zones.Contains("training[0] >= 5000")
                && zones.Contains("manual ? c.regAttackPower() : c.idleAttackPower()")
                && !zones.Contains("c.training.attackTraining[1] == 0"),
             "ITOPOD reach uses the exact Regular Attack unlock and matches the configured executor mode");
         Assert(zones.Contains("result.FrontierFloor = frontier")
-               && zones.Contains("frontier >= nextAward - 1")
+               && zones.Contains("result.TrialFloor = trial")
+               && zones.Contains("ItopodTrials.Decide(highest, maxFloor")
+               && zones.Contains("trialDecision.TargetRecord")
                && zones.Contains("var farm = Math.Max(0, Math.Min(reachable, highest - 1))")
-               && manager.Contains("route.FrontierFloor,")
+               && manager.Contains("var valuedItopodReach = route.Climbing")
+               && manager.Contains("valuedItopodReach,")
                && manager.Contains("route.TargetKillSeconds")
                && manager.Contains("\\\"itopodReachableOneHitFloor\\\"")
-               && manager.Contains("\\\"itopodFrontierFloor\\\""),
-            "record valuation and cadence use bounded frontier reach while farm routing and telemetry retain the honest one-hit ceiling");
+               && manager.Contains("\\\"itopodFrontierFloor\\\"")
+               && manager.Contains("\\\"itopodTrialFloor\\\"")
+               && manager.Contains("\\\"itopodBlockedFloor\\\"")
+               && manager.Contains("\\\"itopodEmpiricalTrial\\\""),
+            "open trials value the next decade while telemetry keeps farm, frontier, trial, and breaker state separate");
+        Assert(combatManager.Contains("_fightItopodFloor = zone >= 1000")
+               && combatManager.Contains("ZoneHelpers.RecordItopodFightResult(_fightItopodFloor, died)")
+               && zones.Contains("ItopodTrials.Observe(foughtFloor, died"),
+            "the breaker consumes the exact floor captured at enemy spawn and confirmed native kill/death outcome");
         Assert(manager.Contains("Later purchases remain held until ChoosePerk receives")
                && manager.Contains("Do not feed the ITOPOD frontier score a later perk value"),
             "post-sequence PP and frontier value hold instead of using tooltip-name heuristics");
@@ -643,7 +700,7 @@ internal static class ItopodPerkTests
             TestContinuousClimbAndSentinelAtom();
             TestExactDeathOrderingAndDecades();
             TestGlobalAdventureRouteValue();
-            TestBoundedMultiHitFrontier();
+            TestCombatReachAndEmpiricalBreaker();
             TestBoostsClueAndFloorBounds();
             TestOnlineOfflineEstimatorSplit();
             TestTypedPerksAndAsyncDelivery();

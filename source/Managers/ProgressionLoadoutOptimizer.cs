@@ -14,8 +14,9 @@ accessories. One immutable objective/character snapshot feeds a Pareto branch-an
 canonical accessory combinations; results report incumbent seconds, an admissible lower bound, and
 the remaining gap. Hard major-unlock combat uses target-enemy kill/survival math and excludes
 unrelated production bonuses; routine contexts may accept lower raw combat stats for a proven ETA
-improvement. ITOPOD record staging uses a short finite-clear/survival frontier while fixed farming
-remains on the guaranteed one-hit plateau, and a live ITOPOD route preempts stale selected-boss gear
+improvement. ITOPOD record staging uses a finite positive-damage empirical trial while fixed farming
+remains on the guaranteed one-hit plateau; confirmed outcomes, rather than an arbitrary short-fight
+cutoff, decide whether a decade push remains open. A live ITOPOD route preempts stale selected-boss gear
 ownership because those systems use different combat objectives. Equal-time climb sets break ties
 on worst-case combat reserve and raw Adventure strength, never production bonuses. It executes reference-identity native swap transactions, reclaims allocations before
 cap-lowering gear, verifies the final layout, and rolls back on failure. ID-only equality and direct
@@ -94,8 +95,8 @@ namespace NGUInjector.Managers
         ROUTER-BOUND ORDINARY ADVENTURE OBJECTIVE
 
         AdventureCollectionPlanner may deliberately backfill an easy set while the generic zone
-        oracle still exposes a harder progression frontier.  Without this handoff the optimizer
-        equips frontier combat gear during easy farming and loses Drop/respawn/resource throughput.
+        oracle still exposes harder progression trial reach.  Without this handoff the optimizer
+        equips push combat gear during easy farming and loses Drop/respawn/resource throughput.
         Conversely, a true push must not let production specials displace the owned combat set
         which crosses its target.  A changed route invalidates the short routine lease so the next
         enemy-free frame evaluates the exact route selected by ControlAdventure.
@@ -251,7 +252,7 @@ namespace NGUInjector.Managers
                 // Staging runs in Safe Zone before CombatManager toggles the requested Beast
                 // state.  Freeze the same live-to-target normalization used by the route oracle
                 // so the immutable candidate evaluator and the admission ceiling prove the same
-                // farm-one-hit or bounded-climb floor.
+                // farm-one-hit or empirical-climb floor.
                 ItopodTargetAttackFactor = ZoneHelpers.ItopodTargetAttackFactor();
                 ItopodIncomingBeastFactor = Main.Settings.ITOPODBeastMode
                                              && c.adventureController.hasBeastMode()
@@ -917,7 +918,7 @@ namespace NGUInjector.Managers
             // forever while merely *describing* the current infeasible set as verified.
             // The lexicographic fallback is deliberately narrow: maximize native
             // Adventure Attack in every legal physical slot, then accept it only if
-            // the same immutable farm/frontier evaluator proves the requested floor.
+            // the same immutable farm/trial evaluator proves the requested floor.
             if (bestEvaluation == null || !bestEvaluation.Feasible)
             {
                 var strongest = StrongestAdventureAttackPlan(c, all);
@@ -958,12 +959,12 @@ namespace NGUInjector.Managers
             var targetFloor = route.Climbing
                 ? Math.Max(0, route.End - 1) : Math.Max(0, route.FarmFloor);
             var liveReach = route.Climbing
-                ? ZoneHelpers.CalculateBestItopodFrontierLevel()
+                ? ZoneHelpers.CalculateBestItopodTrialLevel()
                 : ZoneHelpers.CalculateBestItopodLevel();
             if (liveReach < targetFloor)
             {
                 LastDecision = "The staged ITOPOD set failed its live "
-                               + (route.Climbing ? "bounded frontier" : "one-hit farm")
+                               + (route.Climbing ? "finite empirical trial" : "one-hit farm")
                                + " check: floor "
                                + targetFloor + " requested, floor " + liveReach + " proved";
                 return false;
@@ -1547,10 +1548,10 @@ namespace NGUInjector.Managers
                 objective.Projection.ItopodAttackCadence,
                 objective.Projection.ItopodIncomingBeastFactor);
             var admitted = objective.Projection.ItopodClimbing
-                ? combat.FrontierClear : combat.OneHit;
+                ? combat.TrialClear : combat.OneHit;
             if (!admitted)
                 return LoadoutEvaluation.Infeasible(objective.Projection.ItopodClimbing
-                    ? "candidate does not retain the bounded ITOPOD multi-hit frontier: "
+                    ? "candidate does not retain a finite positive-damage ITOPOD trial: "
                       + combat.Reason
                     : "candidate does not retain the guaranteed ITOPOD one-hit farm plateau");
             var respawn = objective.LiveRespawnSeconds
@@ -1577,7 +1578,7 @@ namespace NGUInjector.Managers
                 action, rankedTotal,
                 objective.Projection.ItopodClimbing ? combatTieBreaker : -projection.General,
                 (objective.Projection.ItopodClimbing
-                    ? "bounded ITOPOD frontier cycle" : "ITOPOD one-hit farm cycle")
+                    ? "empirical ITOPOD decade-climb cycle" : "ITOPOD one-hit farm cycle")
                 + " seconds including native respawn special");
         }
 
@@ -2237,8 +2238,9 @@ namespace NGUInjector.Managers
         ITOPOD Drop Chance is fixed, so ordinary Looting gear has zero value there.  Equipment can
         improve rewards only by crossing a hit-count/survival plateau or shortening native respawn.
         Evaluate those quantities jointly at the configured farm/climb floor. Fixed farming requires
-        the guaranteed one-hit plateau; first-clear climbing may use only the bounded pre-escalation
-        multi-hit proof shared with ZoneHelpers.
+        the guaranteed one-hit plateau; first-clear climbing may use the finite positive-damage
+        empirical trial shared with ZoneHelpers. Confirmed deaths are handled by the separate
+        session circuit breaker, not guessed by this loadout score.
         */
         private static double ItopodThroughputUtility(Character c, Plan plan, double attack,
             double defense, double maxHP)
@@ -2255,7 +2257,7 @@ namespace NGUInjector.Managers
                 attackPower, fixedObjective.Projection.ItopodAttackCadence,
                 fixedObjective.Projection.ItopodIncomingBeastFactor);
             var viable = fixedObjective.Projection.ItopodClimbing
-                ? combat.FrontierClear : combat.OneHit;
+                ? combat.TrialClear : combat.OneHit;
             if (!viable)
                 return -500000000.0 - 1000000.0 * Math.Max(1, combat.Hits);
             var hits = Math.Max(1, combat.Hits);
@@ -2274,7 +2276,7 @@ namespace NGUInjector.Managers
             // First-clear climbing is a discrete permanent award, so reaching the requested floor
             // dominates small farm-rate differences.  Farming maximizes exact cycle throughput.
             // Admission is lexicographic: respawn bonuses may optimize only among
-            // candidate plans that retain the route's farm or frontier proof.
+            // candidate plans that retain the route's farm or empirical-trial proof.
             return (fixedObjective.Projection.ItopodClimbing ? 200000000.0 : 0.0)
                    + 10000000.0 * progress / cycle
                    - 1000.0 * hits;

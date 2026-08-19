@@ -24,10 +24,11 @@ audited Normal challenge subset are also live behind their
 separate explicit flags; AP/QP purchases, difficulty, T13/T14, MOVE69, END, and the global scheduler
 remain fail-closed for this deploy. Legacy direct mutation helpers are not called; staged authority
 can expand only through typed postconditions and copied-save/backtest evidence.
-ITOPOD telemetry and valuation report the one-hit farm ceiling separately from the bounded
-multi-hit first-clear frontier; only the latter may price or schedule a record climb. Continuous
+ITOPOD telemetry and valuation report the one-hit farm ceiling, conservative combat frontier,
+finite positive-damage trial ceiling, and empirical failure breaker separately. Open trials price
+and schedule the next record divisible by ten; repeated confirmed floor deaths pause that push. Continuous
 ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
-ten-kill floor counter; its bounded frontier proof is computed without requiring that pre-cast.
+ten-kill floor counter; floor-boundary healing happens in place without erasing partial progress.
 */
 namespace NGUInjector.Autopilot
 {
@@ -1124,9 +1125,16 @@ namespace NGUInjector.Autopilot
                                    && _collectionTarget.SetRewardNativeMagnitude <= 0.0
                                    && _collectionTarget.UsefulBoostGain <= 0.0
                                    && _collectionTarget.OptionalProgressionGain > 0.0;
+                // While an empirical climb is open, the next decade's hardest fought floor is
+                // genuinely reachable-by-trial even when it lies beyond the conservative 4.1s
+                // frontier. Feed that floor into global route value. When the breaker is held,
+                // retain only the conservative reach so the selector chooses steady farming.
+                var valuedItopodReach = route.Climbing
+                    ? Math.Max(route.FrontierFloor, Math.Max(0, route.End - 1))
+                    : route.FrontierFloor;
                 routePlan = ItopodPerkPlanner.ChooseAdventureRoute(
                     Math.Max(1, Main.Character.adventure.highestItopodLevel),
-                    route.FrontierFloor,
+                    valuedItopodReach,
                     killCycleSeconds,
                     Main.Character.adventure.itopod.perkPoints,
                     Math.Max(0L, Config.PPReserve), nextPerkCost, nextPerkGain,
@@ -1759,6 +1767,10 @@ namespace NGUInjector.Autopilot
                        + "  \"itopodHighestFloor\": " + c.adventure.highestItopodLevel + ",\n"
                        + "  \"itopodReachableOneHitFloor\": " + itopodRoute.ReachableFloor + ",\n"
                        + "  \"itopodFrontierFloor\": " + itopodRoute.FrontierFloor + ",\n"
+                       + "  \"itopodTrialFloor\": " + itopodRoute.TrialFloor + ",\n"
+                       + "  \"itopodBlockedFloor\": " + itopodRoute.BlockedFloor + ",\n"
+                       + "  \"itopodConsecutiveFailures\": " + itopodRoute.ConsecutiveFailures + ",\n"
+                       + "  \"itopodEmpiricalTrial\": " + itopodRoute.EmpiricalTrial.ToString().ToLowerInvariant() + ",\n"
                        + "  \"itopodRangeStart\": " + c.adventure.itopodStart + ",\n"
                        + "  \"itopodRangeEnd\": " + c.adventure.itopodEnd + ",\n"
                        + "  \"itopodKillsOnFloor\": " + c.adventureController.itopodKillCount + ",\n"

@@ -240,12 +240,24 @@ chooses ITOPOD immediately when:
 - a required END item can only come from ITOPOD.
 
 The bot treats climbing and farming as different jobs. For steady farming, it chooses a floor it
-can defeat in one hit so PP, EXP, AP, and boosts arrive quickly. For a new record, it may climb
-higher with a short multi-hit fight, but only after proving three things with a complete gear set it
-can really equip: every hit still makes progress after enemy healing, the fight ends before the
-dangerous enemy patterns begin, and worst-case incoming damage leaves a safety margin. This keeps
-easy perk milestones from being stranded behind a one-hit rule without turning unattended climbs
-into guesses.
+can defeat in one hit so PP, EXP, AP, and boosts arrive quickly. For a record push, it aims directly
+at the next record divisible by ten, because that is where the permanent first-clear PP is paid. It
+will try a floor whenever its best real equipment set can keep doing positive damage after enemy
+healing. The older short-fight safety estimate remains visible for diagnosis, but it no longer
+silently declares a winnable floor impossible.
+
+An unlucky enemy—especially an explosive one—can kill a character that is normally strong enough,
+so one death is not proof. The bot records the exact floor that was being fought. After eight deaths
+on that same floor without a kill on that floor, it pauses the push and returns to its fast one-hit
+farm. Death restarts the range, so wins on the lower floors that must be replayed do not erase the
+failure evidence for the difficult floor. A real kill on the difficult floor does erase it.
+
+The paused push is tried again after effective offense or durability improves by at least five
+percent. “Improves” means the resulting Adventure combat stats, not merely a new piece of gear:
+gear levels, Power/Toughness boosts, the Cube, EXP purchases, perks, fruit, Advanced Training,
+Titans, challenge rewards, and any other system can all reopen it. This creates a simple loop:
+push for the next ten-floor reward, learn from repeated defeats, farm efficiently, then retry after
+the character has materially grown.
 
 The end of an ITOPOD range is a sentinel: the record is awarded when the floor moves, before that
 sentinel must be fought. The live gear check therefore proves the hardest floor that will actually
@@ -255,9 +267,9 @@ intentional range.
 Once a climb or farm begins, it stays in ITOPOD. It does not hop back to Safe Zone every time
 Charge or Parry becomes ready: re-entering at the saved range start resets the current ten-kill
 floor counter. Low health also cannot trigger a voluntary mid-floor exit. At the enemy-free boundary
-between floors the combat controller may use Heal or Hyper Regen in place; otherwise the
-survivable-frontier proof and ordinary in-fight moves keep the climb moving. Only an actual defeat
-may force Safe Zone recovery.
+between floors the combat controller may use Heal or Hyper Regen in place; otherwise ordinary
+in-fight moves keep the climb moving. Only an actual defeat may force Safe Zone recovery. A
+voluntary mid-floor Safe Zone visit is forbidden because it would repeatedly erase partial progress.
 
 Perks are bought one level at a time. The live buyer currently owns the source-audited early Normal
 sequence—one level in Newbie perks 0 through 4, two Instant Advanced Training levels, then balanced
@@ -351,9 +363,9 @@ not wait and hope that a once-per-second controller notices the tiny gap between
 Before routing, the reach estimate checks several complete physical sets ranging from Attack-heavy
 to Defense-heavy. The full gear solver then searches the legal combinations for the chosen floor.
 If that bounded search runs out of time, its narrow emergency fallback uses the strongest
-Adventure-Attack set and still must pass the same one-hit farming or bounded multi-hit climbing
-proof. No step combines stats from gear that cannot be equipped together, and a fallback is never
-permission to start an unsafe fight. Both the route estimate and the gear check use the Beast Mode
+Adventure-Attack set and still must pass the same one-hit farming or finite positive-damage climb
+check. No step combines stats from gear that cannot be equipped together, and a fallback is never
+permission to claim reach that its physical set does not have. Both the route estimate and the gear check use the Beast Mode
 state that will actually be enabled in ITOPOD, even though gear staging itself happens one step
 earlier in Safe Zone.
 
@@ -650,9 +662,8 @@ When the bot appears to make a strange choice, check these questions in order:
 - Later PP choices, AP/QP, later challenge timing, late Titans, difficulty completion, MOVE69, and
   END need more live evidence before they are enabled. Money Pit and the audited Normal challenge
   executor have narrow typed authority; that is not blanket permission without a fresh route proof.
-- ITOPOD record pushes deliberately stop at the short, pre-escalation combat frontier. A longer
-  fight might sometimes survive, but the bot does not risk permanent climb loops on enemy effects
-  it has not yet bounded.
+- ITOPOD climb learning is session-local. Restarting the injected bot clears its remembered failed
+  floor, so the new session may spend up to eight fresh attempts proving that floor again.
 - Static zone thresholds are routing hints; exact combat simulation owns important fights.
 - No strategy can promise a mathematically perfect speedrun without a complete future-state model,
   including random drops and every later decision.

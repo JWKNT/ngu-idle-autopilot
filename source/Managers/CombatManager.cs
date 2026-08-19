@@ -23,7 +23,8 @@ only action permitted until native enemy-clear reconciliation.
 
 Inputs and outputs: Inputs are live Character/Adventure/PlayerController/EnemyAI state, immutable
 settings, Titan descriptors, and controller button readiness. Outputs are native zone/toggle/move
-calls, recovery/hold telemetry, fight samples, and loadout-lock completion signals.
+calls, recovery/hold telemetry, fight samples, exact fought-floor ITOPOD trial outcomes, and
+loadout-lock completion signals.
 
 ITOPOD is a continuous native floor state: ordinary recovery never exits it because re-entry resets
 the ten-kill counter. Enemy-free floor boundaries may spend ready Heal/Hyper Regen moves in place;
@@ -53,6 +54,7 @@ namespace NGUInjector.Managers
         private string _enemyName;
         private float _fightStartHP;
         private int _fightZone = -1;
+        private int _fightItopodFloor = -1;
         private bool _fightWasTitan;
         private float _expectedFightDamage;
         private int _expectedFightDamageZone = -2;
@@ -1291,6 +1293,8 @@ namespace NGUInjector.Managers
             {
                 _fightStartHP = _character.adventure.curHP;
                 _fightZone = zone;
+                _fightItopodFloor = zone >= 1000
+                    ? _character.adventureController.itopodLevel : -1;
                 var enemyTypeName = _character.adventureController.currentEnemy.enemyType.ToString();
                 var titanId = TitanIdForZone(zone);
                 _fightWasTitan = titanId > 0 && TitanMechanics.IsTitanEnemyType(titanId,
@@ -1313,6 +1317,11 @@ namespace NGUInjector.Managers
 
         private void RecordObservedFight(bool died)
         {
+            // Capture at enemy spawn, not after enemyDeath advances the native floor or a defeat
+            // forces Safe Zone. This is the sole empirical input to the decade-climb breaker.
+            if (_fightZone >= 1000 && _fightItopodFloor >= 0)
+                ZoneHelpers.RecordItopodFightResult(_fightItopodFloor, died);
+            _fightItopodFloor = -1;
             var observedDamage = Math.Max(0f, _fightStartHP - _character.adventure.curHP);
             if (observedDamage > 0f)
             {
