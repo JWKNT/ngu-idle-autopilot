@@ -249,10 +249,11 @@ exposes no mutation endpoint.
       : typeof s.inChallenge === "boolean" ? s.inChallenge
         : String(s.stage || "").toLowerCase().includes("active challenge");
     const noResetChallenge = challengeActive && challengeAllowsRebirth === false;
-    const hold = Boolean(s.rebirthExecutionHold) || noResetChallenge;
+    const boundaryHold = Boolean(s.rebirthBoundaryHold);
+    const hold = Boolean(s.rebirthExecutionHold) || boundaryHold || noResetChallenge;
     const resetEta = !hold && target !== null && target >= 0 && elapsed !== null ? Math.max(0, target - elapsed) : null;
     const executionEnabled = typeof s.rebirthExecutionEnabled === "boolean" ? s.rebirthExecutionEnabled : null;
-    const action = noResetChallenge ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) ? "hold"
+    const action = noResetChallenge ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) || boundaryHold ? "hold"
       : executionEnabled === false ? "disabled" : resetEta === 0 ? "reset-due" : resetEta !== null ? "reset-at-checkpoint" : "unknown";
     const labels = {
       "no-reset-challenge": "NO RESET — this challenge forbids ordinary rebirths",
@@ -311,7 +312,7 @@ exposes no mutation endpoint.
       rebirth: {
         action,
         actionLabel: labels[action],
-        reason: s.rebirthSafetyBlockReason || s.rebirthReason || "No decision reason was emitted.",
+        reason: s.rebirthSafetyBlockReason || s.rebirthBoundaryReason || s.rebirthReason || "No decision reason was emitted.",
         noResetHold: hold || executionEnabled === false,
         targetRunAgeSeconds: target !== null && target >= 0 ? target : null,
         currentRunAgeSeconds: elapsed !== null && elapsed >= 0 ? elapsed : null,

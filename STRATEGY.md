@@ -536,6 +536,14 @@ Immediately before rebirth, the bot checks again that:
 The bot then spends the exact remaining Blood pool on Blood NUMBER, checks the debit and permanent
 Number effect, refreshes the native preview, and performs the reset. Any uncertainty stops the reset.
 
+While the current run is still replaying toward the saved Boss record, the planner and the final
+reset gate use the same rule. A lower post-reset Number needs a finite, bounded Boss-0 replay proof
+that beats continuing. The early-game live planner does not yet have that complete replay model, so
+it waits for the first positive-value checkpoint whose native Attack and Defense Number previews
+are both at least as strong as the current run. This avoids announcing “reset now” for a checkpoint
+the safety gate cannot execute. Fresh training, Blood, boss, and time changes are reevaluated every
+second and can move that safe checkpoint earlier.
+
 ### MacGuffins, Beards, and long runs
 
 MacGuffins bank their equipped effects at rebirth. Very short runs can give no bank at all. Beards
@@ -657,6 +665,9 @@ No-Equipment, Troll, Laser Sword, Blind, No-NGU, and No-Time-Machine still allow
 applying their named restrictions. The planner keeps this game rule separate from a strategic
 hold: for example, it may postpone a legal Troll or Laser rebirth to avoid wasting useful progress.
 During an active Basic Challenge it continues using the ordinary event-scored rebirth optimizer.
+The challenge objective and clear-time estimate stay separate from that optimizer's checkpoint
+reason and countdown, so an unknown challenge-clear ETA cannot turn a valid rebirth ETA into
+“unknown” on the dashboard.
 
 Every challenge entry requires admission-grade timing and same-state opportunity evidence. Merely
 having reached its target boss before proves that the target is possible; it does **not** prove that

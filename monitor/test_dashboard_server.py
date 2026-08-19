@@ -140,6 +140,23 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIsNone(view["challenge"]["targetLevel"])
         self.assertFalse(view["identity"]["verifiedEnvelope"])
 
+    def test_due_final_boundary_hold_never_displays_reset_now(self) -> None:
+        view = build_observability(
+            {
+                "rebirthSeconds": 3600,
+                "rebirthElapsed": 3700,
+                "rebirthExecutionHold": False,
+                "rebirthBoundaryHold": True,
+                "rebirthBoundaryReason": "hold: reset-route recovery ETA is unknown",
+                "rebirthSafetyBlockReason": "hold: reset-route recovery ETA is unknown",
+                "rebirthExecutionEnabled": True,
+            }
+        )
+        self.assertEqual(view["rebirth"]["action"], "hold")
+        self.assertTrue(view["rebirth"]["noResetHold"])
+        self.assertIsNone(view["rebirth"]["resetEtaSeconds"])
+        self.assertIn("recovery ETA", view["rebirth"]["reason"])
+
     def test_no_rebirth_challenge_is_an_explicit_no_reset_policy(self) -> None:
         view = build_observability(
             {

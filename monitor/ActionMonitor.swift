@@ -275,12 +275,13 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let target = number(object, "rebirthSeconds")
                 let remaining = max(0, target - elapsed)
                 let executionHold = object["rebirthExecutionHold"] as? Bool ?? false
+                let boundaryHold = object["rebirthBoundaryHold"] as? Bool ?? false
                 statusLabel.stringValue = target < 0
                     ? "NO RESET • ACTIVE CHALLENGE POLICY"
-                    : executionHold
+                    : executionHold || boundaryHold
                     ? "REBIRTH HOLD • NO EXECUTABLE RESET SCHEDULED"
                     : "REBIRTH \(formatExactDuration(remaining))"
-                statusLabel.textColor = target < 0 || executionHold ? .systemOrange : .systemGreen
+                statusLabel.textColor = target < 0 || executionHold || boundaryHold ? .systemOrange : .systemGreen
                 updateSummary(object)
             }
             if sequence != lastRenderedSequence {
@@ -452,10 +453,10 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             && (state["challengeAllowsRebirth"] as? Bool == false
                 || challengeCode.hasPrefix("NORB"))
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
-        let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold
-        // Number loss and a slower reset/replay route are optimizer costs, not native
-        // mutation prohibitions. Only explicit execution authority or a planner hold
-        // may turn the status line into a route hold.
+        let rebirthBoundaryHold = state["rebirthBoundaryHold"] as? Bool ?? false
+        let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold || rebirthBoundaryHold
+        // A final live boundary hold is distinct from the optimizer's continuation hold.
+        // Both suppress a countdown: neither may be displayed as an executable reset.
         let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
         let rebirthText = noResetPolicy ? "no reset — challenge rule"
             : rebirthUnscheduled ? "hold — recalculating"
@@ -530,7 +531,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             && (state["challengeAllowsRebirth"] as? Bool == false
                 || challengeCode.hasPrefix("NORB"))
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
-        let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold
+        let rebirthBoundaryHold = state["rebirthBoundaryHold"] as? Bool ?? false
+        let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold || rebirthBoundaryHold
         let rebirthReason = state["rebirthReason"] as? String ?? "current highest-value checkpoint"
         let rebirthNextPositiveETA = number(state, "rebirthNextPositiveEtaSeconds")
         let rebirthNextEvaluationETA = number(state, "rebirthNextEvaluationEtaSeconds")
@@ -937,7 +939,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         TARGET RUN AGE: \(rebirthUnscheduled ? "not scheduled" : formatExactDuration(rebirthTarget))
         CURRENT RUN AGE: \(formatExactDuration(rebirthElapsed))
         REMAINING: \(rebirthUnscheduled ? "no executable countdown" : formatExactDuration(rebirthRemaining))
-        EXPECTED EXECUTION: \(noResetPolicy ? "none while the active challenge forbids rebirth" : rebirthExecutionHold ? "none until the event/progression model validates a reset" : wallClockEstimate(rebirthRemaining) + " local time")
+        EXPECTED EXECUTION: \(noResetPolicy ? "none while the active challenge forbids rebirth" : rebirthExecutionHold ? "none until the event/progression model validates a reset" : rebirthBoundaryHold ? "none until the final live boundary clears" : wallClockEstimate(rebirthRemaining) + " local time")
         NEXT FINITE RESET CANDIDATE: \(nextPositiveText)
         NEXT MODEL EVALUATION: \(nextEvaluationText)
         ETA EVIDENCE: \(rebirthETAReason.isEmpty ? "no dedicated ETA reason emitted" : rebirthETAReason)

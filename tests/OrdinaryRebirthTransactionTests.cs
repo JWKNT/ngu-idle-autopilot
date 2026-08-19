@@ -102,6 +102,8 @@ internal static class OrdinaryRebirthTransactionTests
         var main = File.ReadAllText(Path.Combine("source", "Main.cs"));
         var manager = File.ReadAllText(Path.Combine("source", "Autopilot",
             "AutopilotManager.cs"));
+        var planner = File.ReadAllText(Path.Combine("source", "Autopilot",
+            "AutopilotPlanner.cs"));
         var transaction = File.ReadAllText(Path.Combine("source", "Autopilot",
             "OrdinaryRebirthTransaction.cs"));
         var legacyBoundary = File.ReadAllText(Path.Combine("source", "AllocationProfiles",
@@ -121,6 +123,11 @@ internal static class OrdinaryRebirthTransactionTests
         Assert(manager.IndexOf("OrdinaryRebirthTransaction.Execute(root",
                    StringComparison.Ordinal) >= 0,
             "AutopilotManager bridges the live plan to the typed transaction");
+        Assert(planner.IndexOf("var ordinaryRebirthSeconds = plan.RebirthSeconds;",
+                   StringComparison.Ordinal) >= 0
+               && planner.IndexOf("if (active.RebirthSeconds != ordinaryRebirthSeconds)",
+                   StringComparison.Ordinal) >= 0,
+            "an unrestricted active challenge preserves the ordinary checkpoint's ETA evidence");
         Assert(manager.IndexOf("var recoveryPolicy = RebirthOptimizer.EvaluateMutationPolicy(",
                    StringComparison.Ordinal) >= 0
                && manager.IndexOf("recoveryMode && !recoveryPolicy.Authorized",

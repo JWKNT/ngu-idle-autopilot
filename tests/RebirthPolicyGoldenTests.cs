@@ -92,6 +92,19 @@ internal static class RebirthPolicyGoldenTests
 
     private static void TestRecoveryCounterfactuals()
     {
+        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "RecoveryCandidateHasProof", true, 0.999, -1),
+            "planner rejects the same unknown lower-Number recovery route as the final gate");
+        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "RecoveryCandidateHasProof", true, 1.0, -1),
+            "planner accepts non-regressive native Number without inventing a replay ETA");
+        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "RecoveryCandidateHasProof", true, 0.9, 600),
+            "planner may accept lower Number only with a finite bounded replay ETA");
+        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "RecoveryCandidateHasProof", false, 0.1, -1),
+            "outside record recovery, the aggregate positive-value policy remains unchanged");
+
         var nonRegressive = Call("NGUInjector.Autopilot.RebirthOptimizer",
             "EvaluateMutationPolicy",
             0.5, true, 1.0, true, -1, 900);

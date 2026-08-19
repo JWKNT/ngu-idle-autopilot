@@ -428,6 +428,7 @@ namespace NGUInjector.Autopilot
             // including unrestricted Basic, look like a native no-reset mode.
             var active = ChallengeStrategyPlanner.ActivePolicy(c, null, plan.RebirthSeconds);
             if (active == null) return;
+            var ordinaryRebirthSeconds = plan.RebirthSeconds;
             plan.Challenges.Clear();
             plan.Stage += " / active challenge";
             plan.Objective = active.Objective;
@@ -459,19 +460,29 @@ namespace NGUInjector.Autopilot
                 plan.RebirthNextPositiveEtaSeconds = -1;
                 plan.RebirthNextEvaluationEtaSeconds = 1;
                 plan.RebirthEtaReason = active.EtaReason;
+                plan.RebirthRunnerUpSeconds = -1;
+                plan.RebirthRunnerUpDeltaSeconds = -1;
             }
             else
             {
                 plan.RebirthSeconds = active.RebirthSeconds;
-                plan.RebirthReason = active.Objective;
                 plan.RebirthExecutionHold = false;
                 plan.RebirthNextPositiveEtaSeconds = Math.Max(0,
                     active.RebirthSeconds - (int)Math.Floor(c.rebirthTime.totalseconds));
                 plan.RebirthNextEvaluationEtaSeconds = 1;
-                plan.RebirthEtaReason = active.EtaReason;
+                // An unrestricted active challenge owns the long-term objective, not the
+                // ordinary checkpoint's evidence fields.  Basic previously replaced a valid
+                // reset countdown/reason with its unrelated (and often unknown) challenge-clear
+                // ETA, making dashboards claim the reset ETA was unknown.  Preserve the ordinary
+                // optimizer explanation unless challenge policy actually changed the checkpoint.
+                if (active.RebirthSeconds != ordinaryRebirthSeconds)
+                {
+                    plan.RebirthReason = active.Objective + "; " + active.RebirthPolicySummary;
+                    plan.RebirthEtaReason = active.EtaReason;
+                    plan.RebirthRunnerUpSeconds = -1;
+                    plan.RebirthRunnerUpDeltaSeconds = -1;
+                }
             }
-            plan.RebirthRunnerUpSeconds = -1;
-            plan.RebirthRunnerUpDeltaSeconds = -1;
 
             var energy = new List<string> {"CAPALLBT:20"};
             if (!noTM) energy.Add("CAPTM:25");

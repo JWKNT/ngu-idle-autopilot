@@ -1774,9 +1774,12 @@ namespace NGUInjector.Autopilot
             // Mirror the irreversible admission kernel in telemetry. Aggregate one-run score is
             // necessary but not sufficient below the Boss record; unknown exact replay ETA must be
             // published as a hold instead of claiming that reset is recovery-efficient.
+            var liveRecoveryRatio = Math.Min(projectedAttackMultiplier,
+                projectedDefenseMultiplier);
+            var recoveryPolicyRatio = Plan.RebirthSeconds > elapsedSeconds
+                ? Plan.RebirthMinimumNumberRatio : liveRecoveryRatio;
             var recoveryPolicy = RebirthOptimizer.EvaluateMutationPolicy(
-                Plan.RebirthSelectedScorePerHour, true,
-                Math.Min(projectedAttackMultiplier, projectedDefenseMultiplier), recoveryMode,
+                Plan.RebirthSelectedScorePerHour, true, recoveryPolicyRatio, recoveryMode,
                 recoveryResetEta, recoveryContinueEta);
             var recoveryResetEfficient = recoveryPolicy.Authorized;
             var recoveryRouteReason = recoveryPolicy.Reason;
@@ -1789,7 +1792,10 @@ namespace NGUInjector.Autopilot
                 ? "rebirth execution is disabled in autopilot settings"
                 : Plan.RebirthExecutionHold
                     ? "the event-driven planner has not admitted a valid finite mutation boundary"
-                    : recoveryMode && !recoveryPolicy.Authorized
+                    : Plan.RebirthBoundaryHold
+                        ? Plan.RebirthBoundaryReason
+                    : Plan.RebirthSeconds <= elapsedSeconds
+                      && recoveryMode && !recoveryPolicy.Authorized
                         ? recoveryPolicy.Reason
                     : string.Empty;
             var projectedRebirthAp = MechanicsProgression.TimeAp(Plan.RebirthSeconds);
@@ -1882,14 +1888,16 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthSeconds\": " + Plan.RebirthSeconds + ",\n"
                        + "  \"rebirthReason\": \"" + EscapeJson(Plan.RebirthReason) + "\",\n"
                        + "  \"rebirthExecutionHold\": " + Plan.RebirthExecutionHold.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthBoundaryHold\": " + Plan.RebirthBoundaryHold.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"rebirthBoundaryReason\": \"" + EscapeJson(Plan.RebirthBoundaryReason) + "\",\n"
                        + "  \"rebirthNextPositiveEtaSeconds\": " + Plan.RebirthNextPositiveEtaSeconds + ",\n"
                        + "  \"rebirthNextEvaluationEtaSeconds\": " + Plan.RebirthNextEvaluationEtaSeconds + ",\n"
                        + "  \"rebirthEtaReason\": \"" + EscapeJson(Plan.RebirthEtaReason) + "\",\n"
                        + "  \"rebirthRunnerUpSeconds\": " + Plan.RebirthRunnerUpSeconds + ",\n"
                        + "  \"rebirthRunnerUpDeltaSeconds\": " + Plan.RebirthRunnerUpDeltaSeconds + ",\n"
                        + "  \"rebirthRunnerUpReason\": \"" + EscapeJson(Plan.RebirthRunnerUpReason) + "\",\n"
-                       + "  \"rebirthOptimizerModel\": \"event-queue-number-cost-and-persistent-cycle-v5\",\n"
-                       + "  \"rebirthObjective\": \"minimize terminal-route time across legal event boundaries; native Number loss is a scored branch cost, never an admission rule\",\n"
+                       + "  \"rebirthOptimizerModel\": \"event-queue-number-cost-and-recovery-proof-v6\",\n"
+                       + "  \"rebirthObjective\": \"maximize persistent cycle value across legal events; lower Number during record recovery requires a finite Boss-0 replay proof, otherwise wait for native Number non-regression\",\n"
                        + "  \"rebirthSelectedScorePerHour\": " + Plan.RebirthSelectedScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthRunnerUpScorePerHour\": " + Plan.RebirthRunnerUpScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthOptimizerProjectedMultiplier\": " + Plan.RebirthProjectedMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"

@@ -295,6 +295,7 @@ def build_observability(
     target = finite_number(state.get("rebirthSeconds"))
     elapsed = finite_number(state.get("rebirthElapsed"))
     execution_hold = state.get("rebirthExecutionHold") is True
+    boundary_hold = state.get("rebirthBoundaryHold") is True
     execution_enabled = first_bool(state, "rebirthExecutionEnabled")
     challenge_allows_rebirth = first_bool(state, "challengeAllowsRebirth")
     challenge_rules_summary = first_text(state, "challengeRulesSummary")
@@ -306,6 +307,7 @@ def build_observability(
     reset_eta = None
     if (
         not execution_hold
+        and not boundary_hold
         and not no_reset_challenge
         and target is not None
         and target >= 0
@@ -314,12 +316,13 @@ def build_observability(
         reset_eta = max(0, int(round(target - elapsed)))
 
     safety_reason = first_text(state, "rebirthSafetyBlockReason")
+    boundary_reason = first_text(state, "rebirthBoundaryReason")
     selection_reason = first_text(state, "rebirthReason", "rebirthObjective")
     eta_reason = first_text(state, "rebirthEtaReason")
     if no_reset_challenge:
         action = "no-reset-challenge"
         action_label = "NO RESET — this challenge forbids ordinary rebirths"
-    elif execution_hold:
+    elif execution_hold or boundary_hold:
         action = "hold"
         action_label = "HOLD — no executable reset is scheduled"
     elif execution_enabled is False:
@@ -492,8 +495,8 @@ def build_observability(
         "rebirth": {
             "action": action,
             "actionLabel": action_label,
-            "reason": safety_reason or selection_reason or "No decision reason was emitted.",
-            "noResetHold": execution_hold or no_reset_challenge or execution_enabled is False,
+            "reason": safety_reason or boundary_reason or selection_reason or "No decision reason was emitted.",
+            "noResetHold": execution_hold or boundary_hold or no_reset_challenge or execution_enabled is False,
             "targetRunAgeSeconds": optional_seconds(target),
             "currentRunAgeSeconds": optional_seconds(elapsed),
             "resetEtaSeconds": reset_eta,
