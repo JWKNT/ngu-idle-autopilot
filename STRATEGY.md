@@ -239,18 +239,26 @@ chooses ITOPOD immediately when:
 - all fightable collection debt is complete; or
 - a required END item can only come from ITOPOD.
 
-The bot treats climbing and farming as different jobs. For steady farming, it chooses a floor it
-can defeat in one hit so PP, EXP, AP, and boosts arrive quickly. For a record push, it aims directly
-at the next record divisible by ten, because that is where the permanent first-clear PP is paid. It
-will try a floor whenever its best real equipment set can keep doing positive damage after enemy
-healing. The older short-fight safety estimate remains visible for diagnosis, but it no longer
-silently declares a winnable floor impossible.
+The bot treats climbing and farming as different jobs. For steady farming, it chooses a floor that
+even a minimum-damage Regular Attack can defeat in one hit, so PP, EXP, AP, and boosts arrive quickly.
+This number is about kill speed, not health: being at full HP on floor 48 can mean the armor is very
+safe even though each enemy still takes several attacks. Strong, Piercing, and Ultimate Attack can
+one-shot higher floors, but their cooldowns mean they are not ready for every new enemy. The dashboard
+therefore calls this the “repeatable farm” floor instead of implying it is the highest survivable floor.
+
+For a record push, the bot aims directly at the next record divisible by ten, because that is where
+the permanent first-clear PP is paid. No damage or survival formula is allowed to become a trial
+ceiling. The formulas are still shown as useful estimates, but the bot keeps attempting the next
+ten-floor reward until live combat supplies evidence that the attempt is not working.
 
 An unlucky enemy—especially an explosive one—can kill a character that is normally strong enough,
-so one death is not proof. The bot records the exact floor that was being fought. After eight deaths
-on that same floor without a kill on that floor, it pauses the push and returns to its fast one-hit
-farm. Death restarts the range, so wins on the lower floors that must be replayed do not erase the
-failure evidence for the difficult floor. A real kill on the difficult floor does erase it.
+so one death is not proof. The bot records the exact floor that was being fought. It also watches the
+enemy's HP. There is no maximum fight length while that HP continues reaching new lows. If it does
+not reach any new low for a full minute, the enemy is healing as fast as the current attacks can hurt
+it, so that attempt counts as a failure even if the player stays at full HP. After eight failures on
+the same floor without a kill there, the bot pauses the push and returns to its fast repeatable farm.
+Death or abandoning a stuck enemy restarts the range, so wins on lower replay floors do not erase the
+evidence for the difficult floor. A real kill on the difficult floor does erase it.
 
 The paused push is tried again after effective offense or durability improves by at least five
 percent. “Improves” means the resulting Adventure combat stats, not merely a new piece of gear:
@@ -351,11 +359,11 @@ For a push, boss, ITOPOD climb, major unlock, or Titan, it equips the strongest 
 that exact target. For an easy farm, it may use weaker gear with better Gold, Energy, Magic, drop,
 or other production bonuses—but only when the target remains safely beatable.
 
-An ITOPOD climb never breaks an equal-kill-time tie with production bonuses. It first prefers more
-worst-case HP left after the fight, then higher combined Adventure Attack, Defense, and HP. Thus a
-currently stronger Gouda chest can replace Forest armor for a climb even when both happen to kill
-the current floor in the same number of hits. A one-time gear-swap frame is not charged as though it
-recurred on every enemy in the range; the Forest chest remains available for refill work.
+An ITOPOD climb never breaks an equal-kill-time tie with production bonuses. It prefers Adventure
+Attack first, because more Attack is what breaks an enemy-healing wall, then uses survival and other
+combat stats as tie-breakers. Thus a currently stronger Gouda chest can replace Forest armor for a
+climb. A one-time gear-swap frame is not charged as though it recurred on every enemy in the range;
+the Forest chest remains available for refill work.
 
 When moving from an ordinary zone into ITOPOD, the bot deliberately visits Safe Zone for one
 control step. That creates a dependable enemy-free moment to equip the chosen ITOPOD set; it does
@@ -363,9 +371,9 @@ not wait and hope that a once-per-second controller notices the tiny gap between
 Before routing, the reach estimate checks several complete physical sets ranging from Attack-heavy
 to Defense-heavy. The full gear solver then searches the legal combinations for the chosen floor.
 If that bounded search runs out of time, its narrow emergency fallback uses the strongest
-Adventure-Attack set and still must pass the same one-hit farming or finite positive-damage climb
-check. No step combines stats from gear that cannot be equipped together, and a fallback is never
-permission to claim reach that its physical set does not have. Both the route estimate and the gear check use the Beast Mode
+Adventure-Attack set. A steady farm must still pass the repeatable one-hit check, while a record
+climb is judged by the live failure circuit breaker instead of a formula. No step combines stats
+from gear that cannot be equipped together. Both the route estimate and the gear check use the Beast Mode
 state that will actually be enabled in ITOPOD, even though gear staging itself happens one step
 earlier in Safe Zone.
 

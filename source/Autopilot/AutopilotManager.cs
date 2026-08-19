@@ -24,8 +24,8 @@ audited Normal challenge subset are also live behind their
 separate explicit flags; AP/QP purchases, difficulty, T13/T14, MOVE69, END, and the global scheduler
 remain fail-closed for this deploy. Legacy direct mutation helpers are not called; staged authority
 can expand only through typed postconditions and copied-save/backtest evidence.
-ITOPOD telemetry and valuation report the one-hit farm ceiling, conservative combat frontier,
-finite positive-damage trial ceiling, and empirical failure breaker separately. Open trials price
+ITOPOD telemetry and valuation report the repeatable one-hit farm floor, conservative combat
+frontier, diagnostic Regular-Attack reach, and empirical failure breaker separately. Open pushes price
 and schedule the next record divisible by ten; repeated confirmed floor deaths pause that push. Continuous
 ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
 ten-kill floor counter; floor-boundary healing happens in place without erasing partial progress.
@@ -1102,11 +1102,13 @@ namespace NGUInjector.Autopilot
                                     && Main.Settings.ITOPODCombatMode != 1
                                     && Main.Character.training.attackTraining[0] >= 5000
                     ? .8 : Math.Max(.02, Main.Character.adventure.attackSpeed);
-                var targetCombatSeconds = route.Climbing
-                                          && !double.IsNaN(route.TargetKillSeconds)
-                                          && !double.IsInfinity(route.TargetKillSeconds)
-                                          && route.TargetKillSeconds > 0.0
-                    ? route.TargetKillSeconds : attackCadence;
+                var hasModeledTargetTime = route.Climbing
+                                           && !double.IsNaN(route.TargetKillSeconds)
+                                           && !double.IsInfinity(route.TargetKillSeconds)
+                                           && route.TargetKillSeconds > 0.0;
+                var targetCombatSeconds = hasModeledTargetTime
+                    ? route.TargetKillSeconds
+                    : route.Climbing ? ItopodFightProgressWatch.NoProgressSeconds : attackCadence;
                 var killCycleSeconds = targetCombatSeconds + Math.Max(0.0,
                     Main.Character.adventureController.respawnTime());
                 var ordinaryPpPerSecond = 0.0;
@@ -1125,9 +1127,8 @@ namespace NGUInjector.Autopilot
                                    && _collectionTarget.SetRewardNativeMagnitude <= 0.0
                                    && _collectionTarget.UsefulBoostGain <= 0.0
                                    && _collectionTarget.OptionalProgressionGain > 0.0;
-                // While an empirical climb is open, the next decade's hardest fought floor is
-                // genuinely reachable-by-trial even when it lies beyond the conservative 4.1s
-                // frontier. Feed that floor into global route value. When the breaker is held,
+                // While an open-ended climb is active, value the next decade's hardest fought
+                // floor even when it lies beyond the diagnostic model. When the breaker is held,
                 // retain only the conservative reach so the selector chooses steady farming.
                 var valuedItopodReach = route.Climbing
                     ? Math.Max(route.FrontierFloor, Math.Max(0, route.End - 1))
@@ -1767,7 +1768,8 @@ namespace NGUInjector.Autopilot
                        + "  \"itopodHighestFloor\": " + c.adventure.highestItopodLevel + ",\n"
                        + "  \"itopodReachableOneHitFloor\": " + itopodRoute.ReachableFloor + ",\n"
                        + "  \"itopodFrontierFloor\": " + itopodRoute.FrontierFloor + ",\n"
-                       + "  \"itopodTrialFloor\": " + itopodRoute.TrialFloor + ",\n"
+                       + "  \"itopodModeledPositiveDamageFloor\": "
+                       + itopodRoute.ModeledPositiveDamageFloor + ",\n"
                        + "  \"itopodBlockedFloor\": " + itopodRoute.BlockedFloor + ",\n"
                        + "  \"itopodConsecutiveFailures\": " + itopodRoute.ConsecutiveFailures + ",\n"
                        + "  \"itopodEmpiricalTrial\": " + itopodRoute.EmpiricalTrial.ToString().ToLowerInvariant() + ",\n"

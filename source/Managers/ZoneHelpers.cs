@@ -14,9 +14,9 @@ cannot mistake one for another. Candidate T6-T12 autokill uses projected Attack/
 not a predicate reading the current loadout; native Apathy/Glop rules apply only to manual fights.
 T13 is one-shot reward state, while T14 remains recovery-actionable until ordinary item 495 exists.
 No Titan mutation occurs here; the separately documented ITOPOD range optimizer is the only write.
-That optimizer keeps one-hit farm throughput and the conservative survivable frontier visible, but
-uses confirmed fought-floor outcomes to trial the next ten-floor permanent-PP boundary. Repeated
-same-floor deaths open a farming circuit breaker until effective Adventure capability improves.
+That optimizer keeps repeatable Regular-Attack one-hit throughput and the conservative survivable
+frontier visible, but neither formula caps the next ten-floor permanent-PP push. Repeated same-floor
+deaths or no-HP-progress fights open a farming circuit breaker until Adventure capability improves.
 */
 namespace NGUInjector.Managers
 {
@@ -28,7 +28,7 @@ namespace NGUInjector.Managers
         internal int FarmFloor;
         internal int ReachableFloor;
         internal int FrontierFloor;
-        internal int TrialFloor;
+        internal int ModeledPositiveDamageFloor;
         internal int BlockedFloor = -1;
         internal int ConsecutiveFailures;
         internal double TargetKillSeconds = double.PositiveInfinity;
@@ -707,9 +707,9 @@ namespace NGUInjector.Managers
         The native optimal-floor button always writes start=end and clamps start to highest-1. It therefore
         cannot reach a new record: after ten kills the floor wraps before highestItopodLevel is awarded. To
         climb, the native-valid range must start at highest-1 and end above the record being earned. An open
-        empirical trial aims directly at the next record divisible by ten. Confirmed repeated deaths on one
-        fought floor pause that push; necessary replay kills below it do not erase the evidence. Farming remains
-        on the separate one-hit plateau because repeated PP/EXP throughput and first-clear reach are different
+        push aims directly at the next record divisible by ten. Confirmed repeated failures on one fought floor
+        pause that push; necessary replay kills below it do not erase the evidence. Farming remains on the
+        separate repeatable one-hit floor because PP/EXP throughput and first-clear reach are different
         objectives. Every input mutation is passed through the native verifier and checked against Adventure
         state before telemetry calls it active.
         */
@@ -734,17 +734,18 @@ namespace NGUInjector.Managers
             var reach = CalculateBestOwnedItopodReach(out owned);
             var reachable = Math.Max(0, Math.Min(maxFloor, reach.OneHitFloor));
             var frontier = Math.Max(0, Math.Min(maxFloor, reach.FrontierFloor));
-            var trial = Math.Max(0, Math.Min(maxFloor, reach.TrialFloor));
+            var modeledPositiveDamage = Math.Max(0,
+                Math.Min(maxFloor, reach.ModeledPositiveDamageFloor));
             // Range H-1..target fights every floor through target-1 and awards the target record
             // before wrapping; target is a sentinel, not a required kill. Non-decade records have
-            // no first-clear PP value, so an open empirical trial always aims directly at the next
-            // multiple of ten. Confirmed deaths, not the old 4.1-second proof ceiling, decide when
+            // no first-clear PP value, so an open empirical push always aims directly at the next
+            // multiple of ten. Observed outcomes, not the old 4.1-second proof ceiling, decide when
             // to stop and farm.
             ItopodTrialDecision trialDecision = null;
             if (owned != null)
             {
                 trialDecision = ItopodTrials.Decide(highest, maxFloor,
-                    TrialCapability(owned, trial));
+                    TrialCapability(owned));
                 if (trialDecision.Reopened)
                     Main.LogAction("ITOPOD", "Reopened empirical floor " + highest
                         + " climb after effective Adventure capability improved");
@@ -766,10 +767,10 @@ namespace NGUInjector.Managers
             result.FarmFloor = farm;
             result.ReachableFloor = reachable;
             result.FrontierFloor = frontier;
-            result.TrialFloor = trial;
+            result.ModeledPositiveDamageFloor = modeledPositiveDamage;
             result.BlockedFloor = trialDecision == null ? -1 : trialDecision.BlockedFloor;
             result.ConsecutiveFailures = trialDecision == null
-                ? ItopodTrials.ConsecutiveDeaths : trialDecision.ConsecutiveDeaths;
+                ? ItopodTrials.ConsecutiveFailures : trialDecision.ConsecutiveFailures;
             result.Climbing = climbing;
             result.EmpiricalTrial = climbing && climbTarget - 1 > frontier;
             if (owned != null)
@@ -783,13 +784,15 @@ namespace NGUInjector.Managers
                 ? "empirically climb to record " + climbTarget
                   + " for its exact first-clear PP award"
                   + ", using native range " + start + "-" + end
-                  + "; finite trial ceiling " + trial + ", bounded frontier " + frontier
-                  + ", one-hit farm ceiling " + reachable
+                  + "; diagnostic Regular-Attack model " + modeledPositiveDamage
+                  + ", bounded frontier " + frontier
+                  + ", repeatable one-hit farm floor " + reachable
                 : "farm floor " + farm + "; "
                   + (trialDecision == null ? "empirical climb state is unavailable"
                       : trialDecision.Reason)
-                  + " (finite trial ceiling " + trial + ", bounded frontier " + frontier
-                  + ", one-hit farm ceiling " + reachable + ")";
+                  + " (diagnostic Regular-Attack model " + modeledPositiveDamage
+                  + ", bounded frontier " + frontier
+                  + ", repeatable one-hit farm floor " + reachable + ")";
 
             // Lazy ITOPOD invokes setOptimalFloor after deaths and can overwrite the deliberate climb range.
             // Full optimization owns the range, so disable that reversible toggle and confirm the live field.
@@ -851,10 +854,10 @@ namespace NGUInjector.Managers
         Adventure attack is affine in the sum of native per-item contributions. Select the
         strongest legal physical object for every slot, including the native second-weapon
         factor, then project Attack, Defense, and HP by their exact affine numerator ratios.
-        One-hit reach prices steady farming; the conservative frontier remains diagnostic, while
-        any finite positive-damage path may open an empirical decade push. These are admission
-        ceilings only: the physical optimizer must still equip and verify the exact set before
-        combat may move into the requested range.
+        Repeatable one-hit reach prices steady farming; the conservative frontier and positive-damage
+        formula remain diagnostic. Neither model is an admission ceiling for a decade push: live
+        outcomes own that decision. The physical optimizer still equips and verifies an exact legal
+        set before combat moves into the requested range.
         */
         internal static int CalculateBestOwnedItopodLevel()
         {
@@ -880,29 +883,32 @@ namespace NGUInjector.Managers
                 c.adventureController.maxItopodLevel()).FrontierFloor;
         }
 
-        internal static int CalculateBestItopodTrialLevel()
-        {
-            var c = Main.Character;
-            if (c == null || c.adventureController == null) return 0;
-            var targetAttack = c.totalAdvAttack() * ItopodTargetAttackFactor();
-            return ItopodCombatOracle.ProveReach(targetAttack, c.totalAdvDefense(),
-                Math.Max(0.0, c.totalAdvHP()), ItopodAttackPower(c),
-                ItopodAttackCadence(c), ItopodTargetIncomingFactor(),
-                c.adventureController.maxItopodLevel()).TrialFloor;
-        }
-
         internal static void RecordItopodFightResult(int foughtFloor, bool died)
         {
             if (foughtFloor < 0 || foughtFloor > ItopodPerkPlanner.MaximumFloor) return;
             OwnedItopodCombatSnapshot owned;
-            var reach = CalculateBestOwnedItopodReach(out owned);
+            CalculateBestOwnedItopodReach(out owned);
             if (owned == null) return;
-            if (ItopodTrials.Observe(foughtFloor, died,
-                TrialCapability(owned, reach.TrialFloor)))
+            if (ItopodTrials.Observe(foughtFloor, died, TrialCapability(owned)))
                 Main.LogAction("HOLD", "ITOPOD floor " + foughtFloor
                     + " reached the empirical failure limit after "
-                    + ItopodTrials.ConsecutiveDeaths
-                    + " consecutive deaths; farming until effective Adventure capability improves");
+                    + ItopodTrials.ConsecutiveFailures
+                    + " failed attempts; farming until effective Adventure capability improves");
+        }
+
+        internal static void RecordItopodNoProgressFailure(int foughtFloor)
+        {
+            if (foughtFloor < 0 || foughtFloor > ItopodPerkPlanner.MaximumFloor) return;
+            OwnedItopodCombatSnapshot owned;
+            CalculateBestOwnedItopodReach(out owned);
+            if (owned == null) return;
+            var blocked = ItopodTrials.Observe(foughtFloor, true, TrialCapability(owned));
+            Main.LogAction(blocked ? "HOLD" : "ITOPOD",
+                "ITOPOD floor " + foughtFloor + " made no new enemy-HP low for "
+                + ItopodFightProgressWatch.NoProgressSeconds.ToString("0")
+                + " seconds; failed attempt " + ItopodTrials.ConsecutiveFailures
+                + "/" + ItopodClimbTrialController.FailureStreakLimit
+                + (blocked ? ", farming until effective Adventure capability improves" : string.Empty));
         }
 
         private sealed class OwnedItopodCombatSnapshot
@@ -937,18 +943,18 @@ namespace NGUInjector.Managers
                 bestOneHit = Math.Max(bestOneHit, proof.OneHitFloor);
                 bestFrontier = Math.Max(bestFrontier, proof.FrontierFloor);
                 if (candidate != null && (snapshot == null
-                    || proof.TrialFloor > bestTrial
-                    || proof.TrialFloor == bestTrial
+                    || proof.ModeledPositiveDamageFloor > bestTrial
+                    || proof.ModeledPositiveDamageFloor == bestTrial
                        && proof.FrontierFloor > selectedFrontier
-                    || proof.TrialFloor == bestTrial
+                    || proof.ModeledPositiveDamageFloor == bestTrial
                        && proof.FrontierFloor == selectedFrontier
-                       && proof.TrialKillSeconds < bestTrialSeconds))
+                       && proof.ModeledPositiveDamageKillSeconds < bestTrialSeconds))
                 {
                     snapshot = candidate;
                     bestFrontierSeconds = proof.FrontierKillSeconds;
-                    bestTrial = proof.TrialFloor;
+                    bestTrial = proof.ModeledPositiveDamageFloor;
                     selectedFrontier = proof.FrontierFloor;
-                    bestTrialSeconds = proof.TrialKillSeconds;
+                    bestTrialSeconds = proof.ModeledPositiveDamageKillSeconds;
                     bestReason = proof.FrontierReason;
                 }
             }
@@ -1041,10 +1047,10 @@ namespace NGUInjector.Managers
         }
 
         private static ItopodTrialCapability TrialCapability(
-            OwnedItopodCombatSnapshot snapshot, int maximumTrialFloor)
+            OwnedItopodCombatSnapshot snapshot)
         {
-            return new ItopodTrialCapability(maximumTrialFloor, snapshot.Attack,
-                snapshot.Defense, snapshot.MaximumHp, snapshot.AttackPower,
+            return new ItopodTrialCapability(snapshot.Attack, snapshot.Defense,
+                snapshot.MaximumHp, snapshot.AttackPower,
                 snapshot.AttackCadence, snapshot.IncomingBeastFactor);
         }
 

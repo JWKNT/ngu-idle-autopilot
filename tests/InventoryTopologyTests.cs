@@ -260,8 +260,8 @@ internal static class InventoryTopologyTests
                && loadout.Contains("objective.Projection.ItopodTargetAttackFactor")
                && loadout.Contains("itopodManual = Main.Settings.ITOPODCombatMode != 1")
                && loadout.Contains("failed its live ")
-               && loadout.Contains("? \"finite empirical trial\" : \"one-hit farm\""),
-            "ITOPOD staging evaluates physical combat in the requested Beast state and requires the route-specific live proof");
+               && loadout.Contains("if (!route.Climbing && liveReach < targetFloor)"),
+            "ITOPOD staging evaluates physical combat in the requested Beast state while only steady farming requires the live one-hit proof");
         Assert(inventory.Contains("AllBoostEntriesMaxxed(maxxed)")
                && inventory.Contains("selectAutoNoneTransform"),
             "live auto-transform is guarded by the all-39 permanent gate");

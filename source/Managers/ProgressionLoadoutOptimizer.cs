@@ -14,9 +14,9 @@ accessories. One immutable objective/character snapshot feeds a Pareto branch-an
 canonical accessory combinations; results report incumbent seconds, an admissible lower bound, and
 the remaining gap. Hard major-unlock combat uses target-enemy kill/survival math and excludes
 unrelated production bonuses; routine contexts may accept lower raw combat stats for a proven ETA
-improvement. ITOPOD record staging uses a finite positive-damage empirical trial while fixed farming
-remains on the guaranteed one-hit plateau; confirmed outcomes, rather than an arbitrary short-fight
-cutoff, decide whether a decade push remains open. A live ITOPOD route preempts stale selected-boss gear
+improvement. ITOPOD record staging maximizes real combat capability and fixed farming retains a
+repeatable minimum-roll Regular-Attack one-hit requirement; live outcomes, rather than a modeled
+reach ceiling, decide whether a decade push remains open. A live ITOPOD route preempts stale selected-boss gear
 ownership because those systems use different combat objectives. Equal-time climb sets break ties
 on worst-case combat reserve and raw Adventure strength, never production bonuses. It executes reference-identity native swap transactions, reclaims allocations before
 cap-lowering gear, verifies the final layout, and rolls back on failure. ID-only equality and direct
@@ -917,8 +917,8 @@ namespace NGUInjector.Managers
             // feasible accessory pair.  ITOPOD entry must not then sit in Safe Zone
             // forever while merely *describing* the current infeasible set as verified.
             // The lexicographic fallback is deliberately narrow: maximize native
-            // Adventure Attack in every legal physical slot, then accept it only if
-            // the same immutable farm/trial evaluator proves the requested floor.
+            // Adventure Attack in every legal physical slot. Farming still has to retain its
+            // repeatable one-hit proof; climbing deliberately has no modeled reach ceiling.
             if (bestEvaluation == null || !bestEvaluation.Feasible)
             {
                 var strongest = StrongestAdventureAttackPlan(c, all);
@@ -956,16 +956,11 @@ namespace NGUInjector.Managers
                 LastDecision = "Verified live ITOPOD route set before Adventure entry: " + Describe(current);
             }
             var route = ZoneHelpers.LastItopodRoute;
-            var targetFloor = route.Climbing
-                ? Math.Max(0, route.End - 1) : Math.Max(0, route.FarmFloor);
-            var liveReach = route.Climbing
-                ? ZoneHelpers.CalculateBestItopodTrialLevel()
-                : ZoneHelpers.CalculateBestItopodLevel();
-            if (liveReach < targetFloor)
+            var targetFloor = Math.Max(0, route.FarmFloor);
+            var liveReach = ZoneHelpers.CalculateBestItopodLevel();
+            if (!route.Climbing && liveReach < targetFloor)
             {
-                LastDecision = "The staged ITOPOD set failed its live "
-                               + (route.Climbing ? "finite empirical trial" : "one-hit farm")
-                               + " check: floor "
+                LastDecision = "The staged ITOPOD set failed its live repeatable one-hit farm check: floor "
                                + targetFloor + " requested, floor " + liveReach + " proved";
                 return false;
             }
@@ -1547,26 +1542,26 @@ namespace NGUInjector.Managers
                     ? objective.RegularAttackPower : objective.IdleAttackPower,
                 objective.Projection.ItopodAttackCadence,
                 objective.Projection.ItopodIncomingBeastFactor);
-            var admitted = objective.Projection.ItopodClimbing
-                ? combat.TrialClear : combat.OneHit;
+            var admitted = objective.Projection.ItopodClimbing || combat.OneHit;
             if (!admitted)
-                return LoadoutEvaluation.Infeasible(objective.Projection.ItopodClimbing
-                    ? "candidate does not retain a finite positive-damage ITOPOD trial: "
-                      + combat.Reason
-                    : "candidate does not retain the guaranteed ITOPOD one-hit farm plateau");
+                return LoadoutEvaluation.Infeasible(
+                    "candidate does not retain the repeatable ITOPOD one-hit farm floor");
             var respawn = objective.LiveRespawnSeconds
                           * Math.Max(.2, 1.0 - projection.RespawnBonus)
                           / Math.Max(.2, 1.0 - objective.Projection.CurrentRespawnGear);
-            var action = combat.KillSeconds
+            var modeledKillSeconds = combat.PositiveDamageModel
+                ? combat.KillSeconds : ItopodFightProgressWatch.NoProgressSeconds;
+            var action = modeledKillSeconds
                          + Math.Max(0.0, respawn);
             // A climb is a progression fight, not a production loadout. When two physical sets
-            // have the same discrete kill/respawn time, prefer the larger worst-case HP reserve,
-            // then raw Adventure strength. This makes a strictly stronger Gouda chest beat Forest
-            // production bonuses without disrupting the deliberate easy-farm downgear policy.
+            // have the same modeled kill/respawn time, prefer raw Attack first because that is what
+            // can break an enemy-regeneration wall. Durability remains the secondary tie-breaker.
+            // This makes a stronger Gouda chest beat Forest production bonuses without disrupting
+            // deliberate easy-farm downgear policy.
             var survivalReserve = Math.Max(0.0,
                 projection.AdventureCurrentHp - combat.WorstIncomingDamage);
-            var combatTieBreaker = -(survivalReserve * 1000000.0
-                + projection.AdventureAttack + projection.AdventureDefense
+            var combatTieBreaker = -(projection.AdventureAttack * 1000000.0
+                + survivalReserve * 1000.0 + projection.AdventureDefense
                 + projection.AdventureMaxHp / 3.0);
             // The physical swap is a one-time 20ms operation while a first-clear range contains
             // many fights. Charging that setup cost against one representative kill made the
@@ -1578,7 +1573,7 @@ namespace NGUInjector.Managers
                 action, rankedTotal,
                 objective.Projection.ItopodClimbing ? combatTieBreaker : -projection.General,
                 (objective.Projection.ItopodClimbing
-                    ? "empirical ITOPOD decade-climb cycle" : "ITOPOD one-hit farm cycle")
+                    ? "open-ended ITOPOD decade-climb cycle" : "ITOPOD one-hit farm cycle")
                 + " seconds including native respawn special");
         }
 
@@ -2238,9 +2233,9 @@ namespace NGUInjector.Managers
         ITOPOD Drop Chance is fixed, so ordinary Looting gear has zero value there.  Equipment can
         improve rewards only by crossing a hit-count/survival plateau or shortening native respawn.
         Evaluate those quantities jointly at the configured farm/climb floor. Fixed farming requires
-        the guaranteed one-hit plateau; first-clear climbing may use the finite positive-damage
-        empirical trial shared with ZoneHelpers. Confirmed deaths are handled by the separate
-        session circuit breaker, not guessed by this loadout score.
+        the repeatable one-hit floor; first-clear climbing has no modeled reach ceiling. Confirmed
+        deaths and live no-HP-progress observations are handled by the separate session circuit
+        breaker, not guessed by this loadout score.
         */
         private static double ItopodThroughputUtility(Character c, Plan plan, double attack,
             double defense, double maxHP)
@@ -2256,12 +2251,12 @@ namespace NGUInjector.Managers
                 Math.Min(Math.Max(0.0, c.adventure.curHP), Math.Max(0.0, maxHP)),
                 attackPower, fixedObjective.Projection.ItopodAttackCadence,
                 fixedObjective.Projection.ItopodIncomingBeastFactor);
-            var viable = fixedObjective.Projection.ItopodClimbing
-                ? combat.TrialClear : combat.OneHit;
+            var viable = fixedObjective.Projection.ItopodClimbing || combat.OneHit;
             if (!viable)
                 return -500000000.0 - 1000000.0 * Math.Max(1, combat.Hits);
             var hits = Math.Max(1, combat.Hits);
-            var killSeconds = combat.KillSeconds;
+            var killSeconds = combat.PositiveDamageModel
+                ? combat.KillSeconds : ItopodFightProgressWatch.NoProgressSeconds;
 
             var controller = c.inventoryController;
             var candidateRespawnGear = Math.Max(0.0, PlanBonus(controller, plan, specType.Respawn));
@@ -2276,7 +2271,7 @@ namespace NGUInjector.Managers
             // First-clear climbing is a discrete permanent award, so reaching the requested floor
             // dominates small farm-rate differences.  Farming maximizes exact cycle throughput.
             // Admission is lexicographic: respawn bonuses may optimize only among
-            // candidate plans that retain the route's farm or empirical-trial proof.
+            // candidate plans that retain the route's repeatable farm proof.
             return (fixedObjective.Projection.ItopodClimbing ? 200000000.0 : 0.0)
                    + 10000000.0 * progress / cycle
                    - 1000.0 * hits;

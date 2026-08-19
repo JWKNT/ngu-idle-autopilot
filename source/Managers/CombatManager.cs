@@ -27,8 +27,9 @@ calls, recovery/hold telemetry, fight samples, exact fought-floor ITOPOD trial o
 loadout-lock completion signals.
 
 ITOPOD is a continuous native floor state: ordinary recovery never exits it because re-entry resets
-the ten-kill counter. Enemy-free floor boundaries may spend ready Heal/Hyper Regen moves in place;
-only a native defeat may force Safe Zone recovery.
+the ten-kill counter. Enemy-free floor boundaries may spend ready Heal/Hyper Regen moves in place.
+An open-ended record attempt also exits when enemy HP has made no new low for a full minute; that is
+a failed combat attempt, not a healing loop, and it feeds the same empirical circuit breaker as death.
 
 Invariants and safety: Regular Attack unlock is row 0 >= 5,000. A Walderp command permits exactly
 the requested move when Walderp Says and only a different damaging move otherwise; no buff or MOVE
@@ -55,6 +56,7 @@ namespace NGUInjector.Managers
         private float _fightStartHP;
         private int _fightZone = -1;
         private int _fightItopodFloor = -1;
+        private ItopodFightProgressWatch _itopodProgressWatch;
         private bool _fightWasTitan;
         private float _expectedFightDamage;
         private int _expectedFightDamageZone = -2;
@@ -1295,6 +1297,10 @@ namespace NGUInjector.Managers
                 _fightZone = zone;
                 _fightItopodFloor = zone >= 1000
                     ? _character.adventureController.itopodLevel : -1;
+                _itopodProgressWatch = _fightItopodFloor >= 0
+                    ? new ItopodFightProgressWatch(
+                        _character.adventureController.currentEnemy.curHP)
+                    : null;
                 var enemyTypeName = _character.adventureController.currentEnemy.enemyType.ToString();
                 var titanId = TitanIdForZone(zone);
                 _fightWasTitan = titanId > 0 && TitanMechanics.IsTitanEnemyType(titanId,
@@ -1305,6 +1311,27 @@ namespace NGUInjector.Managers
             }
             _isFighting = true;
             _enemyName = _character.adventureController.currentEnemy.name;
+            if (_fightItopodFloor >= 0 && _itopodProgressWatch != null
+                && ZoneHelpers.LastItopodRoute.Climbing
+                && _itopodProgressWatch.Observe(_fightTimer,
+                    _character.adventureController.currentEnemy.curHP,
+                    _character.adventureController.currentEnemy.maxHP))
+            {
+                var stalledFloor = _fightItopodFloor;
+                ZoneHelpers.RecordItopodNoProgressFailure(stalledFloor);
+                LogCombat(_enemyName + " abandoned on ITOPOD floor " + stalledFloor
+                    + " after enemy HP made no new low for "
+                    + ItopodFightProgressWatch.NoProgressSeconds.ToString("0") + "s");
+                _terminalReservation = null;
+                _isFighting = false;
+                _fightItopodFloor = -1;
+                _itopodProgressWatch = null;
+                _fightSignature = string.Empty;
+                _fightWasTitan = false;
+                _fightTimer = 0;
+                MoveToZone(-1);
+                return;
+            }
             //We have an enemy and we're ready to fight. Run through our combat routine
             if (IsTerminalTitanZone(zone))
             {
@@ -1322,6 +1349,7 @@ namespace NGUInjector.Managers
             if (_fightZone >= 1000 && _fightItopodFloor >= 0)
                 ZoneHelpers.RecordItopodFightResult(_fightItopodFloor, died);
             _fightItopodFloor = -1;
+            _itopodProgressWatch = null;
             var observedDamage = Math.Max(0f, _fightStartHP - _character.adventure.curHP);
             if (observedDamage > 0f)
             {

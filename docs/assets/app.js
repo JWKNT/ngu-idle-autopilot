@@ -609,7 +609,7 @@ exposes no mutation endpoint.
     setText("combat-meta", `${s.bossFighting ? "Fight Boss active" : "Fight Boss idle"} · ${text(s.nextTitanName, "Titan timing pending")}`);
     setText("itopod-route", `${text(s.itopodMode, "locked")} · ${text(s.itopodRouteReason, "route pending")}`);
     setText("itopod-floor", s.itopodRouteConfirmed ? `${number(s.itopodCurrentFloor)} / ${number(s.itopodHighestFloor)}` : "Not yet confirmed");
-    setText("itopod-range", `${number(s.itopodRangeStart)}–${number(s.itopodRangeEnd)} · one-hit ${number(s.itopodReachableOneHitFloor)}`);
+    setText("itopod-range", `${number(s.itopodRangeStart)}–${number(s.itopodRangeEnd)} · repeatable farm ${number(s.itopodReachableOneHitFloor)}`);
     setText("itopod-pp", `${shortNumber(s.itopodPointProgress)} / ${shortNumber(s.itopodPointThreshold)} · ${number(s.itopodKillsOnFloor)} kills on floor`);
 
     setText("gear-objective", s.loadoutObjective, "—");
