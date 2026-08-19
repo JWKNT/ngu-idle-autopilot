@@ -7,7 +7,8 @@ the selected Boss and record, ranked priorities, the current route, complete res
 active growth, Adventure outcomes, inventory, and equipped gear. Missing
 optional fields stay visibly unavailable rather than becoming false zero values or ETAs. Challenge
 reset legality comes only from an active challenge plus challengeAllowsRebirth, never a negative
-rebirth target. Held,
+rebirth target. ITOPOD record pushes are explained from live combat outcomes; formula estimates are
+shown separately and never presented as climb gates. Held,
 Pending, and Quarantined are separate states. Local copies use their own origin. The client sends no commands, persists no game data, and
 exposes no mutation endpoint.
 */
@@ -159,6 +160,65 @@ exposes no mutation endpoint.
       : /(?:saving|holding)(?: briefly)? for (.+?)(?:\s*\(|:|;|$)/i;
     const match = decision.match(pattern);
     return match ? match[1].trim() : "next validated purchase";
+  }
+
+  function itopodPresentation(s) {
+    const mode = text(s.itopodMode, "locked").toLowerCase();
+    const climbing = mode.includes("climb");
+    const target = Math.max(number(s.itopodRangeEnd), number(s.itopodNextAwardFloor));
+    const current = optionalNumber(s.itopodCurrentFloor);
+    const record = optionalNumber(s.itopodHighestFloor);
+    const failureFloor = optionalNumber(s.itopodFailureFloor);
+    const blockedFloor = optionalNumber(s.itopodBlockedFloor);
+    const failures = Math.max(0, number(s.itopodConsecutiveFailures));
+    const failureLimit = optionalNumber(s.itopodFailureLimit);
+    const noProgressSeconds = optionalNumber(s.itopodNoProgressSeconds);
+    const retryFraction = optionalNumber(s.itopodRetryImprovementFraction);
+    const farmFloor = optionalNumber(s.itopodReachableOneHitFloor);
+    const shortFightFloor = optionalNumber(s.itopodFrontierFloor);
+    const positiveDamageFloor = optionalNumber(s.itopodModeledPositiveDamageFloor);
+    const liveOutcomesOwnLimit = s.itopodModelLimitsClimb === false;
+
+    let route;
+    if (climbing) {
+      route = target > 0 ? `Climbing to record ${target}` : "Climbing for the next PP record";
+      if (liveOutcomesOwnLimit) route += " · live fights decide the limit";
+    } else if (blockedFloor !== null && blockedFloor >= 0) {
+      route = `Farming after repeated failures on floor ${blockedFloor}`;
+    } else if (mode.includes("farm")) {
+      route = farmFloor !== null && farmFloor >= 0 ? `Farming floor ${farmFloor}` : "Farming for steady PP";
+    } else {
+      route = text(s.itopodMode, "ITOPOD route pending");
+    }
+
+    let evidence;
+    if (failureLimit !== null && failureLimit > 0) {
+      const floorLabel = failureFloor !== null && failureFloor >= 0 ? ` on floor ${failureFloor}` : " on any one floor";
+      evidence = `${failures}/${failureLimit} failed attempts${floorLabel}`;
+    } else {
+      evidence = failures > 0 ? `${failures} failed attempts observed` : "No repeated-failure limit reported";
+    }
+    if (noProgressSeconds !== null && noProgressSeconds > 0) {
+      evidence += ` · ${compactDecimal(noProgressSeconds, 0)}s without lower enemy HP counts as a failure`;
+    }
+    if (!climbing && blockedFloor !== null && blockedFloor >= 0 && retryFraction !== null && retryFraction > 0) {
+      evidence += ` · retry after ${compactDecimal(retryFraction * 100, 1)}% Adventure capability growth`;
+    }
+
+    const estimateParts = [];
+    if (shortFightFloor !== null && shortFightFloor >= 0) estimateParts.push(`short-fight floor ${shortFightFloor}`);
+    if (positiveDamageFloor !== null && positiveDamageFloor >= 0) estimateParts.push(`Regular-damage floor ${positiveDamageFloor}`);
+    const estimates = estimateParts.length ? `${estimateParts.join(" · ")} · diagnostic only` : "Combat estimates unavailable";
+    const farm = farmFloor !== null && farmFloor >= 0
+      ? `Floor ${farmFloor} · minimum-roll Regular Attack one-shot`
+      : "Repeatable farm floor unavailable";
+    const decision = climbing
+      ? `Pushing toward record ${target} for first-clear PP. Live fights—not formulas—decide when to pause.`
+      : blockedFloor !== null && blockedFloor >= 0
+        ? `Farming efficiently until total Adventure capability improves enough to retry floor ${blockedFloor}.`
+        : "Farming for steady PP while the next record push is re-evaluated.";
+
+    return { mode, climbing, target, current, record, route, evidence, estimates, farm, decision };
   }
 
   function fallbackObservability(s) {
@@ -401,8 +461,8 @@ exposes no mutation endpoint.
 
     const itopodMode = text(s.itopodMode, "").toLowerCase();
     if (number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm")) {
-      const targetFloor = Math.max(number(s.itopodRangeEnd), number(s.itopodNextAwardFloor));
-      priorities.push({ score: itopodMode.includes("climb") ? 94 : 80, tone: "itopod", title: itopodMode.includes("climb") ? `Claim ITOPOD floor ${targetFloor}` : "Farm ITOPOD efficiently", detail: `${text(s.itopodRouteReason, "Earn PP and permanent Perks")} · floor ${number(s.itopodCurrentFloor)} now.` });
+      const itopod = itopodPresentation(s);
+      priorities.push({ score: itopod.climbing ? 94 : 80, tone: "itopod", title: itopod.climbing ? `Claim ITOPOD floor ${itopod.target}` : "Farm ITOPOD efficiently", detail: `${itopod.decision} Current floor ${itopod.current === null ? "unavailable" : itopod.current}.` });
     }
 
     if (s.majorUnlockActive) priorities.push({ score: 91, tone: "route", title: `Unlock ${text(s.majorUnlockName, "the next system")}`, detail: text(s.majorUnlockReason || s.adventureControlReason, "Push the Adventure gate that opens the next mechanic.") });
@@ -493,7 +553,7 @@ exposes no mutation endpoint.
     renderAllocationList("res3-allocation-list", res3Unlocked ? allocationGroups(s, "resource3") : [], number(stats.res3Current));
 
     setText("pp-balance", `${shortNumber(s.itopodPerkPoints)} PP`);
-    setText("pp-decision", sentence(s.itopodRouteReason));
+    setText("pp-decision", itopodPresentation(s).decision);
     setText("pp-progress", `${shortNumber(s.itopodPointProgress)} / ${shortNumber(s.itopodPointThreshold)} · ${shortNumber(s.itopodProgressPerKill)} per kill`);
     setText("qp-balance", `${shortNumber(s.questPoints)} QP`);
     setText("qp-decision", s.questUnlocked ? sentence(s.questInProgress ? `Quest ${number(s.questId)} in progress` : "No active quest") : "Not yet unlocked.");
@@ -607,9 +667,13 @@ exposes no mutation endpoint.
     setText("fight-stats", `${shortNumber(stats.fightBossAttack)} / ${shortNumber(stats.fightBossDefense)}`);
     setText("fight-hp", `${shortNumber(stats.fightBossCurrentHP)} / ${shortNumber(stats.fightBossMaxHP)}`);
     setText("combat-meta", `${s.bossFighting ? "Fight Boss active" : "Fight Boss idle"} · ${text(s.nextTitanName, "Titan timing pending")}`);
-    setText("itopod-route", `${text(s.itopodMode, "locked")} · ${text(s.itopodRouteReason, "route pending")}`);
+    const itopod = itopodPresentation(s);
+    setText("itopod-route", itopod.route);
     setText("itopod-floor", s.itopodRouteConfirmed ? `${number(s.itopodCurrentFloor)} / ${number(s.itopodHighestFloor)}` : "Not yet confirmed");
-    setText("itopod-range", `${number(s.itopodRangeStart)}–${number(s.itopodRangeEnd)} · repeatable farm ${number(s.itopodReachableOneHitFloor)}`);
+    setText("itopod-range", `${number(s.itopodRangeStart)}–${number(s.itopodRangeEnd)}`);
+    setText("itopod-evidence", itopod.evidence);
+    setText("itopod-farm", itopod.farm);
+    setText("itopod-estimates", itopod.estimates);
     setText("itopod-pp", `${shortNumber(s.itopodPointProgress)} / ${shortNumber(s.itopodPointThreshold)} · ${number(s.itopodKillsOnFloor)} kills on floor`);
 
     setText("gear-objective", s.loadoutObjective, "—");

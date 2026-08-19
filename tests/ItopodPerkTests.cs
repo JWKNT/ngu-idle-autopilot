@@ -318,7 +318,8 @@ internal static class ItopodPerkTests
         }
         var held = trial.Decide(40, 1600, baseCapability);
         Assert(!held.ShouldClimb && held.BlockedFloor == 49
-               && held.ConsecutiveFailures == ItopodClimbTrialController.FailureStreakLimit,
+               && held.ConsecutiveFailures == ItopodClimbTrialController.FailureStreakLimit
+               && trial.ObservedFailureFloor == 49,
             "the blocked route farms while preserving the exact failed floor and evidence count");
 
         var tooSmall = new ItopodTrialCapability(700.0, 650.0,
@@ -706,6 +707,11 @@ internal static class ItopodPerkTests
                && manager.Contains("\\\"itopodReachableOneHitFloor\\\"")
                && manager.Contains("\\\"itopodFrontierFloor\\\"")
                && manager.Contains("\\\"itopodModeledPositiveDamageFloor\\\"")
+               && manager.Contains("\\\"itopodModelLimitsClimb\\\": false")
+               && manager.Contains("\\\"itopodFailureLimit\\\"")
+               && manager.Contains("\\\"itopodNoProgressSeconds\\\"")
+               && manager.Contains("\\\"itopodRetryImprovementFraction\\\"")
+               && manager.Contains("\\\"itopodFailureFloor\\\"")
                && manager.Contains("\\\"itopodBlockedFloor\\\"")
                && manager.Contains("\\\"itopodEmpiricalTrial\\\""),
             "open pushes value the next decade while telemetry keeps farm, diagnostic, and breaker state separate");

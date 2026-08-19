@@ -267,6 +267,11 @@ Titans, challenge rewards, and any other system can all reopen it. This creates 
 push for the next ten-floor reward, learn from repeated defeats, farm efficiently, then retry after
 the character has materially grown.
 
+The dashboard keeps these concepts separate. It shows the current decade target and the exact live
+failure count prominently. The minimum-roll Regular-Attack farm floor and the short-fight/damage
+formula results appear on separate lines, labeled as estimates. Those numbers explain likely kill
+speed; they never claim to be the highest floor the bot will attempt.
+
 The end of an ITOPOD range is a sentinel: the record is awarded when the floor moves, before that
 sentinel must be fought. The live gear check therefore proves the hardest floor that will actually
 be fought, which is one below the range end. The bot disables Lazy ITOPOD when it would overwrite an

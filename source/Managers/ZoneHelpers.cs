@@ -30,6 +30,7 @@ namespace NGUInjector.Managers
         internal int FrontierFloor;
         internal int ModeledPositiveDamageFloor;
         internal int BlockedFloor = -1;
+        internal int FailureFloor = -1;
         internal int ConsecutiveFailures;
         internal double TargetKillSeconds = double.PositiveInfinity;
         internal bool Climbing;
@@ -769,6 +770,7 @@ namespace NGUInjector.Managers
             result.FrontierFloor = frontier;
             result.ModeledPositiveDamageFloor = modeledPositiveDamage;
             result.BlockedFloor = trialDecision == null ? -1 : trialDecision.BlockedFloor;
+            result.FailureFloor = ItopodTrials.ObservedFailureFloor;
             result.ConsecutiveFailures = trialDecision == null
                 ? ItopodTrials.ConsecutiveFailures : trialDecision.ConsecutiveFailures;
             result.Climbing = climbing;

@@ -430,12 +430,20 @@ class DashboardMarkupTests(unittest.TestCase):
             "inventory-glance-list",
             "gear-glance-summary",
             "gear-glance-list",
+            "itopod-evidence",
+            "itopod-farm",
+            "itopod-estimates",
         ):
             self.assertEqual(html.count(f'id="{element_id}"'), 1, element_id)
         self.assertIn("function renderPriorities", source)
         self.assertIn("function renderAllocationList", source)
         self.assertIn("function renderGrowth", source)
         self.assertIn("function renderActivity", source)
+        self.assertIn("function itopodPresentation", source)
+        self.assertIn('s.itopodModelLimitsClimb === false', source)
+        self.assertIn('live fights decide the limit', source)
+        self.assertIn('diagnostic only', source)
+        self.assertNotIn('detail: `${text(s.itopodRouteReason', source)
         self.assertIn("envelope.adventureLog", source)
         self.assertIn("Array.isArray(s.equippedGear)", source)
         self.assertNotIn("function renderExecution", source)

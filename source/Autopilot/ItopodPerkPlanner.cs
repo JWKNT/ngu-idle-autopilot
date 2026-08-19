@@ -419,6 +419,7 @@ namespace NGUInjector.Autopilot
         }
 
         internal int BlockedFloor { get { return _blockedFloor; } }
+        internal int ObservedFailureFloor { get { return _observedFloor; } }
         internal int ConsecutiveFailures { get { return _consecutiveFailures; } }
 
         private static bool MateriallyImproved(double current, double baseline)
