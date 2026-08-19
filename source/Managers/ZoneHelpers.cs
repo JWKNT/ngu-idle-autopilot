@@ -14,6 +14,8 @@ cannot mistake one for another. Candidate T6-T12 autokill uses projected Attack/
 not a predicate reading the current loadout; native Apathy/Glop rules apply only to manual fights.
 T13 is one-shot reward state, while T14 remains recovery-actionable until ordinary item 495 exists.
 No Titan mutation occurs here; the separately documented ITOPOD range optimizer is the only write.
+That optimizer keeps one-hit farm throughput separate from a short, survivable multi-hit frontier so
+the native optimal-floor heuristic cannot strand permanent first-clear PP behind an arbitrary hit count.
 */
 namespace NGUInjector.Managers
 {
@@ -24,6 +26,8 @@ namespace NGUInjector.Managers
         internal int End;
         internal int FarmFloor;
         internal int ReachableFloor;
+        internal int FrontierFloor;
+        internal double TargetKillSeconds = double.PositiveInfinity;
         internal bool Climbing;
         internal bool Confirmed;
         internal bool RequiresZoneReset;
@@ -696,9 +700,10 @@ namespace NGUInjector.Managers
         The native optimal-floor button always writes start=end and clamps start to highest-1. It therefore
         cannot reach a new record: after ten kills the floor wraps before highestItopodLevel is awarded. To
         climb, the native-valid range must start at highest-1 and end at least highest+1. Advance only one new
-        record at a time, using the uncapped one-hit formula, then immediately re-plan. When the next floor is
-        not one-hit capable, farm the best reachable floor. Every input mutation is passed through the native
-        verifier and checked against Adventure state before telemetry calls it active.
+        record at a time, using a bounded finite-clear/survival proof, then immediately re-plan. Farming remains
+        on the separate one-hit plateau because repeated PP/EXP throughput and first-clear reach are different
+        objectives. Every input mutation is passed through the native verifier and checked against Adventure
+        state before telemetry calls it active.
         */
         internal static ItopodRoute ConfigureITOPOD()
         {
@@ -713,14 +718,22 @@ namespace NGUInjector.Managers
             var controller = c.adventureController;
             var highest = Math.Max(1, c.adventure.highestItopodLevel);
             var maxFloor = Math.Min(1600, controller.maxItopodLevel());
-            // Admission is based on the best physical Adventure-attack set we can
+            // Admission is based on the best physical Adventure-combat set we can
             // actually equip, not whatever production/refill set happens to be live
             // when the one-second router runs. ProgressionLoadoutOptimizer stages
             // that exact set before entering a first-clear climb.
-            var reachable = Math.Max(0, Math.Min(maxFloor, CalculateBestOwnedItopodLevel()));
-            // Range H-1..H+1 fights H after the native increment and awards the
-            // record before wrapping; H+1 is a sentinel, not a required kill.
-            var climbing = highest < maxFloor && reachable >= highest;
+            OwnedItopodCombatSnapshot owned;
+            var reach = CalculateBestOwnedItopodReach(out owned);
+            var reachable = Math.Max(0, Math.Min(maxFloor, reach.OneHitFloor));
+            var frontier = Math.Max(0, Math.Min(maxFloor, reach.FrontierFloor));
+            // Range H-1..target fights every proved floor through target-1 and awards the
+            // record before wrapping; target is a sentinel, not a required kill. When the next
+            // decade/super-decade is already inside the owned bounded frontier, climb there in one
+            // range so repeated H-1 reset taxes do not double the required kills.
+            var climbing = highest < maxFloor && frontier >= highest;
+            var nextAward = ((highest / 10) + 1) * 10;
+            var climbTarget = climbing && nextAward <= maxFloor && frontier >= nextAward - 1
+                ? nextAward : Math.Min(maxFloor, highest + 1);
             var farm = Math.Max(0, Math.Min(reachable, highest - 1));
             var terminalDropMissing = c.settings.rebirthDifficulty == difficulty.sadistic
                                       && !EndgameDependencyModel.IsOwned(c, 491);
@@ -728,18 +741,30 @@ namespace NGUInjector.Managers
                 && highest >= MechanicsEndgame.ItopodDropMinimumFloor)
                 farm = Math.Max(farm, MechanicsEndgame.ItopodDropMinimumFloor);
             var start = climbing ? Math.Max(0, highest - 1) : farm;
-            var end = climbing ? highest + 1 : Math.Max(1, farm);
+            var end = climbing ? climbTarget : Math.Max(1, farm);
 
             result.Mode = climbing ? "climb" : "farm";
             result.Start = start;
             result.End = end;
             result.FarmFloor = farm;
             result.ReachableFloor = reachable;
+            result.FrontierFloor = frontier;
             result.Climbing = climbing;
+            if (owned != null)
+            {
+                var foughtFloor = climbing ? Math.Max(0, climbTarget - 1) : farm;
+                result.TargetKillSeconds = ItopodCombatOracle.EvaluateFloor(foughtFloor,
+                    owned.Attack, owned.Defense, owned.AvailableHp, owned.AttackPower,
+                    owned.AttackCadence, owned.IncomingBeastFactor).KillSeconds;
+            }
             result.Reason = climbing
-                ? "climb one record floor for first-clear PP, using native range " + start + "-" + end
+                ? "climb to record " + climbTarget + (climbTarget == nextAward
+                    ? " for its exact first-clear PP award" : " toward the next PP boundary")
+                  + ", using native range " + start + "-" + end
+                  + "; bounded frontier " + frontier + ", one-hit farm ceiling " + reachable
                 : "farm floor " + farm + "; next record floor " + (highest + 1)
-                  + " is above the current one-hit ceiling " + reachable;
+                  + " is above bounded multi-hit frontier " + frontier
+                  + " (one-hit farm ceiling " + reachable + ")";
 
             // Lazy ITOPOD invokes setOptimalFloor after deaths and can overwrite the deliberate climb range.
             // Full optimization owns the range, so disable that reversible toggle and confirm the live field.
@@ -800,15 +825,84 @@ namespace NGUInjector.Managers
 
         Adventure attack is affine in the sum of native per-item contributions. Select the
         strongest legal physical object for every slot, including the native second-weapon
-        factor, then project totalAdvAttack by the exact numerator ratio. This is deliberately
-        an admission ceiling only; the physical optimizer must still equip and verify the set
-        before combat may move into a record-floor range.
+        factor, then project Attack, Defense, and HP by their exact affine numerator ratios.
+        One-hit reach prices steady farming; the bounded proof may admit a short multi-hit record
+        push. These are admission ceilings only: the physical optimizer must still equip and
+        verify the exact set before combat may move into the requested range.
         */
         internal static int CalculateBestOwnedItopodLevel()
         {
+            OwnedItopodCombatSnapshot ignored;
+            return CalculateBestOwnedItopodReach(out ignored).OneHitFloor;
+        }
+
+        internal static int CalculateBestOwnedItopodFrontierLevel()
+        {
+            OwnedItopodCombatSnapshot ignored;
+            return CalculateBestOwnedItopodReach(out ignored).FrontierFloor;
+        }
+
+        internal static int CalculateBestItopodFrontierLevel()
+        {
+            var c = Main.Character;
+            if (c == null || c.adventureController == null) return 0;
+            var targetAttack = c.totalAdvAttack() * ItopodTargetAttackFactor();
+            var attackPower = ItopodAttackPower(c);
+            return ItopodCombatOracle.ProveReach(targetAttack, c.totalAdvDefense(),
+                Math.Max(0.0, Math.Min(c.adventure.curHP, c.totalAdvHP())), attackPower,
+                ItopodAttackCadence(c), ItopodTargetIncomingFactor(),
+                c.adventureController.maxItopodLevel()).FrontierFloor;
+        }
+
+        private sealed class OwnedItopodCombatSnapshot
+        {
+            internal double Attack;
+            internal double Defense;
+            internal double AvailableHp;
+            internal double AttackPower;
+            internal double AttackCadence;
+            internal double IncomingBeastFactor;
+        }
+
+        private static ItopodCombatReachProof CalculateBestOwnedItopodReach(
+            out OwnedItopodCombatSnapshot snapshot)
+        {
+            snapshot = null;
+            var bestOneHit = 0;
+            var bestFrontier = 0;
+            var bestFrontierSeconds = double.PositiveInfinity;
+            var bestReason = "no physically realizable owned combat candidate was evaluated";
+            // Each weight constructs one complete, physically realizable set. Taking the best
+            // proven reach across those sets is safe; unlike unioning independent maxima, every
+            // Attack/Defense/HP tuple came from the same actual objects and slot constraints.
+            foreach (var defenseWeight in new[] {0.0, .25, .5, .75, 1.0})
+            {
+                OwnedItopodCombatSnapshot candidate;
+                var proof = CalculateOwnedItopodReachForWeight(defenseWeight, out candidate);
+                bestOneHit = Math.Max(bestOneHit, proof.OneHitFloor);
+                if (candidate != null && (snapshot == null
+                    || proof.FrontierFloor > bestFrontier
+                    || proof.FrontierFloor == bestFrontier
+                       && proof.FrontierKillSeconds < bestFrontierSeconds))
+                {
+                    snapshot = candidate;
+                    bestFrontier = proof.FrontierFloor;
+                    bestFrontierSeconds = proof.FrontierKillSeconds;
+                    bestReason = proof.FrontierReason;
+                }
+            }
+            return new ItopodCombatReachProof(bestOneHit, bestFrontier,
+                bestFrontierSeconds, bestReason);
+        }
+
+        private static ItopodCombatReachProof CalculateOwnedItopodReachForWeight(
+            double defenseWeight, out OwnedItopodCombatSnapshot snapshot)
+        {
+            snapshot = null;
             var c = Main.Character;
             if (c == null || c.inventory == null || c.inventoryController == null)
-                return 0;
+                return new ItopodCombatReachProof(0, 0, double.PositiveInfinity,
+                    "owned ITOPOD combat topology is unavailable");
             var inv = c.inventory;
             var controller = c.inventoryController;
             var all = new[] {inv.head, inv.chest, inv.legs, inv.boots, inv.weapon, inv.weapon2}
@@ -817,48 +911,92 @@ namespace NGUInjector.Managers
                 .Distinct().ToList();
             var usedIds = new System.Collections.Generic.HashSet<int>();
             var candidateItemAttack = 0.0;
+            var candidateItemDefense = 0.0;
             foreach (var type in new[] {part.Head, part.Chest, part.Legs, part.Boots})
             {
                 var best = all.Where(x => x.type == type && !usedIds.Contains(x.id))
-                    .OrderByDescending(controller.equipAttackBonus).FirstOrDefault();
+                    .OrderByDescending(x => ItopodItemScore(controller, x, defenseWeight))
+                    .FirstOrDefault();
                 if (best == null) continue;
                 usedIds.Add(best.id);
                 candidateItemAttack += controller.equipAttackBonus(best);
+                candidateItemDefense += controller.equipDefenseBonus(best);
             }
             var weapons = all.Where(x => x.type == part.Weapon && !usedIds.Contains(x.id))
-                .GroupBy(x => x.id).Select(g => g.OrderByDescending(controller.equipAttackBonus).First())
-                .OrderByDescending(controller.equipAttackBonus)
+                .GroupBy(x => x.id).Select(g => g.OrderByDescending(
+                    x => ItopodItemScore(controller, x, defenseWeight)).First())
+                .OrderByDescending(x => ItopodItemScore(controller, x, defenseWeight))
                 .Take(controller.weapon2Unlocked() ? 2 : 1).ToList();
             if (weapons.Count > 0)
             {
                 candidateItemAttack += controller.equipAttackBonus(weapons[0]);
+                candidateItemDefense += controller.equipDefenseBonus(weapons[0]);
                 usedIds.Add(weapons[0].id);
             }
             if (weapons.Count > 1)
             {
                 candidateItemAttack += controller.equipAttackBonus(weapons[1]) * controller.weapon2Factor();
+                candidateItemDefense += controller.equipDefenseBonus(weapons[1]) * controller.weapon2Factor();
                 usedIds.Add(weapons[1].id);
             }
             var accessorySpaces = Math.Min(inv.accs.Count, Math.Max(0, controller.accessorySpaces()));
             var accessories = all.Where(x => x.type == part.Accessory && !usedIds.Contains(x.id))
-                .GroupBy(x => x.id).Select(g => g.OrderByDescending(controller.equipAttackBonus).First())
-                .OrderByDescending(controller.equipAttackBonus).Take(accessorySpaces);
+                .GroupBy(x => x.id).Select(g => g.OrderByDescending(
+                    x => ItopodItemScore(controller, x, defenseWeight)).First())
+                .OrderByDescending(x => ItopodItemScore(controller, x, defenseWeight))
+                .Take(accessorySpaces).ToList();
             candidateItemAttack += accessories.Sum(x => (double)controller.equipAttackBonus(x));
+            candidateItemDefense += accessories.Sum(x => (double)controller.equipDefenseBonus(x));
 
             var currentNumerator = Math.Max(1e-9, c.adventure.attack
                 + controller.cubePower() + Math.Max(0.0, controller.attackBonus()));
             var candidateNumerator = Math.Max(0.0, c.adventure.attack
                 + controller.cubePower() + candidateItemAttack);
             var projectedTotalAttack = c.totalAdvAttack() * candidateNumerator / currentNumerator;
-            return CalculateBestItopodLevel(projectedTotalAttack);
+            var currentDefenseNumerator = Math.Max(1e-9, c.adventure.defense
+                + controller.cubeToughness() + Math.Max(0.0, controller.defenseBonus()));
+            var candidateDefenseNumerator = Math.Max(0.0, c.adventure.defense
+                + controller.cubeToughness() + candidateItemDefense);
+            var projectedTotalDefense = c.totalAdvDefense()
+                                        * candidateDefenseNumerator / currentDefenseNumerator;
+            var currentHpNumerator = Math.Max(1e-9, c.adventure.maxHP
+                + 3.0 * (controller.cubePower() + Math.Max(0.0, controller.attackBonus())));
+            var candidateHpNumerator = Math.Max(0.0, c.adventure.maxHP
+                + 3.0 * (controller.cubePower() + candidateItemAttack));
+            var projectedMaxHp = c.totalAdvHP() * candidateHpNumerator / currentHpNumerator;
+            snapshot = new OwnedItopodCombatSnapshot
+            {
+                Attack = projectedTotalAttack * ItopodTargetAttackFactor(),
+                Defense = projectedTotalDefense,
+                AvailableHp = Math.Max(0.0, Math.Min(c.adventure.curHP, projectedMaxHp)),
+                AttackPower = ItopodAttackPower(c),
+                AttackCadence = ItopodAttackCadence(c),
+                IncomingBeastFactor = ItopodTargetIncomingFactor()
+            };
+            return ItopodCombatOracle.ProveReach(snapshot.Attack, snapshot.Defense,
+                snapshot.AvailableHp, snapshot.AttackPower, snapshot.AttackCadence,
+                snapshot.IncomingBeastFactor, c.adventureController.maxItopodLevel());
+        }
+
+        private static double ItopodItemScore(InventoryController controller,
+            Equipment item, double defenseWeight)
+        {
+            return (1.0 - defenseWeight) * Math.Max(0.0, controller.equipAttackBonus(item))
+                   + defenseWeight * Math.Max(0.0, controller.equipDefenseBonus(item));
         }
 
         private static int CalculateBestItopodLevel(double totalAdventureAttack)
         {
             var c = Main.Character;
             totalAdventureAttack *= ItopodTargetAttackFactor();
-            var attackPower = Main.Settings.ITOPODCombatMode == 1 || c.training.attackTraining[1] == 0
-                ? c.idleAttackPower() : c.regAttackPower();
+            // The configured Manual mode is executable for both record climbs and steady farms
+            // once Regular Attack's exact row-0 gate is open.  Keep this admission formula
+            // identical to AutopilotManager's fight type and the immutable loadout objective;
+            // row 1 belongs to Strong Attack and is not the Regular Attack unlock.
+            var training = c.training.attackTraining;
+            var manual = Main.Settings.ITOPODCombatMode != 1 && training != null
+                         && training.Length > 0 && training[0] >= 5000;
+            var attackPower = manual ? c.regAttackPower() : c.idleAttackPower();
             var maxLevel = c.adventureController.maxItopodLevel();
             var best = 0;
             for (var floor = 0; floor <= maxLevel; floor++)
@@ -872,6 +1010,30 @@ namespace NGUInjector.Managers
                 best = floor;
             }
             return best;
+        }
+
+        private static double ItopodAttackPower(Character c)
+        {
+            var training = c.training.attackTraining;
+            var manual = Main.Settings.ITOPODCombatMode != 1 && training != null
+                         && training.Length > 0 && training[0] >= 5000;
+            return manual ? c.regAttackPower() : c.idleAttackPower();
+        }
+
+        private static double ItopodAttackCadence(Character c)
+        {
+            var training = c.training.attackTraining;
+            var manual = Main.Settings.ITOPODCombatMode != 1 && training != null
+                         && training.Length > 0 && training[0] >= 5000;
+            return manual ? .8 : Math.Max(.02, c.adventure.attackSpeed);
+        }
+
+        private static double ItopodTargetIncomingFactor()
+        {
+            var c = Main.Character;
+            return c != null && c.adventureController != null
+                   && Main.Settings.ITOPODBeastMode && c.adventureController.hasBeastMode()
+                ? 3.0 : 1.0;
         }
 
         internal static double ItopodTargetAttackFactor()

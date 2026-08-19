@@ -28,8 +28,12 @@ Main.cs synchronization + epoch provider
               v                           v
 Autopilot planner                  Typed action managers
 snapshot -> terminal DAG           current live bridge:
--> bounded scheduler (shadow)      Card/Cooking/Ygg/Quest only
--> staged authority               every other route held
+-> bounded scheduler (shadow)      allocation, combat, Adventure,
+-> staged authority               inventory, PP/EXP, T1-T12,
+                                  persistent systems, Money Pit,
+                                  permanent/END Blood, evidence-
+                                  proven challenges, and rebirth;
+                                  later irreversible routes held
               |
               v
 runtime deployment + decision epoch

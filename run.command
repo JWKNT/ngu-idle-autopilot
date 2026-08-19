@@ -6,9 +6,10 @@
 # both process identities, discovers the just-built DLL MVID dynamically, injects once, and waits
 # for a new synchronized telemetry session before publishing pointer ownership. The resulting JSON
 # claim binds the pointer to the host PID/start/command, Windows PID/start, producer session, MVID,
-# DLL hash, game-assembly hash, and a complete loaded-assembly native-binding catalog. Only after
-# that proof does it start the read-only monitor and dashboard. It never starts or restarts the
-# game and never treats injector text alone as success.
+# DLL hash, game-assembly hash, a complete loaded-assembly native-binding catalog, and sealed hashes
+# of the exact deployment/decision documents admitted immediately before publication. Only after
+# that proof does it start the read-only monitor and dashboard. It never starts or restarts the game
+# and never treats injector text alone—or a telemetry frame that was healthy only earlier—as success.
 #
 # Inputs are the built DLL, the installed game assembly, injector transport, one live game process,
 # runtime config, and deployment/decision telemetry. Outputs are runtime/deployment-claim.json, a
@@ -315,20 +316,17 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 
-handshake=""
-for (( attempt=1; attempt<=handshake_timeout*5; attempt++ )); do
-  if ! process_identity_still_exact; then
-    break
-  fi
-  if [[ -f "$deployment_file" && -f "$decision_file" \
-      && "$deployment_file" -nt "$injection_marker" && "$decision_file" -nt "$injection_marker" ]]; then
-    handshake=$(python3 - "$deployment_file" "$decision_file" "$game_os_start" "$game_windows_pid" \
-      "$previous_session" "$expected_mvid" "$expected_dll_hash" "$expected_game_hash" <<'PY'
+validate_telemetry_handshake() {
+  python3 - "$deployment_file" "$decision_file" "$game_os_start" "$game_windows_pid" \
+    "$previous_session" "$expected_mvid" "$expected_dll_hash" "$expected_game_hash" <<'PY'
 from datetime import datetime
-import json, sys
+from pathlib import Path
+import hashlib, json, sys
 try:
-    deployment = json.load(open(sys.argv[1], encoding="utf-8"))
-    decision = json.load(open(sys.argv[2], encoding="utf-8"))
+    deployment_raw = Path(sys.argv[1]).read_bytes()
+    decision_raw = Path(sys.argv[2]).read_bytes()
+    deployment = json.loads(deployment_raw)
+    decision = json.loads(decision_raw)
     host_start, pid, previous, mvid, dll_hash, game_hash = sys.argv[3:]
     pid = int(pid)
     session = str(deployment.get("producerSessionId", ""))
@@ -386,11 +384,22 @@ try:
     )
     if valid:
         print("|".join((session, producer_start, str(decision["decisionSequence"]),
-                        str(deployment.get("observedAt", "")))))
+                        str(deployment.get("observedAt", "")),
+                        hashlib.sha256(decision_raw).hexdigest(),
+                        hashlib.sha256(deployment_raw).hexdigest())))
 except Exception:
     pass
 PY
-)
+}
+
+handshake=""
+for (( attempt=1; attempt<=handshake_timeout*5; attempt++ )); do
+  if ! process_identity_still_exact; then
+    break
+  fi
+  if [[ -f "$deployment_file" && -f "$decision_file" \
+      && "$deployment_file" -nt "$injection_marker" && "$decision_file" -nt "$injection_marker" ]]; then
+    handshake=$(validate_telemetry_handshake)
     [[ -n "$handshake" ]] && break
   fi
   sleep 0.2
@@ -417,7 +426,11 @@ remainder=${handshake#*|}
 producer_start=${remainder%%|*}
 remainder=${remainder#*|}
 decision_sequence=${remainder%%|*}
-deployment_observed=${remainder#*|}
+remainder=${remainder#*|}
+deployment_observed=${remainder%%|*}
+remainder=${remainder#*|}
+decision_snapshot_hash=${remainder%%|*}
+deployment_snapshot_hash=${remainder#*|}
 
 # One final process check closes the race between telemetry validation and ownership publication.
 if ! process_identity_still_exact; then
@@ -427,10 +440,70 @@ if ! process_identity_still_exact; then
   exit 1
 fi
 
+# Fixture-only rendezvous for the final-admission regression. Production never pauses here; the
+# barrier lets a deterministic fixture replace a healthy frame after the polling-loop admission
+# and before the mandatory final re-read.
+if [[ "$fixture_mode" == true \
+    && "${NGU_LIFECYCLE_TEST_FINAL_ADMISSION_BARRIER:-false}" == true ]]; then
+  : > "$fixture_root/final-admission-ready"
+  barrier_released=false
+  for (( attempt=1; attempt<=handshake_timeout*100; attempt++ )); do
+    if [[ -f "$fixture_root/final-admission-release" ]]; then
+      barrier_released=true
+      break
+    fi
+    sleep 0.01
+  done
+  if [[ "$barrier_released" != true ]]; then
+    archive_runtime_file "$pending_file" \
+      "fixture final-admission barrier timed out before telemetry revalidation"
+    rm -f "$injection_marker"
+    print -u2 "Fixture final-admission barrier timed out; pointer was not claimed."
+    exit 1
+  fi
+fi
+
+# TELEMETRY ADMISSION SEAL
+#
+# The producer can publish a new frame between the polling-loop admission and claim creation. Re-read
+# both complete JSON documents now and apply the exact same PID/session/MVID/hash, binding-health,
+# synchronization, and closed-root checks. A newer healthy decision from the same session is accepted
+# and becomes the claim's sealed evidence; a torn or unhealthy frame is never grandfathered by the
+# earlier observation. This closes the former healthy-then-broken binding TOCTOU window.
+final_handshake=$(validate_telemetry_handshake)
+final_session=${final_handshake%%|*}
+if [[ -z "$final_handshake" || "$final_session" != "$session" ]]; then
+  cleanup_result="not attempted because the target process identity changed"
+  if process_identity_still_exact; then
+    if [[ "$fixture_mode" == true ]]; then
+      cleanup_result=$(<"$fixture_root/eject-result.txt")
+    else
+      cleanup_result=$(env CX_BOTTLE=Steam "$wine_bin" injector/smi.exe eject -p NGUIdle \
+        -a "$pointer" -n NGUAutopilot -c Loader -m Unload 2>&1 || true)
+    fi
+  fi
+  archive_runtime_file "$pending_file" \
+    "final telemetry admission changed or became unhealthy; cleanup: $cleanup_result"
+  rm -f "$injection_marker"
+  print -u2 "Refusing to publish a pointer claim after final telemetry admission changed or became unhealthy."
+  exit 1
+fi
+
+remainder=${final_handshake#*|}
+producer_start=${remainder%%|*}
+remainder=${remainder#*|}
+decision_sequence=${remainder%%|*}
+remainder=${remainder#*|}
+deployment_observed=${remainder%%|*}
+remainder=${remainder#*|}
+decision_snapshot_hash=${remainder%%|*}
+deployment_snapshot_hash=${remainder#*|}
+
 claim_temp=$(mktemp "$runtime_dir/.deployment-claim.XXXXXX")
 python3 - "$claim_temp" "$pointer" "$game_os_pid" "$game_os_start" "$game_os_command_hash" \
   "$game_windows_pid" "$producer_start" "$session" "$expected_mvid" "$expected_dll_hash" \
-  "$expected_game_hash" "$decision_sequence" "$deployment_observed" <<'PY'
+  "$expected_game_hash" "$decision_sequence" "$deployment_observed" \
+  "$decision_snapshot_hash" "$deployment_snapshot_hash" <<'PY'
 import datetime, json, sys
 data = {
     "schemaVersion": 1,
@@ -448,6 +521,8 @@ data = {
     "gameAssemblySha256": sys.argv[11],
     "acceptedDecisionSequence": int(sys.argv[12]),
     "deploymentObservedAt": sys.argv[13],
+    "acceptedDecisionSha256": sys.argv[14],
+    "acceptedDeploymentSha256": sys.argv[15],
     "monitorPid": -1,
     "dashboardPid": -1,
 }

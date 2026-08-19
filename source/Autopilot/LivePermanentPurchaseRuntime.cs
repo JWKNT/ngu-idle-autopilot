@@ -8,8 +8,8 @@ re-captures the same vector for MutationCoordinator settlement.  The policy sele
 AutopilotManager; this file does not rank purchases or grant authority.
 
 The adapter intentionally supports only state keys with an exact integral representation.  Energy
-Power +0.1 is represented in tenths; Energy Bars and Cap are integral.  Unsupported descriptors
-return no snapshot and therefore fail closed before a debit.  Custom-input purchases use the
+Power +0.1 is represented in tenths; Energy/Magic Speed use exact hundredths; Energy Bars and Cap
+are integral. Unsupported descriptors return no snapshot and therefore fail closed before a debit. Custom-input purchases use the
 build-pinned field/parser transaction in NativeMutationAdapters, which restores the user's prior
 input synchronously.  A normal native return is never success: the manager still requires the
 exact EXP debit and declared permanent-stat delta.
@@ -142,6 +142,27 @@ namespace NGUInjector.Autopilot
                 case "permanent.energySpeed":
                     value = (long)Math.Round(_character.energySpeed * 100.0,
                         MidpointRounding.AwayFromZero);
+                    return true;
+                case "permanent.magicSpeed":
+                    value = (long)Math.Round(_character.magic.magicBarSpeed * 100.0,
+                        MidpointRounding.AwayFromZero);
+                    return true;
+                case "permanent.fightBossAttackTenths":
+                    value = (long)Math.Round(_character.attackBoost * 10.0,
+                        MidpointRounding.AwayFromZero);
+                    return true;
+                case "permanent.fightBossDefenseTenths":
+                    value = (long)Math.Round(_character.defenseBoost * 10.0,
+                        MidpointRounding.AwayFromZero);
+                    return true;
+                case "exp.energySpeedSpecial1":
+                    value = _character.settings.special1Bought ? 1L : 0L;
+                    return true;
+                case "exp.energySpeedSpecial2":
+                    value = _character.settings.special2Bought ? 1L : 0L;
+                    return true;
+                case "exp.energySpeedSpecial3":
+                    value = _character.settings.special3Bought ? 1L : 0L;
                     return true;
                 case "exp.hasBasicFilter": value = _character.purchases.hasFilter ? 1L : 0L; return true;
                 case "exp.hasRecycle": value = _character.purchases.boost >= .5f ? 1L : 0L; return true;

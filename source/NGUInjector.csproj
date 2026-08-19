@@ -66,14 +66,18 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Autopilot\AutopilotConfig.cs" />
     <Compile Include="Autopilot\AutopilotManager.cs" />
     <Compile Include="Autopilot\AutopilotPlan.cs" />
+    <Compile Include="Autopilot\ApQpPermanentSpend.cs" />
     <Compile Include="Autopilot\AutopilotPlanner.cs" />
     <Compile Include="Autopilot\CardCookingManager.cs" />
     <Compile Include="Autopilot\ChallengeMechanics.cs" />
+    <Compile Include="Autopilot\ChallengeRouteProofProducer.cs" />
     <Compile Include="Autopilot\ChallengeStrategyPlanner.cs" />
     <Compile Include="Autopilot\DifficultyTransitionExecutor.cs" />
     <Compile Include="Autopilot\EndgameDependencyModel.cs" />
     <Compile Include="Autopilot\EndgameTransactionManager.cs" />
     <Compile Include="Autopilot\ExactResourceAllocator.cs" />
+    <Compile Include="Autopilot\ExpPurchasePolicy.cs" />
+    <Compile Include="Autopilot\LiveResourceAllocationProof.cs" />
     <Compile Include="Autopilot\ExecutionSafety.cs" />
     <Compile Include="Autopilot\GameEpoch.cs" />
     <Compile Include="Autopilot\GlobalEventScheduler.cs" />
@@ -85,9 +89,11 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Autopilot\MechanicsStochastic.cs" />
     <Compile Include="Autopilot\MutationCoordinator.cs" />
     <Compile Include="Autopilot\OrdinaryRebirthTransaction.cs" />
+    <Compile Include="Autopilot\ResetProgressionTransaction.cs" />
     <Compile Include="Autopilot\NativeBindingRegistry.cs" />
     <Compile Include="Autopilot\OptimizationSnapshot.cs" />
     <Compile Include="Autopilot\PermanentMarginalOracle.cs" />
+    <Compile Include="Autopilot\PermanentBloodSpellManager.cs" />
     <Compile Include="Autopilot\PermanentPurchaseManager.cs" />
     <Compile Include="Autopilot\PhysicalTopology.cs" />
     <Compile Include="Autopilot\PlannerTrace.cs" />
@@ -132,6 +138,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Managers\CombatManager.cs" />
     <Compile Include="Managers\DiggerManager.cs" />
     <Compile Include="Managers\DaycareManager.cs" />
+    <Compile Include="Managers\WandoosRunManager.cs" />
     <Compile Include="Extensions.cs" />
     <Compile Include="Managers\InventoryManager.cs" />
     <Compile Include="Managers\GameNames.cs" />
@@ -147,6 +154,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Managers\QuestManager.cs" />
     <Compile Include="Managers\TitanExecutionManager.cs" />
+    <Compile Include="Managers\TitanLiveSnapshotAdapter.cs" />
     <Compile Include="SavedSettings.cs" />
     <Compile Include="SettingsForm.cs">
       <SubType>Form</SubType>

@@ -42,6 +42,7 @@ namespace NGUInjector.Autopilot
         internal bool AllowCardYeeting = true;
         internal bool AllowRebirths = true;
         internal bool AllowChallenges = true;
+        internal bool AllowDifficultyExecution;
         internal bool AllowEndSequence = false;
 
         internal bool IsDryRun { get { return Mode != "assist" && Mode != "full"; } }
@@ -269,6 +270,27 @@ internal static class PermanentPurchaseTests
             "EXP inventory 60 closed");
         Assert(PurchaseDescriptorCatalog.AllExp().Length >= 20,
             "sealed EXP descriptor catalog covers resource atoms and strategic permanents");
+
+        PurchaseDescriptor special;
+        Assert(PurchaseDescriptorCatalog.TryGet("exp.energy.speed-special1", out special)
+               && special.MetadataToken == 0x0600095b
+               && special.Cost.Kind == PurchaseCostKind.LiveSerialized,
+            "Energy Speed special 1 is a build-pinned exact live-cost descriptor");
+        var specialEffects = special.Effects();
+        Assert(specialEffects.Length == 2 && specialEffects[0].Amount == 20
+               && specialEffects[1].Kind == PurchaseEffectKind.SetOne,
+            "Energy Speed special seals both +0.2 speed and one-time ownership flag");
+        PurchaseDescriptor magicSpeed;
+        Assert(PurchaseDescriptorCatalog.TryGet("exp.magic.speed10", out magicSpeed)
+               && magicSpeed.MetadataToken == 0x06000992
+               && magicSpeed.Cost.Evaluate(PurchaseCostState.Live(3)) == 3
+               && magicSpeed.Effects()[0].Amount == 10,
+            "Magic Speed +0.1 seals installed method, live native cost, and hundredth delta");
+        PurchaseDescriptor fightAttack;
+        Assert(PurchaseDescriptorCatalog.TryGet("exp.fight-boss.attack10", out fightAttack)
+               && fightAttack.MetadataToken == 0x060009e1
+               && fightAttack.Cost.Evaluate(PurchaseCostState.Fixed()) == 30,
+            "the narrow forward Fight Boss atom is build-pinned and exactly priced");
 
         PurchaseDescriptor energyPower;
         Assert(PurchaseDescriptorCatalog.TryGet("exp.energy.custom-power", out energyPower),

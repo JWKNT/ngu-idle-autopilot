@@ -2,14 +2,17 @@
 FILE PURPOSE
 
 ItopodPerkTests is the isolated pure/fault-injection suite for reconciled task 26.  It proves the
-record-4-to-10 continuous range, exact decade awards and fought/drop-floor ordering, 8.4% boost
+record-4-to-10 continuous range, separate one-hit farm and bounded multi-hit frontier reach, exact
+decade awards and fought/drop-floor ordering, 8.4% boost
 table, clue-four naked session, online/offline estimator split, floor-1600 bounds and END forecast,
 typed perk/ID/Fibonacci behavior, asynchronous perk-231 slot lifetime, MOVE69 idle charging/strict
 cooldown/ETA/capacity/post-69 retry, timer cancellation/restart telemetry, and exactly one verified
-task-1 mutation atom.  It loads no game assembly, Unity UI, controller, save, or runtime process.
+task-1 mutation atom. It also guards the live policy against spending post-sequence PP through
+name/effect heuristics. It loads no game assembly, Unity UI, controller, save, or runtime process.
 */
 using System;
 using System.Collections.Generic;
+using System.IO;
 using NGUInjector.Autopilot;
 using NGUInjector.Managers;
 
@@ -43,6 +46,7 @@ namespace NGUInjector.Autopilot
         internal bool AllowCardYeeting = true;
         internal bool AllowRebirths = true;
         internal bool AllowChallenges = true;
+        internal bool AllowDifficultyExecution;
         internal bool AllowEndSequence = false;
 
         internal bool IsDryRun { get { return Mode != "assist" && Mode != "full"; } }
@@ -184,6 +188,112 @@ internal static class ItopodPerkTests
         Assert(wrapped.FoughtFloor == 1599 && wrapped.DropFloor == 1599
                && wrapped.After.KillCounter == 0,
             "fixed floor increments then wraps before drop settlement");
+    }
+
+    private static void TestGlobalAdventureRouteValue()
+    {
+        var gate = ItopodPerkPlanner.ChooseAdventureRoute(9, 9, 1.25,
+            4L, 0L, 5L, .10, true, false, false,
+            -1.0, .20, false, false);
+        Assert(gate.Choice == AdventureRouteChoice.ItopodFrontier
+               && gate.AwardFloor == 10 && gate.FirstClearPerkPoints == 1L
+               && gate.KillsToAward == 20L && gate.CompletesPerkGate,
+            "an exact floor-10 award preempts uncalibrated collection when it closes the next perk gate");
+        Near(gate.SecondsToAward, 25.0, 1e-12,
+            "record ETA uses the native H-1 entry tax and complete kill cycle");
+        var live = ItopodPerkPlanner.ChooseAdventureRoute(9, 9, 1.25,
+            4L, 0L, 5L, .10, true, false, false,
+            -1.0, .20, false, false, 9, 9, 8, 10);
+        Assert(live.KillsToAward == 1L,
+            "an already-active compatible range preserves exact live floor/counter progress");
+
+        var conservative = ItopodPerkPlanner.ChooseAdventureRoute(9, 9, 1.25,
+            0L, 0L, 50L, .10, true, false, true,
+            -1.0, .20, false, false);
+        Assert(conservative.Choice == AdventureRouteChoice.CollectionFarm
+               && conservative.Reason.Contains("not source-calibrated"),
+            "unknown core-set time is retained when a small record award does not close a perk gate");
+
+        var optionalUnknown = ItopodPerkPlanner.ChooseAdventureRoute(4, 4, 2.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 1.6, false, false, -1, 0, -1, -1, .0001, true);
+        Assert(optionalUnknown.Choice == AdventureRouteChoice.ItopodFarm
+               && optionalUnknown.Reason.Contains("optional collection"),
+            "unknown optional-item time loses to exact steady ITOPOD perk progress");
+
+        var optionalFast = ItopodPerkPlanner.ChooseAdventureRoute(4, 4, 2.0,
+            0L, 0L, 1L, .10, true, false, false,
+            10.0, 1.6, false, false, -1, 0, -1, -1, .0001, true);
+        Assert(optionalFast.Choice == AdventureRouteChoice.CollectionFarm,
+            "a source-timed optional item may farm when its completed value rate beats ITOPOD");
+
+        var boss = ItopodPerkPlanner.ChooseAdventureRoute(49, 49, 1.0,
+            0L, 0L, 999L, .001, true, true, false,
+            10.0, 5.0, false, false);
+        Assert(boss.Choice == AdventureRouteChoice.BossSnipe,
+            "a source-proven boss-exclusive collection target remains a distinct route");
+
+        var complete = ItopodPerkPlanner.ChooseAdventureRoute(99, 99, 1.0,
+            0L, 0L, 500L, .01, false, false, false,
+            -1.0, 0.0, false, false);
+        Assert(complete.Choice == AdventureRouteChoice.ItopodFrontier
+               && complete.AwardFloor == 100 && complete.FirstClearPerkPoints == 10L,
+            "completed ordinary debt values the super-decade award globally");
+
+        var oversizedAward = ItopodPerkPlanner.ChooseAdventureRoute(99, 99, 1.0,
+            98L, 0L, 100L, .40, true, false, false,
+            1000.0, .01, false, false);
+        Assert(oversizedAward.CompletesPerkGate
+               && oversizedAward.FirstClearPerkPoints == 10L,
+            "a super-decade award larger than the two-PP gap closes exactly one perk gate");
+        Near(oversizedAward.ItopodProgressionRate,
+            .40 / oversizedAward.SecondsToAward, 1e-15,
+            "multi-PP award credits at most the whole next perk level, never gain times PP");
+
+        var terminal = ItopodPerkPlanner.ChooseAdventureRoute(1600, 1600, 1.0,
+            0L, 0L, 0L, 0.0, true, false, false,
+            1.0, 100.0, false, true);
+        Assert(terminal.Choice == AdventureRouteChoice.ItopodFarm,
+            "the exclusive Sadistic END source dominates even a high-valued collection candidate");
+    }
+
+    private static void TestBoundedMultiHitFrontier()
+    {
+        var reach = ItopodCombatOracle.ProveReach(542.495, 450.135, 1734.5,
+            1.5, .8, 3.0, 50);
+        Assert(reach.OneHitFloor == 1,
+            "the observed early-game stats retain the native-compatible one-hit farm ceiling");
+        Assert(reach.FrontierFloor >= 9 && reach.FrontierFloor > reach.OneHitFloor,
+            "the same stats prove a conservative multi-hit climb through the first PP decade");
+        var floorTen = ItopodCombatOracle.EvaluateFloor(10, 542.495, 450.135,
+            1734.5, 1.5, .8, 3.0);
+        Assert(!floorTen.OneHit && floorTen.FrontierClear && floorTen.Hits == 2
+               && floorTen.KillSeconds <= ItopodCombatOracle.FrontierKillHorizonSeconds,
+            "floor ten is admitted as a finite two-hit frontier, never mislabeled one-hit farm");
+        var floorTenBeastIncoming = ItopodCombatOracle.EvaluateFloor(10, 542.495, 450.135,
+            1734.5, 1.5, 1.0, 3.0);
+        var floorTenNoBeast = ItopodCombatOracle.EvaluateFloor(10, 542.495, 450.135,
+            1734.5, 1.5, 1.0, 1.0);
+        var enemyAttack = 10.0 * Math.Pow(1.05, 10) * 1.02;
+        var directPoisonBound = enemyAttack * .2 * 1.2;
+        Near(floorTenBeastIncoming.WorstIncomingDamage,
+            (floorTenNoBeast.WorstIncomingDamage - directPoisonBound) * 3.0
+            + directPoisonBound, 1e-10,
+            "Beast triples PlayerController damage but not poison's native direct Adventure HP subtraction");
+
+        var regenerationWall = ItopodCombatOracle.EvaluateFloor(0, 20.0, 1000.0,
+            10000.0, .1, 10.0, 1.0);
+        Assert(!regenerationWall.FrontierClear
+               && regenerationWall.Reason.Contains("regeneration"),
+            "non-positive post-regen damage fails closed instead of promising a finite clear");
+        var fragile = ItopodCombatOracle.EvaluateFloor(10, 542.495, 0.0,
+            1.0, 1.5, 1.0, 3.0);
+        Assert(!fragile.FrontierClear && fragile.WorstIncomingDamage > 0.0,
+            "a finite multi-hit kill is rejected when conservative incoming damage is lethal");
+        var tooSlow = ItopodCombatOracle.EvaluateFloor(10, 542.495, 10000.0,
+            10000.0, 1.5, 2.2, 1.0);
+        Assert(!tooSlow.FrontierClear && tooSlow.Reason.Contains("4.1s"),
+            "frontier admission stops before paralyze/charger/rapid escalation begins");
     }
 
     private static void TestBoostsClueAndFloorBounds()
@@ -467,17 +577,79 @@ internal static class ItopodPerkTests
         }
     }
 
+    private static void TestLiveRouteWiring()
+    {
+        var manager = File.ReadAllText("source/Autopilot/AutopilotManager.cs");
+        Assert(manager.Contains("if (Main.Character.settings.itopodOn)")
+               && !manager.Contains("route.Climbing || Main.Character.adventure.titan4Kills > 0"),
+            "a confirmed native ITOPOD unlock executes fixed farms before T4 instead of falling through to ordinary zones");
+        Assert(manager.Contains("_adventureTarget = new ZoneTarget {Zone = 1000")
+               && manager.Contains("combat.MoveToZone(-1);")
+               && manager.Contains("!ProgressionLoadoutOptimizer.PrepareItopodRoute())"),
+            "ITOPOD staging publishes the target, forces a Safe-Zone frame, then equips the route set");
+        Assert(manager.Contains("var manualItopod = Main.Settings.ITOPODCombatMode != 1")
+               && manager.Contains("move69Pending || manualItopod ? 2 : 0"),
+            "manual ITOPOD configuration controls steady farms, not only first-clear climbs");
+        Assert(manager.Contains("combat.ManualZone(1000, false, true, false, true")
+               && manager.Contains("native ten-kill floor counter"),
+            "continuous ITOPOD combat does not reset its floor counter to recycle pre-cast buffs");
+        var combatManager = File.ReadAllText("source/Managers/CombatManager.cs");
+        Assert(combatManager.Contains("recoverHealth && zone != 1000")
+               && combatManager.Contains("itopodKillCount == 0")
+               && combatManager.Contains("if (CastHeal()) return;")
+               && combatManager.Contains("if (CastHyperRegen()) return;"),
+            "ITOPOD recovery heals in place at a floor boundary and never takes a voluntary Safe-Zone hop");
+        var loadout = File.ReadAllText("source/Managers/ProgressionLoadoutOptimizer.cs");
+        Assert(loadout.Contains("if (itopodObjective)")
+               && loadout.Contains("if (_leaseKind != \"itopod\") ClearObjectiveLease();")
+               && loadout.Contains("different combat systems"),
+            "an active ITOPOD route preempts stale selected-boss gear ownership");
+        Assert(loadout.Contains("projection.AdventureCurrentHp - combat.WorstIncomingDamage")
+               && loadout.Contains("objective.Projection.ItopodClimbing ? combatTieBreaker")
+               && loadout.Contains("var rankedTotal = objective.Projection.ItopodClimbing")
+               && loadout.Contains("MateriallyBetterForObjective(boundObjective")
+               && loadout.Contains("candidate.TieBreaker + 1e-6 < current.TieBreaker"),
+            "equal-cycle record-climb sets prefer combat reserve and can replace production gear");
+        Assert(loadout.Contains("StrongestAdventureAttackPlan(c, all)")
+               && loadout.Contains("No owned physical set proves the configured ITOPOD combat floor")
+               && loadout.Contains("ItopodTargetAttackFactor = ZoneHelpers.ItopodTargetAttackFactor()")
+               && loadout.Contains("targetAttack = projection.AdventureAttack")
+               && loadout.Contains("ZoneHelpers.CalculateBestItopodFrontierLevel()")
+               && loadout.Contains("combat.FrontierClear : combat.OneHit")
+               && loadout.Contains("? Math.Max(0, route.End - 1)"),
+            "a bounded-search miss uses strongest Attack under the target Beast state and verifies climb/farm through distinct live proofs");
+        var zones = File.ReadAllText("source/Managers/ZoneHelpers.cs");
+        Assert(zones.Contains("training[0] >= 5000")
+               && zones.Contains("manual ? c.regAttackPower() : c.idleAttackPower()")
+               && !zones.Contains("c.training.attackTraining[1] == 0"),
+            "ITOPOD reach uses the exact Regular Attack unlock and matches the configured executor mode");
+        Assert(zones.Contains("result.FrontierFloor = frontier")
+               && zones.Contains("frontier >= nextAward - 1")
+               && zones.Contains("var farm = Math.Max(0, Math.Min(reachable, highest - 1))")
+               && manager.Contains("route.FrontierFloor,")
+               && manager.Contains("route.TargetKillSeconds")
+               && manager.Contains("\\\"itopodReachableOneHitFloor\\\"")
+               && manager.Contains("\\\"itopodFrontierFloor\\\""),
+            "record valuation and cadence use bounded frontier reach while farm routing and telemetry retain the honest one-hit ceiling");
+        Assert(manager.Contains("Later purchases remain held until ChoosePerk receives")
+               && manager.Contains("Do not feed the ITOPOD frontier score a later perk value"),
+            "post-sequence PP and frontier value hold instead of using tooltip-name heuristics");
+    }
+
     public static int Main()
     {
         try
         {
             TestContinuousClimbAndSentinelAtom();
             TestExactDeathOrderingAndDecades();
+            TestGlobalAdventureRouteValue();
+            TestBoundedMultiHitFrontier();
             TestBoostsClueAndFloorBounds();
             TestOnlineOfflineEstimatorSplit();
             TestTypedPerksAndAsyncDelivery();
             TestMove69PolicyTimerAndRestart();
             TestMove69MutationAndRetry();
+            TestLiveRouteWiring();
             Console.WriteLine("ITOPOD/perk tests passed: " + _assertions + " assertions");
             return 0;
         }

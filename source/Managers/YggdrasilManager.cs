@@ -134,7 +134,10 @@ namespace NGUInjector.Managers
         internal static int TierFactor(int tier)
         {
             if (tier < 0) throw new ArgumentOutOfRangeException("tier");
-            return (int)Math.Ceiling(Math.Pow(tier, 1.5));
+            // Native uses Mathf.Pow(float,float) followed by Mathf.CeilToInt.  Preserve the
+            // intermediate float32 rounding instead of silently substituting double arithmetic.
+            var nativePow = (float)Math.Pow((float)tier, 1.5f);
+            return (int)Math.Ceiling(nativePow);
         }
 
         internal static int HarvestTier(double seconds, long maximumTier, int tierThreshold)
@@ -495,23 +498,41 @@ namespace NGUInjector.Managers
         private SeedPurchaseCandidate SelectLiveSeedPurchase()
         {
             var controller = _character.yggdrasilController;
+            var fruitController = ControllerFor();
+            if (fruitController == null) return null;
             var cap = controller.capTier();
             var count = Math.Min(_character.yggdrasil.fruits.Count, controller.baseSeedCost.Count);
+            var threshold = (int)fruitController.tierThreshold();
+            var remaining = SecondsUntilReset();
             var candidates = new List<SeedPurchaseCandidate>();
             for (var id = 0; id < count; id++)
             {
                 var tier = _character.yggdrasil.fruits[id].maxTier;
                 if (tier >= cap || !FruitUnlockEligible(id)) continue;
                 var cost = controller.baseSeedCost[id] * (tier + 1L) * (tier + 1L);
-                var before = YggdrasilEventController.TierFactor((int)tier);
-                var after = YggdrasilEventController.TierFactor((int)tier + 1);
-                var permanent = FruitPermanentTarget(id) == PermanentEffectTarget.None ? .25 : 1.0;
+                var projectedSeconds = double.IsPositiveInfinity(remaining)
+                    || remaining == double.MaxValue ? double.MaxValue
+                    : _character.yggdrasil.fruits[id].seconds + remaining;
+                var beforeTier = YggdrasilEventController.HarvestTier(projectedSeconds,
+                    tier, threshold);
+                var afterTier = YggdrasilEventController.HarvestTier(projectedSeconds,
+                    tier + 1L, threshold);
+                var beforeFactor = fruitController.tierFactor(beforeTier);
+                var afterFactor = fruitController.tierFactor(afterTier);
+                // Exact native seed previews include the fruit-specific baseSeedReward and every
+                // live equipment/NGU/Quest/First-Harvest multiplier.  Use the better selectable
+                // eat/harvest seed branch; non-seed fruit rewards remain scheduler-unpriced rather
+                // than receiving the old arbitrary .25/1 multiplier.
+                var beforeSeeds = Math.Max(fruitController.seedReward(id, beforeFactor, 1f),
+                    fruitController.harvestSeedReward(id, beforeFactor, 1f));
+                var afterSeeds = Math.Max(fruitController.seedReward(id, afterFactor, 1f),
+                    fruitController.harvestSeedReward(id, afterFactor, 1f));
                 candidates.Add(new SeedPurchaseCandidate
                 {
                     FruitId = id,
                     CurrentTier = tier,
                     ExactCost = cost,
-                    FiniteHorizonValue = Math.Max(1, after - before) * permanent,
+                    FiniteHorizonValue = Math.Max(0L, afterSeeds - beforeSeeds),
                     PermanentTarget = FruitPermanentTarget(id)
                 });
             }
@@ -560,9 +581,9 @@ namespace NGUInjector.Managers
                 var tier = YggdrasilEventController.HarvestTier(fruit.seconds,
                     fruit.maxTier, threshold);
                 if (tier <= 0) continue;
-                var factor = YggdrasilEventController.TierFactor(tier);
                 var controller = ControllerFor();
                 if (controller == null) continue;
+                var factor = controller.tierFactor(tier);
                 var eatSeeds = controller.seedReward(id, factor, 1f);
                 var eatPoopSeeds = controller.seedReward(id, factor, poopModifier);
                 var harvestSeeds = controller.harvestSeedReward(id, factor, 1f);

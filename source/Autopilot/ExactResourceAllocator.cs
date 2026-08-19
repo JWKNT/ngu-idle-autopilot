@@ -19,6 +19,194 @@ irreversible purchases are intentionally outside this file.
 */
 namespace NGUInjector.Autopilot
 {
+    internal enum ExactResourceKind
+    {
+        Energy = 0,
+        Magic = 1,
+        Resource3 = 2
+    }
+
+    internal enum NoCurrencyFallbackKind
+    {
+        None = 0,
+        Ngu = 1,
+        Wandoos = 2
+    }
+
+    /*
+    SEALED FULL-TARGET SETTLEMENT
+
+    An idle-pool bound is not an allocation proof: Energy silently moved from Basic Training to an
+    Augment still leaves the same capacity and idle values.  ExactAllocationVector therefore seals
+    every installed native target by stable key.  A successful sweep conserves each resource and a
+    later capture must equal the target vector observed synchronously when Apply returned.  Dynamic
+    target counts are permitted, but the key set cannot change across one settlement boundary.
+
+    The vector contains no Character/controller references, so partial-settlement recovery remains
+    a live-adapter responsibility.  This layer only decides whether a captured restore or requested
+    layout is mathematically exact; it never treats an aggregate idle delta as sufficient evidence.
+    */
+    internal sealed class ExactAllocationVector
+    {
+        private readonly SortedDictionary<string, long> _targets;
+
+        internal readonly ExactResourceKind Resource;
+        internal readonly long Capacity;
+        internal readonly long Idle;
+
+        internal ExactAllocationVector(ExactResourceKind resource, long capacity, long idle,
+            IDictionary<string, long> targets)
+        {
+            Resource = resource;
+            Capacity = capacity;
+            Idle = idle;
+            _targets = new SortedDictionary<string, long>(StringComparer.Ordinal);
+            if (targets == null) return;
+            foreach (var pair in targets)
+            {
+                if (string.IsNullOrEmpty(pair.Key))
+                    throw new ArgumentException("Allocation target key is empty.", "targets");
+                if (_targets.ContainsKey(pair.Key))
+                    throw new ArgumentException("Duplicate allocation target key: " + pair.Key,
+                        "targets");
+                _targets.Add(pair.Key, pair.Value);
+            }
+        }
+
+        internal int TargetCount { get { return _targets.Count; } }
+
+        internal bool TryGet(string key, out long value)
+        {
+            return _targets.TryGetValue(key ?? string.Empty, out value);
+        }
+
+        internal string[] Keys()
+        {
+            var result = new string[_targets.Count];
+            _targets.Keys.CopyTo(result, 0);
+            return result;
+        }
+
+        internal IDictionary<string, long> TargetsCopy()
+        {
+            return new SortedDictionary<string, long>(_targets, StringComparer.Ordinal);
+        }
+
+        internal bool IsConserved()
+        {
+            return ExactResourceAllocator.Conserves(Capacity, Idle, _targets.Values);
+        }
+
+        internal bool HasSameSchema(ExactAllocationVector other)
+        {
+            if (other == null || Resource != other.Resource || _targets.Count != other._targets.Count)
+                return false;
+            using (var left = _targets.Keys.GetEnumerator())
+            using (var right = other._targets.Keys.GetEnumerator())
+            {
+                while (left.MoveNext())
+                {
+                    if (!right.MoveNext() || !string.Equals(left.Current, right.Current,
+                            StringComparison.Ordinal))
+                        return false;
+                }
+                return !right.MoveNext();
+            }
+        }
+
+        internal bool ExactEquals(ExactAllocationVector other)
+        {
+            if (other == null || Capacity != other.Capacity || Idle != other.Idle
+                || !HasSameSchema(other)) return false;
+            foreach (var pair in _targets)
+            {
+                long observed;
+                if (!other._targets.TryGetValue(pair.Key, out observed) || observed != pair.Value)
+                    return false;
+            }
+            return true;
+        }
+
+        internal long Allocated
+        {
+            get { return Capacity < Idle ? -1L : Capacity - Idle; }
+        }
+
+        internal string Fingerprint()
+        {
+            var text = Resource + ":" + Idle + "/" + Capacity;
+            foreach (var pair in _targets) text += "|" + pair.Key + "=" + pair.Value;
+            return text;
+        }
+    }
+
+    internal sealed class ExactAllocationSettlement
+    {
+        internal readonly ExactAllocationVector Before;
+        internal readonly ExactAllocationVector RequestedAfter;
+
+        internal ExactAllocationSettlement(ExactAllocationVector before,
+            ExactAllocationVector requestedAfter)
+        {
+            Before = before;
+            RequestedAfter = requestedAfter;
+        }
+
+        internal bool IsAdmissible(out string reason)
+        {
+            if (Before == null || RequestedAfter == null)
+            {
+                reason = "before/requested-after allocation vectors are required";
+                return false;
+            }
+            if (Before.Resource != RequestedAfter.Resource)
+            {
+                reason = "resource identity changed across the allocation sweep";
+                return false;
+            }
+            if (Before.Capacity != RequestedAfter.Capacity)
+            {
+                reason = "permanent resource capacity changed across the allocation sweep";
+                return false;
+            }
+            if (!Before.HasSameSchema(RequestedAfter))
+            {
+                reason = "native allocation target schema changed during the sweep";
+                return false;
+            }
+            if (!Before.IsConserved())
+            {
+                reason = "before-state omits or double-counts a native allocation target";
+                return false;
+            }
+            if (!RequestedAfter.IsConserved())
+            {
+                reason = "requested-after state omits, overdraws, or double-counts native allocation";
+                return false;
+            }
+            reason = string.Empty;
+            return true;
+        }
+
+        internal bool VerifyAcceptedNativeState(ExactAllocationVector observedAfter,
+            out string reason)
+        {
+            if (!IsAdmissible(out reason)) return false;
+            if (observedAfter == null || !RequestedAfter.ExactEquals(observedAfter))
+            {
+                reason = "accepted native target vector differs from the sealed requested-after vector";
+                return false;
+            }
+            if (!observedAfter.IsConserved())
+            {
+                reason = "accepted native target vector does not conserve the resource";
+                return false;
+            }
+            reason = string.Empty;
+            return true;
+        }
+    }
+
     internal enum ExactAllocationPhase
     {
         ModeChanges = 0,
@@ -50,6 +238,26 @@ namespace NGUInjector.Autopilot
     internal static class ExactResourceAllocator
     {
         internal const double NativeTickSeconds = 0.02;
+
+        /*
+        RECLAIMABLE IDLE FALLBACK
+
+        A finite strategic cap may leave a remainder after every admitted target is funded.  Idle
+        Energy or Magic has zero return, so an already-unlocked persistent NGU is the preferred
+        reclaimable sink; an already-active Wandoos bar is the reset-local alternative.  Neither
+        path spends Gold or another finite currency.  Live adapters still prove controller
+        acceptance and may try Wandoos if the preferred NGU controller accepts no resource.
+        */
+        internal static NoCurrencyFallbackKind SelectNoCurrencyFallback(bool nguUnlocked,
+            bool nguControllerAvailable, bool wandoosUnlocked, bool wandoosInstalled,
+            bool wandoosEnabled, bool wandoosDisabled)
+        {
+            if (nguUnlocked && nguControllerAvailable)
+                return NoCurrencyFallbackKind.Ngu;
+            if (wandoosUnlocked && wandoosInstalled && wandoosEnabled && !wandoosDisabled)
+                return NoCurrencyFallbackKind.Wandoos;
+            return NoCurrencyFallbackKind.None;
+        }
 
         internal static long CeilingShare(long total, long numerator, long denominator)
         {

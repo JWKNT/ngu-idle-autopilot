@@ -14,6 +14,19 @@ namespace NGUInjector.Managers
 {
     internal static class BeardManager
     {
+        private sealed class BeardTogglePlan
+        {
+            internal int Id;
+            internal bool Activate;
+        }
+
+        private sealed class BeardToggleState
+        {
+            internal int[] Active;
+            internal long[] Levels;
+            internal float[] Progress;
+        }
+
         // Utility is progression-gate value, not the displayed percentage.  Adventure,
         // drop and NUMBER dominate early; NGU and gold rise once those systems exist.
         private static double Utility(Character c, int id)
@@ -87,14 +100,21 @@ namespace NGUInjector.Managers
 
         internal static void Manage()
         {
+            ExecutionSafety.ReportHold("beards-root-required",
+                "Beard-set changes require the caller-owned nonzero root transaction.");
+        }
+
+        internal static MutationResult Manage(RootTransaction root)
+        {
             var c = Main.Character;
-            if (c == null || !c.settings.beardsOn || c.allBeards == null || c.beards == null
+            if (root == null || root.IsClosed || c == null || !c.settings.beardsOn
+                || c.allBeards == null || c.beards == null
                 || c.beards.disabled || c.beards.beards == null)
-                return;
+                return null;
 
             var size = Math.Min(c.allBeards.beardSize(), c.beards.beards.Count);
             var slots = Math.Min(size, c.allBeards.capBeards());
-            if (slots <= 0) return;
+            if (slots <= 0) return null;
 
             var candidates = new List<KeyValuePair<double, int>>();
             for (var id = 0; id < size; id++)
@@ -117,10 +137,12 @@ namespace NGUInjector.Managers
             var desired = new List<int>();
             if (slots >= 2)
             {
-                var energy = ranked.FirstOrDefault(id => c.allBeards.usesEnergy[id]);
-                var magic = ranked.FirstOrDefault(id => !c.allBeards.usesEnergy[id]);
-                if (ranked.Contains(energy)) desired.Add(energy);
-                if (ranked.Contains(magic) && !desired.Contains(magic)) desired.Add(magic);
+                var energy = ranked.Where(id => c.allBeards.usesEnergy[id])
+                    .Select(id => (int?)id).FirstOrDefault();
+                var magic = ranked.Where(id => !c.allBeards.usesEnergy[id])
+                    .Select(id => (int?)id).FirstOrDefault();
+                if (energy.HasValue) desired.Add(energy.Value);
+                if (magic.HasValue && !desired.Contains(magic.Value)) desired.Add(magic.Value);
             }
             foreach (var id in ranked)
             {
@@ -135,11 +157,8 @@ namespace NGUInjector.Managers
                 foreach (var id in c.beards.activeBeards.ToArray())
                 {
                     if (desired.Contains(id) || id == 6) continue;
-                    c.allBeards.deactivateBeard(id);
-                    Main.LogAction(!c.beards.activeBeards.Contains(id) ? "BEARD" : "REJECTED",
-                        !c.beards.activeBeards.Contains(id)
-                            ? "Deactivated " + GameNames.Beard(c, id) + " during first-minute beard optimization"
-                            : "Could not deactivate " + GameNames.Beard(c, id));
+                    return root.ExecuteChild(new BeardToggleIntent(c,
+                        new BeardTogglePlan {Id = id, Activate = false}));
                 }
             }
 
@@ -147,17 +166,130 @@ namespace NGUInjector.Managers
             {
                 if (c.beards.activeBeards.Count >= slots) break;
                 if (c.beards.activeBeards.Contains(id)) continue;
-                c.allBeards.activateBeard(id);
-                Main.LogAction(c.beards.activeBeards.Contains(id) ? "BEARD" : "REJECTED",
-                    c.beards.activeBeards.Contains(id)
-                        ? "Activated " + GameNames.Beard(c, id) + " [confirmed by active-beard state]"
-                        : "Activation of " + GameNames.Beard(c, id) + " produced no state transition");
+                return root.ExecuteChild(new BeardToggleIntent(c,
+                    new BeardTogglePlan {Id = id, Activate = true}));
+            }
+            return null;
+        }
+
+        /*
+        ONE EXACT BEARD TOGGLE
+
+        Activation/deactivation is reversible and must not smuggle a Digger recap into the Beard
+        child.  Golden Beard is never selected for deactivation because native deactivation clears
+        every active Digger.  The postcondition proves one exact membership delta while every
+        synchronous temporary level/progress value remains unchanged.
+        */
+        private sealed class BeardToggleIntent :
+            IMutationIntent<BeardToggleState, bool, BeardToggleState>
+        {
+            private readonly Character _character;
+            private readonly BeardTogglePlan _plan;
+
+            internal BeardToggleIntent(Character character, BeardTogglePlan plan)
+            {
+                _character = character;
+                _plan = plan;
             }
 
-            // Golden Beard deactivation clears every digger.  We never deactivate it
-            // here, but recap also repairs a user/game-triggered clear deterministically.
-            if (c.beards.activeBeards.Contains(6) && c.settings.diggersOn)
-                DiggerManager.RecapDiggers();
+            public string Id { get { return "beards." + (_plan.Activate ? "activate." : "deactivate.") + _plan.Id; } }
+            public MutationClass Class { get { return MutationClass.Beards; } }
+            public MutationRisk Risk { get { return MutationRisk.Reversible; } }
+            public MutationOwner Owner { get { return MutationOwner.Autopilot; } }
+            public string BindingId { get { return "AllBeards." + (_plan.Activate ? "activateBeard" : "deactivateBeard") + "(int)/public-exact"; } }
+            public bool Required { get { return false; } }
+            public bool CanCompensate { get { return true; } }
+            public bool CreatesNewEpoch { get { return false; } }
+            public SettlePolicy Settle { get { return SettlePolicy.Immediate(); } }
+
+            public BeardToggleState CaptureBefore(MutationContext context) { return Capture(); }
+
+            public PreconditionResult CheckPreconditions(MutationContext context,
+                BeardToggleState before)
+            {
+                if (!Main.IsAutomationReady)
+                    return PreconditionResult.Hold("gameplay synchronization is not current");
+                if (before == null || _plan.Id < 0 || _plan.Id >= before.Levels.Length)
+                    return PreconditionResult.Hold("Beard state/ID is unavailable");
+                var active = before.Active.Contains(_plan.Id);
+                if (_plan.Activate == active)
+                    return PreconditionResult.AlreadySatisfied("requested Beard membership already holds");
+                if (!_plan.Activate && _plan.Id == 6)
+                    return PreconditionResult.Hold("Golden Beard deactivation would clear Diggers");
+                if (_plan.Activate && before.Active.Length >= _character.allBeards.capBeards())
+                    return PreconditionResult.Hold("no native Beard slot is open");
+                return PreconditionResult.Ready();
+            }
+
+            public bool Apply(MutationContext context, RootTransactionToken token,
+                BeardToggleState before)
+            {
+                if (_plan.Activate) _character.allBeards.activateBeard(_plan.Id);
+                else _character.allBeards.deactivateBeard(_plan.Id);
+                return true;
+            }
+
+            public VerificationResult<BeardToggleState> Verify(MutationContext context,
+                BeardToggleState before, MutationApplyObservation<bool> apply)
+            {
+                var after = Capture();
+                var expected = before.Active.Where(x => x != _plan.Id).ToList();
+                if (_plan.Activate) expected.Add(_plan.Id);
+                expected.Sort();
+                var valid = apply.ReturnedNormally && apply.Value && after != null
+                            && expected.SequenceEqual(after.Active)
+                            && before.Levels.SequenceEqual(after.Levels)
+                            && before.Progress.SequenceEqual(after.Progress);
+                if (!valid)
+                    return VerificationResult<BeardToggleState>.Failed(
+                        "Beard toggle lacked its one-membership/no-progress-delta postcondition");
+                Main.LogAction("BEARD", (_plan.Activate ? "Activated " : "Deactivated ")
+                    + GameNames.Beard(_character, _plan.Id)
+                    + " [one exact active-set delta confirmed]");
+                return VerificationResult<BeardToggleState>.Satisfied(after,
+                    "one exact Beard membership transition confirmed");
+            }
+
+            public CompensationResult Compensate(MutationContext context, RecoveryToken token,
+                BeardToggleState before, MutationApplyObservation<bool> apply)
+            {
+                if (_plan.Activate) _character.allBeards.deactivateBeard(_plan.Id);
+                else _character.allBeards.activateBeard(_plan.Id);
+                return BeforeStateMatches(before, Capture())
+                    ? CompensationResult.Restored("Beard membership restored")
+                    : CompensationResult.Failed("Beard membership could not be restored exactly");
+            }
+
+            public bool BeforeStateMatches(BeardToggleState expected, BeardToggleState observed)
+            {
+                return expected != null && observed != null
+                       && expected.Active.SequenceEqual(observed.Active)
+                       && expected.Levels.SequenceEqual(observed.Levels)
+                       && expected.Progress.SequenceEqual(observed.Progress);
+            }
+
+            public string FingerprintBefore(BeardToggleState state) { return Fingerprint(state); }
+            public string FingerprintAfter(BeardToggleState state) { return Fingerprint(state); }
+
+            private BeardToggleState Capture()
+            {
+                if (_character == null || _character.beards == null
+                    || _character.beards.beards == null) return null;
+                return new BeardToggleState
+                {
+                    Active = _character.beards.activeBeards.OrderBy(x => x).ToArray(),
+                    Levels = _character.beards.beards.Select(x => x.beardLevel).ToArray(),
+                    Progress = _character.beards.beards.Select(x => x.progress).ToArray()
+                };
+            }
+
+            private static string Fingerprint(BeardToggleState state)
+            {
+                return state == null ? "missing"
+                    : string.Join(",", state.Active.Select(x => x.ToString()).ToArray()) + ":"
+                      + string.Join(",", state.Levels.Select(x => x.ToString()).ToArray()) + ":"
+                      + string.Join(",", state.Progress.Select(x => x.ToString("R")).ToArray());
+            }
         }
     }
 }

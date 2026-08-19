@@ -29,7 +29,8 @@ This repository is source-first. It deliberately excludes game saves, live telem
 | `build.command` | Compiles against the locally installed game's current managed assemblies | Local build tooling |
 | `run.command`, `stop.command`, `status.command` | Injection lifecycle and operator status scripts | Local runtime tooling |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the execution boundary,
+See [STRATEGY.md](STRATEGY.md) for a plain-language explanation of every major solver policy,
+[ARCHITECTURE.md](ARCHITECTURE.md) for the execution boundary,
 [docs/GUIDE-AUDIT.md](docs/GUIDE-AUDIT.md) for the full guide-to-policy audit, and
 [THIRD_PARTY.md](THIRD_PARTY.md) for provenance.
 

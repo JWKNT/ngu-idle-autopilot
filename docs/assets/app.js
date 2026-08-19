@@ -2,11 +2,13 @@
 FILE PURPOSE
 
 This dependency-free client discovers and polls the laptop's current read-only public tunnel,
-validates its telemetry envelope, and renders the full confirmed NGU state into a hierarchy that
-keeps the deployment/decision epoch, root transaction, staged authority, shadow scheduler,
-rebirth/challenge/difficulty/END decisions, capacity, and action errors ahead of large reference
-tables. Missing optional fields stay visibly unavailable rather than becoming false zero values or
-ETAs. Held, Pending, and Quarantined are separate states. Local copies use their own origin. The client sends no commands, persists no game data, and
+validates its telemetry envelope, and renders the full confirmed NGU state into a hierarchy led by
+plain game facts and rebirth/challenge/difficulty/END decisions. Machine-level epoch/hash, root,
+staged-authority, and shadow-scheduler diagnostics live in one collapsed disclosure. Missing
+optional fields stay visibly unavailable rather than becoming false zero values or ETAs. Challenge
+reset legality comes only from an active challenge plus challengeAllowsRebirth, never a negative
+rebirth target. Held,
+Pending, and Quarantined are separate states. Local copies use their own origin. The client sends no commands, persists no game data, and
 exposes no mutation endpoint.
 */
 (() => {
@@ -162,13 +164,20 @@ exposes no mutation endpoint.
   function fallbackObservability(s) {
     const target = optionalNumber(s.rebirthSeconds);
     const elapsed = optionalNumber(s.rebirthElapsed);
-    const hold = Boolean(s.rebirthExecutionHold) || (target !== null && target < 0);
-    const resetEta = !hold && target !== null && elapsed !== null ? Math.max(0, target - elapsed) : null;
+    const challengeAllowsRebirth = typeof s.challengeAllowsRebirth === "boolean" ? s.challengeAllowsRebirth : null;
+    const challengeRulesSummary = text(s.challengeRulesSummary, "");
+    const challengeRebirthPolicy = text(s.challengeRebirthPolicy, "");
+    const challengeActive = typeof s.challengeActive === "boolean" ? s.challengeActive
+      : typeof s.inChallenge === "boolean" ? s.inChallenge
+        : String(s.stage || "").toLowerCase().includes("active challenge");
+    const noResetChallenge = challengeActive && challengeAllowsRebirth === false;
+    const hold = Boolean(s.rebirthExecutionHold) || noResetChallenge;
+    const resetEta = !hold && target !== null && target >= 0 && elapsed !== null ? Math.max(0, target - elapsed) : null;
     const executionEnabled = typeof s.rebirthExecutionEnabled === "boolean" ? s.rebirthExecutionEnabled : null;
-    const action = target !== null && target < 0 ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) ? "hold"
+    const action = noResetChallenge ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) ? "hold"
       : executionEnabled === false ? "disabled" : resetEta === 0 ? "reset-due" : resetEta !== null ? "reset-at-checkpoint" : "unknown";
     const labels = {
-      "no-reset-challenge": "NO RESET — active challenge forbids rebirth",
+      "no-reset-challenge": "NO RESET — this challenge forbids ordinary rebirths",
       hold: "HOLD — no executable reset is scheduled",
       disabled: "DISABLED — rebirth execution is off",
       "reset-due": "RESET DUE — waiting for the verified native boundary",
@@ -176,7 +185,9 @@ exposes no mutation endpoint.
       unknown: "Rebirth decision telemetry is incomplete",
     };
     const previewRatios = [optionalNumber(s.rebirthProjectedAttackMultiplier), optionalNumber(s.rebirthProjectedDefenseMultiplier)].filter((value) => value !== null);
-    const challengeActive = String(s.stage || "").toLowerCase().includes("active challenge");
+    const challengeAdmitted = typeof s.nextChallengeAdmitted === "boolean" ? s.nextChallengeAdmitted
+      : typeof s.challengeAdmitted === "boolean" ? s.challengeAdmitted : false;
+    const challengeName = s.nextChallengeName || s.challengeName || s.challengeType || s.challengeRecommendation;
     const challengeTargetBoss = optionalNumber(s.challengeTargetBoss);
     const challengeTargetLevel = optionalNumber(s.challengeTargetLevel);
     const root = s.mutationRoot && typeof s.mutationRoot === "object" ? s.mutationRoot : {};
@@ -248,16 +259,21 @@ exposes no mutation endpoint.
         confidence: nonnegative(s.rebirthEtaConfidence),
       },
       challenge: {
-        status: challengeActive ? "active" : "none-admitted",
-        label: challengeActive ? "Active challenge (type unavailable)" : "No challenge admitted",
-        admitted: false,
+        status: challengeActive ? "active" : challengeAdmitted ? "admitted" : "none-admitted",
+        label: challengeName || (challengeActive ? "Active challenge (type unavailable)"
+          : challengeAdmitted ? "Next admitted challenge" : "No challenge admitted"),
+        admitted: challengeAdmitted,
         active: challengeActive,
-        entryEtaSeconds: null,
+        entryEtaSeconds: challengeActive ? 0 : challengeAdmitted ? resetEta : null,
         clearEtaSeconds: optionalNumber(s.nextChallengeEtaSeconds ?? s.challengeEtaSeconds),
         recoveryEtaSeconds: optionalNumber(s.challengeRecoveryEtaSeconds),
         targetBoss: challengeTargetBoss !== null && challengeTargetBoss >= 0 ? challengeTargetBoss : null,
         targetLevel: challengeTargetLevel !== null && challengeTargetLevel >= 0 ? challengeTargetLevel : null,
-        reason: s.challengeEvidenceSummary || "The producer emitted no challenge-admission evidence.",
+        reason: (challengeActive ? challengeRulesSummary : text(s.challengeEvidenceSummary, ""))
+          || challengeRulesSummary || "The producer emitted no challenge-admission evidence.",
+        allowsRebirth: challengeAllowsRebirth,
+        rulesSummary: challengeRulesSummary || null,
+        rebirthPolicy: challengeRebirthPolicy || null,
         provenance: s.challengeEtaProvenance || null,
         confidence: nonnegative(s.challengeEtaConfidence),
       },
@@ -350,13 +366,18 @@ exposes no mutation endpoint.
     setText("metric-challenge-note", challenge.active ? text(challenge.label) : challenge.admitted
       ? `entry ${optionalDuration(challenge.entryEtaSeconds)}` : text(challenge.reason, "admission evidence unavailable"));
 
-    const boss = number(s.bossRecordTargetId || s.nextBoss);
-    setText("metric-boss-label", `Boss #${boss}`);
-    setText("metric-boss", duration(s.bossDefeatEtaSeconds, true));
-    setText("metric-boss-note", text(s.bossViabilityReason, "combat model pending"));
+    const selectedBoss = optionalNumber(s.bossSelectedId);
+    const recordBoss = optionalNumber(s.bossRecordTargetId ?? s.nextBoss);
+    setText("metric-boss-label", "Current boss");
+    setText("metric-boss", selectedBoss === null ? "Unavailable" : `#${selectedBoss.toLocaleString()}`);
+    const bossNote = recordBoss === null ? "record target unavailable"
+      : `${s.bossTargetMatchesSelected ? "next record" : "record target"} #${recordBoss.toLocaleString()}`;
+    setText("metric-boss-note", `${bossNote} · ${optionalDuration(s.bossDefeatEtaSeconds, "ETA unavailable")}`);
 
     setText("metric-adventure", s.adventureTargetName, "Selecting route");
-    const routeMode = s.majorUnlockActive ? `major unlock · ${s.majorUnlockName}`
+    const routeMode = number(s.adventureTargetZone, -1) >= 1000 || number(s.adventureZone, -1) >= 1000
+      ? `ITOPOD · ${text(s.itopodMode, "route selected")}`
+      : s.majorUnlockActive ? `major unlock · ${s.majorUnlockName}`
       : s.collectionIsBackfill ? "MAXX backfill" : s.adventureBossOnlyForSet ? "boss-only collection" : "forward progression";
     setText("metric-adventure-note", routeMode);
 
@@ -373,8 +394,11 @@ exposes no mutation endpoint.
     setText("route-title", s.loadoutObjective || s.objective, "Waiting for a synchronized transaction");
     setText("route-reason", sentence(s.adventureControlReason || s.loadoutDecision || s.objective));
     setText("fact-mode", `${text(s.mode, "unknown")} · ${s.mutationsEnabled ? "automation active" : "read only"}`);
-    setText("fact-snapshot", `#${number(s.decisionSequence).toLocaleString()}`);
     setText("fact-run-age", duration(s.rebirthElapsed));
+    setText("fact-difficulty", ["Normal", "Evil", "Sadistic"][number(s.difficulty, -1)] || "Unavailable");
+    setText("fact-selected-boss", optionalNumber(s.bossSelectedId) === null
+      ? "Unavailable" : `Boss #${Number(s.bossSelectedId).toLocaleString()}`);
+    setText("fact-snapshot", `#${number(s.decisionSequence).toLocaleString()}`);
     setText("fact-build", text(identity.buildId, "unavailable").slice(0, 12));
     setText("fact-disk", text(identity.diskArtifactSha256, "unavailable").slice(0, 12));
     setText("fact-game", text(identity.gameAssemblySha256, "unavailable").slice(0, 12));
@@ -520,7 +544,8 @@ exposes no mutation endpoint.
 
     setText("energy-value", `${shortNumber(energyAllocated)} / ${shortNumber(energyCurrent)}`);
     setText("energy-rate", `+${shortNumber(s.energyIncomePerSecond)}/s`);
-    setText("energy-decision", sentence(s.energyIdleReason));
+    setText("energy-decision", energyCurrent > 0 && number(s.energyIdle) <= 0
+      ? "All Energy is assigned to productive systems." : sentence(s.energyIdleReason));
     byId("energy-meter").style.width = `${percent(energyAllocated, energyCurrent)}%`;
     setText("energy-bt", shortNumber(s.energyBasicTrainingAllocated));
     setText("energy-other", shortNumber(s.energyNonBasicTrainingAllocated));
@@ -528,7 +553,8 @@ exposes no mutation endpoint.
 
     setText("magic-value", `${shortNumber(magicAllocated)} / ${shortNumber(magicCurrent)}`);
     setText("magic-rate", `+${shortNumber(s.magicIncomePerSecond)}/s`);
-    setText("magic-decision", sentence(s.magicAllocationDecision));
+    setText("magic-decision", magicCurrent > 0 && number(s.magicIdle) <= 0
+      ? "All Magic is assigned to productive systems." : sentence(s.magicAllocationDecision));
     byId("magic-meter").style.width = `${percent(magicAllocated, magicCurrent)}%`;
     setText("magic-blood", shortNumber(s.magicBloodAllocated));
     setText("magic-tm", shortNumber(s.magicTimeMachineAllocated));
@@ -633,6 +659,10 @@ exposes no mutation endpoint.
       ? `Level ${challenge.targetLevel}` : challenge.targetBoss === null ? "Unavailable" : `Boss ${challenge.targetBoss}`);
     setText("challenge-admission", challenge.active ? "Native challenge state active"
       : challenge.admitted ? "Source-specific admission passed" : "Fail-closed; no entry scheduled");
+    setText("challenge-rebirth-policy", challenge.rebirthPolicy
+      || (challenge.allowsRebirth === true ? "Rebirth is allowed"
+        : challenge.allowsRebirth === false ? "Rebirth is forbidden" : "Policy unavailable"));
+    setText("challenge-rules", challenge.rulesSummary, "Rules unavailable");
   }
 
   function renderTraining(s) {

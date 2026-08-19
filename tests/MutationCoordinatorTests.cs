@@ -42,6 +42,7 @@ namespace NGUInjector.Autopilot
         internal bool AllowCardYeeting = true;
         internal bool AllowRebirths = true;
         internal bool AllowChallenges = true;
+        internal bool AllowDifficultyExecution;
         internal bool AllowEndSequence = true;
 
         internal bool IsDryRun { get { return Mode != "assist" && Mode != "full"; } }

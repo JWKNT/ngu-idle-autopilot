@@ -23,6 +23,7 @@ roots=()
 LAST_OUTPUT=""
 LAST_STATUS=0
 NEW_FIXTURE=""
+RUN_FINAL_ADMISSION_BARRIER=false
 
 cleanup() {
   local root
@@ -179,6 +180,7 @@ invoke_run() {
   set +e
   LAST_OUTPUT=$(env NGU_LIFECYCLE_TEST_MODE=fixture-v1 \
     NGU_LIFECYCLE_FIXTURE_ROOT="$root" NGU_HANDSHAKE_TIMEOUT_SECONDS="$timeout" \
+    NGU_LIFECYCLE_TEST_FINAL_ADMISSION_BARRIER="$RUN_FINAL_ADMISSION_BARRIER" \
     NGU_EXPECTED_MVID_OVERRIDE="$fixture_mvid" "$run_script" 2>&1)
   LAST_STATUS=$?
   set -e
@@ -285,10 +287,13 @@ import json, sys
 claim = json.load(open(sys.argv[1], encoding="utf-8"))
 required = ("assemblyPointer", "gameOsPid", "gameOsProcessStartUtc", "gameOsCommandSha256",
             "producerPid", "producerProcessStartUtc", "producerSessionId", "activeBuildId",
-            "diskArtifactSha256", "gameAssemblySha256", "telemetryHandshake")
+            "diskArtifactSha256", "gameAssemblySha256", "telemetryHandshake",
+            "acceptedDecisionSha256", "acceptedDeploymentSha256")
 assert all(claim.get(key) not in (None, "") for key in required)
 assert claim["activeBuildId"] == sys.argv[2]
 assert claim["gameOsPid"] == 7001 and claim["producerPid"] == 1201
+assert len(claim["acceptedDecisionSha256"]) == 64
+assert len(claim["acceptedDeploymentSha256"]) == 64
 PY
   invoke_status "$root" --require-active
   assert_true "$([[ $LAST_STATUS -eq 0 ]] && print true || print false)" "status recognizes the exact active deployment"
@@ -422,6 +427,46 @@ PY
     "binding-health failure is reported as deployment mismatch"
 }
 
+test_final_admission_rechecks_binding_health() {
+  local root session
+  new_fixture
+  root=$NEW_FIXTURE
+  session="broken-at-final-admission"
+  set_processes "$root" "7473,1273,2026-08-18T05:47:03Z"
+  schedule_telemetry "$root" "$session"
+  (
+    for (( attempt=1; attempt<=300; attempt++ )); do
+      [[ -f "$root/final-admission-ready" ]] && break
+      sleep 0.01
+    done
+    if [[ -f "$root/final-admission-ready" ]]; then
+      python3 - "$root" <<'PY'
+import json, sys
+from pathlib import Path
+runtime = Path(sys.argv[1]) / "runtime"
+for name in ("deployment.json", "decision.json"):
+    path = runtime / name
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["nativeBindingsComplete"] = False
+    data["nativeBindingBoundCount"] = data["nativeBindingDescriptorCount"] - 1
+    data["nativeBindingFailureCount"] = 1
+    data["nativeBindingFailureSummary"] = "fixture mutation after initial admission"
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+(Path(sys.argv[1]) / "final-admission-release").touch()
+PY
+    fi
+  ) &
+  RUN_FINAL_ADMISSION_BARRIER=true
+  invoke_run "$root" 2
+  RUN_FINAL_ADMISSION_BARRIER=false
+  assert_true "$([[ $LAST_STATUS -ne 0 ]] && print true || print false)" \
+    "final telemetry re-read rejects binding health that broke after initial admission"
+  assert_contains "$LAST_OUTPUT" "final telemetry admission changed or became unhealthy" \
+    "final-admission rejection is explicit"
+  assert_true "$([[ ! -f $root/runtime/deployment-claim.json ]] && print true || print false)" \
+    "post-admission binding failure never publishes a deployment claim"
+}
+
 test_legacy_pointer_and_restart_archival() {
   local root
   new_fixture
@@ -496,6 +541,7 @@ test_failed_handshake_is_never_claimed
 test_transaction_root_handshake_matrix
 test_transaction_root_status_parity
 test_binding_health_is_required_by_run_and_status
+test_final_admission_rechecks_binding_health
 test_legacy_pointer_and_restart_archival
 test_pid_reuse_refusal
 test_stop_telemetry_mismatch_refusal

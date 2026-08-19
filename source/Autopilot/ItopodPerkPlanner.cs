@@ -9,8 +9,9 @@ climbing, online/offline reward forecasts, the T6 clue-four naked session, typed
 asynchronous perk-231 item delivery.  It complements MechanicsItopod's installed-build PP formulas
 without reading or changing a live Character.
 
-Mechanism: A climb plan uses the native-valid H-1 start and a target no higher than the proven
-one-hit ceiling plus one.  The online transition simulator preserves native enemy-death ordering:
+Mechanism: A climb plan uses the native-valid H-1 start and a target no higher than a bounded
+finite-clear/survival frontier plus one; steady farming still uses the separate guaranteed one-hit
+ceiling.  The online transition simulator preserves native enemy-death ordering:
 ordinary PP is calculated from the fought floor; the ten-kill move, wrap, and record award happen
 next; AP, EXP, boosts, clues, and special-drop probabilities use the post-move floor.  A de-duplicated
 post-kill gate requests a synchronous exit before an unproved sentinel can respawn.  Offline
@@ -37,6 +38,179 @@ daycare/equipment ownership as ordinary inventory ownership.
 */
 namespace NGUInjector.Autopilot
 {
+    internal sealed class ItopodFloorCombatProof
+    {
+        internal readonly int Floor;
+        internal readonly bool OneHit;
+        internal readonly bool FrontierClear;
+        internal readonly int Hits;
+        internal readonly double KillSeconds;
+        internal readonly double WorstIncomingDamage;
+        internal readonly string Reason;
+
+        internal ItopodFloorCombatProof(int floor, bool oneHit, bool frontierClear,
+            int hits, double killSeconds, double worstIncomingDamage, string reason)
+        {
+            Floor = floor;
+            OneHit = oneHit;
+            FrontierClear = frontierClear;
+            Hits = hits;
+            KillSeconds = killSeconds;
+            WorstIncomingDamage = worstIncomingDamage;
+            Reason = reason ?? string.Empty;
+        }
+    }
+
+    internal sealed class ItopodCombatReachProof
+    {
+        internal readonly int OneHitFloor;
+        internal readonly int FrontierFloor;
+        internal readonly double FrontierKillSeconds;
+        internal readonly string FrontierReason;
+
+        internal ItopodCombatReachProof(int oneHitFloor, int frontierFloor,
+            double frontierKillSeconds, string frontierReason)
+        {
+            OneHitFloor = oneHitFloor;
+            FrontierFloor = frontierFloor;
+            FrontierKillSeconds = frontierKillSeconds;
+            FrontierReason = frontierReason ?? string.Empty;
+        }
+    }
+
+    /*
+    BOUNDED ITOPOD FRONTIER PROOF
+
+    Native ITOPOD enemies scale their 10/10/1/600 base stats by 1.05^floor and independently roll
+    each stat through [0.98,1.02].  The old router required one minimum-roll player hit to exceed
+    worst-roll HP.  That is the right farm-throughput plateau but it stranded record climbing even
+    when two or three hits were trivially safe.  This pure proof keeps that one-hit value intact and
+    adds a deliberately short multi-hit window.  It proves positive damage after continuous enemy
+    regeneration, completes before the third native enemy action (where paralyze/charger/rapid
+    escalation begins), and survives worst-roll normal damage, grower's second-action 1.2x hit,
+    and poison's defense-bypassing direct Adventure-HP rider without using player regeneration.
+    Target Beast Mode's native 3x PlayerController multiplier applies to ordinary/grower hits but
+    not that direct poison subtraction. A ten-percent HP reserve covers frame-order uncertainty.
+    */
+    internal static class ItopodCombatOracle
+    {
+        internal const double FrontierKillHorizonSeconds = 4.1;
+        private const double EnemyFirstActionSeconds = 1.8;
+        private const double EnemyActionSeconds = 1.2;
+        private const double SurvivalFraction = .9;
+
+        internal static ItopodFloorCombatProof EvaluateFloor(int floor,
+            double adventureAttack, double adventureDefense, double availableHp,
+            double attackPower, double attackCadence, double incomingBeastFactor)
+        {
+            if (floor < 0 || floor > ItopodPerkPlanner.MaximumFloor)
+                throw new ArgumentOutOfRangeException("floor");
+            RequireFiniteNonNegative(adventureAttack, "adventureAttack");
+            RequireFiniteNonNegative(adventureDefense, "adventureDefense");
+            RequireFiniteNonNegative(availableHp, "availableHp");
+            RequireFiniteNonNegative(attackPower, "attackPower");
+            if (double.IsNaN(attackCadence) || double.IsInfinity(attackCadence)
+                || attackCadence <= 0.0)
+                throw new ArgumentOutOfRangeException("attackCadence");
+            if (double.IsNaN(incomingBeastFactor) || double.IsInfinity(incomingBeastFactor)
+                || incomingBeastFactor < 1.0)
+                throw new ArgumentOutOfRangeException("incomingBeastFactor");
+
+            var scale = Math.Pow(1.05, floor);
+            var enemyAttack = 10.0 * scale * 1.02;
+            var enemyDefense = 10.0 * scale * 1.02;
+            var enemyRegen = 1.0 * scale * 1.02;
+            var enemyHp = 600.0 * scale * 1.02;
+            var minimumHit = .8 * Math.Max(0.0,
+                adventureAttack - enemyDefense / 2.0) * attackPower;
+            if (minimumHit <= 0.0)
+                return Rejected(floor, "minimum-roll player damage is zero");
+
+            var oneHit = minimumHit >= enemyHp;
+            var hits = 1;
+            if (!oneHit)
+            {
+                // Between player actions the native enemy regenerates continuously. The first hit
+                // occurs against full HP, then every later hit must overcome one cadence of regen.
+                var netLaterHit = minimumHit - enemyRegen * attackCadence;
+                if (netLaterHit <= 0.0)
+                    return Rejected(floor, "enemy regeneration meets or exceeds later minimum-roll hits");
+                hits += (int)Math.Ceiling(Math.Max(0.0, enemyHp - minimumHit) / netLaterHit);
+            }
+            var killSeconds = hits * attackCadence;
+            if (killSeconds > FrontierKillHorizonSeconds)
+                return new ItopodFloorCombatProof(floor, oneHit, false, hits,
+                    killSeconds, 0.0, "finite clear exceeds the pre-escalation 4.1s horizon");
+
+            var enemyActions = killSeconds < EnemyFirstActionSeconds ? 0
+                : 1 + (int)Math.Floor((killSeconds - EnemyFirstActionSeconds)
+                                      / EnemyActionSeconds);
+            var baseWorstHit = 1.2 * Math.Max(enemyAttack * .1,
+                enemyAttack - adventureDefense / 2.0);
+            var worstIncoming = 0.0;
+            for (var action = 1; action <= enemyActions; action++)
+            {
+                // Grower is the strongest ITOPOD base-AI multiplier before 4.1 seconds: its
+                // second action is 1.2x. Poison may also add 20% raw Attack at a 1.2 roll.
+                var aiFactor = action >= 2 ? 1.2 : 1.0;
+                worstIncoming += baseWorstHit * aiFactor * incomingBeastFactor;
+                worstIncoming += enemyAttack * .2 * 1.2;
+            }
+            var survives = availableHp > 0.0
+                           && worstIncoming <= availableHp * SurvivalFraction;
+            return new ItopodFloorCombatProof(floor, oneHit, survives, hits,
+                killSeconds, worstIncoming, survives
+                    ? oneHit ? "guaranteed one-hit farm plateau and bounded survivable frontier"
+                      : "bounded multi-hit clear before special-AI escalation with 10% HP reserve"
+                    : "worst pre-escalation incoming damage exceeds the 90% HP budget");
+        }
+
+        internal static ItopodCombatReachProof ProveReach(double adventureAttack,
+            double adventureDefense, double availableHp, double attackPower,
+            double attackCadence, double incomingBeastFactor, int maximumFloor)
+        {
+            if (maximumFloor < 0 || maximumFloor > ItopodPerkPlanner.MaximumFloor)
+                throw new ArgumentOutOfRangeException("maximumFloor");
+            var oneHitFloor = 0;
+            var frontierFloor = 0;
+            var frontierSeconds = attackCadence;
+            var frontierReason = "floor zero has not been evaluated";
+            var frontierOpen = true;
+            for (var floor = 0; floor <= maximumFloor; floor++)
+            {
+                var proof = EvaluateFloor(floor, adventureAttack, adventureDefense,
+                    availableHp, attackPower, attackCadence, incomingBeastFactor);
+                if (proof.OneHit) oneHitFloor = floor;
+                if (frontierOpen && !proof.FrontierClear)
+                {
+                    frontierReason = proof.Reason;
+                    frontierOpen = false;
+                }
+                if (frontierOpen)
+                {
+                    frontierFloor = floor;
+                    frontierSeconds = proof.KillSeconds;
+                    frontierReason = proof.Reason;
+                }
+                if (!frontierOpen && !proof.OneHit) break;
+            }
+            return new ItopodCombatReachProof(oneHitFloor, frontierFloor,
+                frontierSeconds, frontierReason);
+        }
+
+        private static ItopodFloorCombatProof Rejected(int floor, string reason)
+        {
+            return new ItopodFloorCombatProof(floor, false, false, 0,
+                double.PositiveInfinity, 0.0, reason);
+        }
+
+        private static void RequireFiniteNonNegative(double value, string name)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0.0)
+                throw new ArgumentOutOfRangeException(name);
+        }
+    }
+
     internal enum ItopodObjective
     {
         ContinuousClimb,
@@ -556,6 +730,44 @@ namespace NGUInjector.Autopilot
         }
     }
 
+    internal enum AdventureRouteChoice
+    {
+        ProgressionPush,
+        BossSnipe,
+        CollectionFarm,
+        ItopodFrontier,
+        ItopodFarm
+    }
+
+    internal sealed class AdventureRoutePlan
+    {
+        internal readonly AdventureRouteChoice Choice;
+        internal readonly int AwardFloor;
+        internal readonly long FirstClearPerkPoints;
+        internal readonly long KillsToAward;
+        internal readonly double SecondsToAward;
+        internal readonly bool CompletesPerkGate;
+        internal readonly double ItopodProgressionRate;
+        internal readonly double CollectionProgressionRate;
+        internal readonly string Reason;
+
+        internal AdventureRoutePlan(AdventureRouteChoice choice, int awardFloor,
+            long firstClearPerkPoints, long killsToAward, double secondsToAward,
+            bool completesPerkGate, double itopodProgressionRate,
+            double collectionProgressionRate, string reason)
+        {
+            Choice = choice;
+            AwardFloor = awardFloor;
+            FirstClearPerkPoints = firstClearPerkPoints;
+            KillsToAward = killsToAward;
+            SecondsToAward = secondsToAward;
+            CompletesPerkGate = completesPerkGate;
+            ItopodProgressionRate = itopodProgressionRate;
+            CollectionProgressionRate = collectionProgressionRate;
+            Reason = reason ?? string.Empty;
+        }
+    }
+
     internal static class ItopodPerkPlanner
     {
         internal const double AnyBoostProbability = 0.084;
@@ -568,6 +780,151 @@ namespace NGUInjector.Autopilot
 
         private static readonly int[] FibonacciMilestones =
             { 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597 };
+
+        /*
+        CROSS-SUBSYSTEM ADVENTURE ROUTE VALUE
+
+        An ITOPOD record is not merely another farm drop.  The installed build awards direct,
+        unmodified PP on decade records, with a tenfold super-decade award.  This pure selector
+        prices the next reachable award against the selected collection debt and, most
+        importantly, detects when that exact award crosses the next typed perk-purchase gate.
+        Unknown core-set ETAs remain conservative: they retain their ordinary route unless a
+        discrete perk gate or terminal END route proves ITOPOD should preempt it. Optional item
+        debt is stricter: a merely positive finished-item score cannot own Adventure without a
+        source-calibrated ETA that beats exact ordinary ITOPOD PP progress toward the next typed
+        perk. Rates compare logarithmic permanent progression gain per second only when both sides
+        have source-backed time/value inputs; incomparable native reward units are never silently
+        added together.
+        */
+        internal static AdventureRoutePlan ChooseAdventureRoute(int highestRecord,
+            int provenFrontierFloor, double itopodCycleSeconds, long currentPerkPoints,
+            long reservePerkPoints, long nextPerkCost, double nextPerkLogGain,
+            bool hasCollectionDebt, bool collectionBossOnly, bool collectionBackfill,
+            double collectionExpectedSeconds, double collectionNativeMagnitude,
+            bool progressionPush, bool terminalItopodDropMissing,
+            int liveFloor = -1, int killCounter = 0,
+            int savedStart = -1, int savedEnd = -1,
+            double ordinaryItopodPpPerSecond = 0.0,
+            bool collectionOptionalOnly = false)
+        {
+            ValidateFloor(highestRecord, "highestRecord");
+            ValidateFloor(provenFrontierFloor, "provenFrontierFloor");
+            if (double.IsNaN(itopodCycleSeconds) || double.IsInfinity(itopodCycleSeconds)
+                || itopodCycleSeconds <= 0.0)
+                throw new ArgumentOutOfRangeException("itopodCycleSeconds");
+            if (currentPerkPoints < 0L || reservePerkPoints < 0L || nextPerkCost < 0L)
+                throw new ArgumentOutOfRangeException("currentPerkPoints");
+            if (double.IsNaN(nextPerkLogGain) || double.IsInfinity(nextPerkLogGain)
+                || nextPerkLogGain < 0.0)
+                throw new ArgumentOutOfRangeException("nextPerkLogGain");
+            if (double.IsNaN(collectionExpectedSeconds)
+                || double.IsNaN(collectionNativeMagnitude)
+                || collectionNativeMagnitude < 0.0)
+                throw new ArgumentOutOfRangeException("collectionExpectedSeconds");
+            if (double.IsNaN(ordinaryItopodPpPerSecond)
+                || double.IsInfinity(ordinaryItopodPpPerSecond)
+                || ordinaryItopodPpPerSecond < 0.0)
+                throw new ArgumentOutOfRangeException("ordinaryItopodPpPerSecond");
+
+            var awardFloor = NextReachableAwardFloor(highestRecord, provenFrontierFloor);
+            long award = 0L;
+            long kills = 0L;
+            var seconds = double.PositiveInfinity;
+            if (awardFloor > 0)
+            {
+                award = MechanicsItopod.FirstClearPerkPoints(awardFloor, true);
+                var canContinueLive = liveFloor >= 0 && liveFloor <= MaximumFloor
+                                      && killCounter >= 0 && killCounter < 10
+                                      && savedStart >= 0 && savedStart <= liveFloor
+                                      && savedEnd >= awardFloor;
+                kills = canContinueLive
+                    ? KillsToRecord(savedStart, savedEnd, liveFloor, killCounter,
+                        highestRecord, awardFloor)
+                    : FreshEntryKillsToRecord(Math.Max(0, highestRecord - 1),
+                        awardFloor, highestRecord, awardFloor);
+                seconds = kills * itopodCycleSeconds;
+            }
+
+            var spendable = Math.Max(0L, currentPerkPoints - reservePerkPoints);
+            var gap = nextPerkCost <= spendable ? 0L : nextPerkCost - spendable;
+            var completesGate = gap > 0L && award >= gap;
+            // nextPerkLogGain describes the whole next level, not one PP.  Credit only the
+            // fraction of that discrete gate supplied by this award and cap a gate-closing
+            // super-decade at one whole level; otherwise a ten-PP award is spuriously priced
+            // as ten complete copies of the same perk effect.
+            var creditedFraction = gap > 0L
+                ? Math.Min(1.0, award / (double)Math.Max(1L, gap)) : 0.0;
+            var firstClearRate = awardFloor > 0 && seconds > 0.0
+                ? nextPerkLogGain * creditedFraction / seconds : 0.0;
+            var steadyRate = gap > 0L
+                ? nextPerkLogGain * ordinaryItopodPpPerSecond / Math.Max(1L, gap) : 0.0;
+            var itopodRate = Math.Max(firstClearRate, steadyRate);
+            var collectionRate = collectionExpectedSeconds > 0.0
+                                 && !double.IsInfinity(collectionExpectedSeconds)
+                                 && collectionNativeMagnitude > 0.0
+                ? Math.Log(1.0 + collectionNativeMagnitude) / collectionExpectedSeconds : -1.0;
+
+            if (terminalItopodDropMissing)
+                return Route(AdventureRouteChoice.ItopodFarm,
+                    "Sadistic END item 491 is missing; its only source is the eligible ITOPOD farm",
+                    awardFloor, award, kills, seconds, completesGate, itopodRate, collectionRate);
+            if (!hasCollectionDebt)
+                return Route(awardFloor > 0 ? AdventureRouteChoice.ItopodFrontier
+                        : AdventureRouteChoice.ItopodFarm,
+                    awardFloor > 0
+                        ? "all fightable collection debt is complete; take the next exact first-clear PP award"
+                        : "all fightable collection debt is complete; maximize steady ITOPOD rewards",
+                    awardFloor, award, kills, seconds, completesGate, itopodRate, collectionRate);
+            if (completesGate)
+                return Route(AdventureRouteChoice.ItopodFrontier,
+                    "the next reachable first-clear award supplies " + award
+                    + " PP in " + seconds.ToString("0.##")
+                    + "s and completes the next typed perk gate",
+                    awardFloor, award, kills, seconds, true, itopodRate, collectionRate);
+            if (collectionOptionalOnly && itopodRate > 0.0 && collectionRate < 0.0)
+                return Route(awardFloor > 0 ? AdventureRouteChoice.ItopodFrontier
+                        : AdventureRouteChoice.ItopodFarm,
+                    "optional collection has no source-calibrated completion ETA, while exact "
+                    + "ordinary ITOPOD PP progress advances the next typed perk",
+                    awardFloor, award, kills, seconds, false, itopodRate, collectionRate);
+            if (awardFloor > 0 && collectionRate >= 0.0 && itopodRate > collectionRate)
+                return Route(AdventureRouteChoice.ItopodFrontier,
+                    "source-backed ITOPOD permanent gain per second exceeds the selected collection reward",
+                    awardFloor, award, kills, seconds, false, itopodRate, collectionRate);
+            if (collectionOptionalOnly && collectionRate >= 0.0 && itopodRate > collectionRate)
+                return Route(awardFloor > 0 ? AdventureRouteChoice.ItopodFrontier
+                        : AdventureRouteChoice.ItopodFarm,
+                    "exact ordinary ITOPOD PP value per second exceeds the optional completed-item value per second",
+                    awardFloor, award, kills, seconds, false, itopodRate, collectionRate);
+
+            var ordinary = progressionPush ? AdventureRouteChoice.ProgressionPush
+                : collectionBossOnly ? AdventureRouteChoice.BossSnipe
+                : AdventureRouteChoice.CollectionFarm;
+            var ordinaryReason = collectionExpectedSeconds <= 0.0
+                                 || double.IsInfinity(collectionExpectedSeconds)
+                ? "collection ETA is not source-calibrated and no reachable PP award closes a perk gate"
+                : "selected collection progression rate is at least the next first-clear PP rate";
+            if (collectionBackfill) ordinaryReason += "; route is explicit permanent backfill";
+            return Route(ordinary, ordinaryReason, awardFloor, award, kills, seconds,
+                false, itopodRate, collectionRate);
+        }
+
+        private static AdventureRoutePlan Route(AdventureRouteChoice choice, string reason,
+            int floor, long award, long kills, double seconds, bool gate,
+            double itopodRate, double collectionRate)
+        {
+            return new AdventureRoutePlan(choice, floor, award, kills, seconds, gate,
+                itopodRate, collectionRate, reason);
+        }
+
+        private static int NextReachableAwardFloor(int highestRecord,
+            int provenFrontierFloor)
+        {
+            if (highestRecord >= MaximumFloor) return 0;
+            var next = ((highestRecord / 10) + 1) * 10;
+            if (next > MaximumFloor || provenFrontierFloor < next - 1) return 0;
+            return next;
+        }
 
         internal static ItopodRangePlan PlanContinuousClimb(int highestRecord,
             int provenOneHitFloor, int desiredRecord)
@@ -617,6 +974,37 @@ namespace NGUInjector.Autopilot
             {
                 if (kills >= 200000L)
                     throw new InvalidOperationException("target record is unreachable in the supplied range");
+                kills++;
+                counter++;
+                if (counter < 10) continue;
+                counter = 0;
+                live++;
+                if (live > end) live = start;
+                if (live > record) record = live;
+            }
+            return kills;
+        }
+
+        internal static long KillsToRecord(int start, int end, int liveFloor,
+            int killCounter, int initialRecord, int targetRecord)
+        {
+            ValidateNativeRange(start, end);
+            ValidateFloor(liveFloor, "liveFloor");
+            ValidateFloor(initialRecord, "initialRecord");
+            ValidateFloor(targetRecord, "targetRecord");
+            if (liveFloor < start || liveFloor > end)
+                throw new ArgumentOutOfRangeException("liveFloor");
+            if (killCounter < 0 || killCounter >= 10)
+                throw new ArgumentOutOfRangeException("killCounter");
+            if (targetRecord <= initialRecord) return 0L;
+            var live = liveFloor;
+            var counter = killCounter;
+            var record = initialRecord;
+            long kills = 0L;
+            while (record < targetRecord)
+            {
+                if (kills >= 200000L)
+                    throw new InvalidOperationException("target record is unreachable in the supplied live range");
                 kills++;
                 counter++;
                 if (counter < 10) continue;

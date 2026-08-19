@@ -91,7 +91,7 @@ compile_reflection_run() {
 }
 
 compile_run MechanicsRegressionTests \
-  source/Autopilot/Mechanics*.cs(N) source/Autopilot/Reset*.cs(N) \
+  source/Autopilot/Mechanics*.cs(N) source/Autopilot/ResetStateRegistry.cs \
   source/Autopilot/Titan*.cs(N)
 compile_run ExecutionSafetyRegressionTests source/Autopilot/ExecutionSafety.cs
 compile_run MutationCoordinatorTests source/Autopilot/ExecutionSafety.cs \
@@ -102,11 +102,13 @@ compile_run LifecycleEpochTests source/Autopilot/GameEpoch.cs
 compile_run NativeBindingContractTests source/Autopilot/NativeBindingRegistry.cs
 compile_run LootCapacityTests source/Autopilot/PhysicalTopology.cs source/Autopilot/LootCapacity.cs
 compile_full_run InventoryTopologyTests InventoryTopologyTests
+compile_full_run PersistentSystemTests PersistentSystemTests
 compile_run FightBossOracleTests source/Autopilot/MechanicsOracle.cs
 compile_run AdventureCombatStateTests
 compile_run TitanOracleTests source/Autopilot/TitanMechanics.cs
 compile_run LoadoutSolverTests source/Managers/ParetoLoadoutSolver.cs
 compile_run ExactAllocationTests source/Autopilot/ExactResourceAllocator.cs
+compile_run ExpPurchasePolicyTests source/Autopilot/ExpPurchasePolicy.cs
 compile_run PermanentMarginalTests source/Autopilot/PermanentMarginalOracle.cs
 compile_run StochasticKernelTests source/Autopilot/MechanicsStochastic.cs
 compile_run CollectionModelTests source/Autopilot/MechanicsStochastic.cs \
@@ -125,13 +127,15 @@ compile_run PermanentPurchaseTests source/Autopilot/ExecutionSafety.cs \
   source/Autopilot/MechanicsEndgame.cs source/Autopilot/PhysicalTopology.cs \
   source/Autopilot/LootCapacity.cs source/Autopilot/PurchaseDescriptorCatalog.cs \
   source/Autopilot/PermanentPurchaseManager.cs
+compile_full_run ApQpPermanentSpendTests ApQpPermanentSpendTests
 compile_run ItopodPerkTests source/Autopilot/ExecutionSafety.cs \
   source/Autopilot/MutationCoordinator.cs source/Autopilot/MechanicsOracle.cs \
   source/Autopilot/MechanicsStochastic.cs source/Autopilot/MechanicsEndgame.cs \
   source/Autopilot/PhysicalTopology.cs source/Autopilot/LootCapacity.cs \
   source/Autopilot/ItopodPerkPlanner.cs source/Managers/Move69Manager.cs
 compile_run TitanExecutionTests source/Autopilot/ExecutionSafety.cs \
-  source/Autopilot/MutationCoordinator.cs source/Autopilot/MechanicsOracle.cs \
+  source/Autopilot/MutationCoordinator.cs source/Autopilot/NativeBindingRegistry.cs \
+  source/Autopilot/MechanicsOracle.cs \
   source/Autopilot/MechanicsEndgame.cs source/Autopilot/PhysicalTopology.cs \
   source/Autopilot/LootCapacity.cs source/Autopilot/TitanMechanics.cs \
   source/Managers/ParetoLoadoutSolver.cs source/Managers/TitanExecutionManager.cs
@@ -139,6 +143,7 @@ compile_run_define EndgameTransactionTests ENDGAME_TRANSACTION_TEST_STUBS \
   source/Autopilot/ExecutionSafety.cs source/Autopilot/MutationCoordinator.cs \
   source/Autopilot/MechanicsEndgame.cs source/Autopilot/PhysicalTopology.cs \
   source/Autopilot/LootCapacity.cs source/Autopilot/EndgameTransactionManager.cs
+compile_full_run PermanentBloodSpellTests PermanentBloodSpellTests
 
 compile_full_run CardCookingTests CardCookingTests
 compile_full_run QuestYggTests QuestYggTests
@@ -151,4 +156,4 @@ compile_reflection_run ResetExecutionTests "$temporary_relative/NGUIdleAutopilot
 ./test-rebirth-policy.command
 ./tests/test_deployment_lifecycle.command
 
-print "PASS: aggregate regression runner completed 32 focused suites"
+print "PASS: aggregate regression runner completed 36 focused suites"

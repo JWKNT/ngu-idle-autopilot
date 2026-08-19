@@ -38,11 +38,11 @@ ordinary identity for every ID 480..495; rollback proves exact identity-at-slot 
 Normal-return panel no-ops never latch. Partial panel motion quarantines EndSequence. Filters and
 ambient inventory selectors are restored in finally blocks.
 
-Extension points and non-goals: A later integration task may call these methods from the scheduler,
-surface Last* reports, and provide reset/challenge admission with BloodCommitment.BlocksReset. This
-file does not perform live scheduling, enable ending permission, clear coordinator quarantines,
-normalize Daycare/equipment copies, synthesize Ctrl input, inject/restart, or infer physical delivery
-from itemDropped/itemMaxxed flags.
+Extension points and non-goals: Main calls the fully funded item-494 Blood delivery before reset;
+later integration may call the Card handoff/final placement methods, surface Last* reports, and feed
+BloodCommitment.BlocksReset into broader reset scheduling. This file does not enable final ending
+permission, clear coordinator quarantines, normalize Daycare/equipment copies, synthesize Ctrl
+input, inject/restart, or infer physical delivery from itemDropped/itemMaxxed flags.
 */
 namespace NGUInjector.Autopilot
 {
@@ -1208,9 +1208,11 @@ namespace NGUInjector.Autopilot
     /*
     LIVE ADAPTER
 
-    This adapter contains only installed-build field reads and narrow native calls. It is not wired
-    into a scheduler in this audit wave. The port restores every changed filter and selector, while
-    the intents above own permission, preconditions, postconditions, recovery, and quarantine.
+    This adapter contains only installed-build field reads and narrow native calls. Main constructs
+    it per game epoch for the fully funded item-494 Blood delivery; final END placement/panel
+    execution remains separately authority-disabled. The port restores every changed filter and
+    selector, while the intents above own permission, preconditions, postconditions, recovery, and
+    quarantine.
     */
     internal sealed class CharacterEndgameTransactionPort : IEndgameTransactionPort
     {

@@ -9,7 +9,8 @@ Mechanism: a loopback-only ThreadingHTTPServer serves the repository's docs/ tre
 and builds /api/state from the matching runtime/deployment.json + decision.json epoch
 and an explicitly session-bound tail of runtime/logs/actions.log.  A derived
 observability view normalizes optional rebirth, challenge, difficulty, terminal,
-capacity, scheduler, transaction, producer-identity, and loaded-assembly binding-health fields
+capacity, scheduler, transaction, producer-identity, loaded-assembly binding-health, and explicit
+challenge rebirth-policy fields
 without changing their meaning; it never invents an ETA when the producer supplied no finite estimate.  The optional
 daemon mode detaches from the launcher and records its own PID for exact lifecycle
 cleanup.  The public jehlp.net copy may request the same endpoint; explicit CORS and
@@ -24,6 +25,8 @@ deduplicated for display while retaining occurrence counts and exact log message
 Invariants and safety: bind only to 127.0.0.1; allow only GET/HEAD/OPTIONS; expose no
 directory outside the configured docs root; do not return arbitrary files from the
 runtime directory; and never turn an intended action into a confirmed event.
+A negative rebirth target means only that no finite checkpoint was emitted; challenge
+reset legality comes exclusively from an active challenge plus challengeAllowsRebirth.
 
 Extension points and non-goals: new presentation fields belong in docs/assets/app.js
 and new telemetry belongs in the bot's decision schema.  This bridge may add derived
@@ -291,9 +294,21 @@ def build_observability(
     elapsed = finite_number(state.get("rebirthElapsed"))
     execution_hold = state.get("rebirthExecutionHold") is True
     execution_enabled = first_bool(state, "rebirthExecutionEnabled")
-    no_reset_challenge = target is not None and target < 0
+    challenge_allows_rebirth = first_bool(state, "challengeAllowsRebirth")
+    challenge_rules_summary = first_text(state, "challengeRulesSummary")
+    challenge_rebirth_policy = first_text(state, "challengeRebirthPolicy")
+    challenge_active = first_bool(state, "challengeActive", "inChallenge")
+    if challenge_active is None:
+        challenge_active = "active challenge" in first_text(state, "stage").lower()
+    no_reset_challenge = challenge_active and challenge_allows_rebirth is False
     reset_eta = None
-    if not execution_hold and not no_reset_challenge and target is not None and elapsed is not None:
+    if (
+        not execution_hold
+        and not no_reset_challenge
+        and target is not None
+        and target >= 0
+        and elapsed is not None
+    ):
         reset_eta = max(0, int(round(target - elapsed)))
 
     safety_reason = first_text(state, "rebirthSafetyBlockReason")
@@ -301,7 +316,7 @@ def build_observability(
     eta_reason = first_text(state, "rebirthEtaReason")
     if no_reset_challenge:
         action = "no-reset-challenge"
-        action_label = "NO RESET — active challenge forbids rebirth"
+        action_label = "NO RESET — this challenge forbids ordinary rebirths"
     elif execution_hold:
         action = "hold"
         action_label = "HOLD — no executable reset is scheduled"
@@ -331,9 +346,6 @@ def build_observability(
 
     challenge_summary = first_text(state, "challengeEvidenceSummary", "challengeAdmissionReason")
     parsed = parse_challenge_admission(challenge_summary)
-    challenge_active = first_bool(state, "challengeActive", "inChallenge")
-    if challenge_active is None:
-        challenge_active = "active challenge" in first_text(state, "stage").lower()
     challenge_name = first_text(
         state, "nextChallengeName", "challengeName", "challengeType", "challengeRecommendation"
     )
@@ -517,7 +529,12 @@ def build_observability(
             "recoveryEtaSeconds": recovery_eta,
             "targetBoss": int(target_boss) if target_boss is not None else None,
             "targetLevel": int(target_level) if target_level is not None else None,
-            "reason": challenge_summary or "The producer emitted no challenge-admission evidence.",
+            "reason": (
+                challenge_rules_summary if challenge_active else challenge_summary
+            ) or challenge_rules_summary or "The producer emitted no challenge-admission evidence.",
+            "allowsRebirth": challenge_allows_rebirth,
+            "rulesSummary": challenge_rules_summary or None,
+            "rebirthPolicy": challenge_rebirth_policy or None,
             "provenance": first_text(state, "challengeEtaProvenance") or None,
             "confidence": finite_number(state.get("challengeEtaConfidence")),
         },

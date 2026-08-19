@@ -838,11 +838,26 @@ namespace NGUInjector.Autopilot
             }
 
             var selected = ordered[0];
+            // Once a previously selected positive checkpoint is reached, compare the executable
+            // reset-now branch against the no-reset baseline and keep that admission even if a
+            // newly-scored future event is marginally better.  The irreversible transaction still
+            // repeats every safety gate; this latch only prevents one-second replanning from
+            // continually rolling an already-due checkpoint forward.
+            var dueCheckpoint = viable.FirstOrDefault(x => x.Time == minimum);
+            var checkpointLatched = ShouldKeepAdmittedCheckpoint(_stickyTarget, elapsed,
+                dueCheckpoint == null ? double.NaN : dueCheckpoint.Score,
+                grbWindowRequired);
+            if (checkpointLatched)
+            {
+                selected = dueCheckpoint;
+                selected.Kind = "latched-checkpoint";
+                selected.Reason = "execute the previously admitted positive checkpoint; final live safety gates still revalidate";
+            }
             var sticky = viable.FirstOrDefault(x => x.Time == _stickyTarget);
             // Once an absolute checkpoint is due, execute the already-selected
             // transaction instead of chasing a newly-scored future second. A newly
             // discovered first-GRB requirement is the one safety invalidation.
-            if (sticky != null && sticky.Time >= minimum
+            if (!checkpointLatched && sticky != null && sticky.Time >= minimum
                 && (elapsed >= sticky.Time && (!grbWindowRequired || sticky.Time >= 3600)
                     || sticky.Score >= selected.Score * 0.9995))
                 selected = sticky;
@@ -897,14 +912,23 @@ namespace NGUInjector.Autopilot
                    && selectedScorePerHour > 1e-12;
         }
 
+        internal static bool ShouldKeepAdmittedCheckpoint(int admittedTargetSeconds,
+            int elapsedSeconds, double resetNowScorePerHour, bool firstGrbWindowRequired)
+        {
+            return admittedTargetSeconds > 0 && elapsedSeconds >= admittedTargetSeconds
+                   && (!firstGrbWindowRequired || admittedTargetSeconds >= 3600)
+                   && ResetBeatsHold(resetNowScorePerHour);
+        }
+
         /*
         FINAL MUTATION ADMISSION
 
         This pure policy kernel is shared by the optimizer tests and TimeRebirth's irreversible
         boundary.  A positive aggregate reset value may legitimately include a lower Number when
-        persistent AP/EXP/cap gains repay it.  During boss-record recovery, however, an executable
-        finite reset ETA must beat the finite continue ETA; unknown is a hold, never permission.
-        Challenge entry deliberately does not call this ordinary-rebirth kernel.
+        persistent AP/EXP/cap gains repay it. During boss-record recovery, a non-regressive Number
+        is a bounded scalar replay proof; a lower Number instead requires an executable finite reset
+        ETA that beats the finite continue ETA. Challenge entry deliberately does not call this
+        ordinary-rebirth kernel.
         */
         internal static RebirthMutationDecision EvaluateMutationPolicy(double selectedScorePerHour,
             bool previewValid, double minimumNumberRatio, bool recoveryMode, int resetRouteEtaSeconds,
@@ -929,6 +953,21 @@ namespace NGUInjector.Autopilot
                     Reason = minimumNumberRatio < 1.0
                         ? "lower Number is repaid by positive modeled persistent value; boss-record recovery is not active"
                         : "reset has positive persistent value; boss-record recovery is not active"
+                };
+            // A non-regressive native Number preview is itself a bounded recovery proof: every
+            // replayed Boss starts with at least the current run's Number multiplier, while the
+            // selected reset also has positive persistent value.  Requiring an independently
+            // modeled replay ETA in this case can hold forever even though reset cannot weaken the
+            // scalar that controls the replay.  Only a lower-Number recovery branch needs the exact
+            // reset-versus-continue ETA comparison below.
+            if (minimumNumberRatio >= 1.0)
+                return new RebirthMutationDecision
+                {
+                    Authorized = true,
+                    PreferredRouteEtaSeconds = resetRouteEtaSeconds,
+                    Reason = resetRouteEtaSeconds < 0
+                        ? "recovery reset is admitted without a modeled ETA because native Number is non-regressive and persistent value is positive"
+                        : "recovery reset has non-regressive Number, positive persistent value, and a finite replay ETA"
                 };
             if (resetRouteEtaSeconds < 0)
                 return new RebirthMutationDecision

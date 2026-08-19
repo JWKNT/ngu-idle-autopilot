@@ -15,8 +15,13 @@ FILE PURPOSE
 
 CustomAllocation parses generated/user breakpoint profiles and executes the fast resource sweep.
 It reconciles combined budgets across Basic Training, Augments, Wandoos, Time Machine, NGUs,
-rituals, hacks, and wishes, returning unused resources safely. Allocation calls run on Unity's
-main thread; actual deltas, sync-pair costs, caps, and rebirth horizon must remain authoritative.
+rituals, hacks, and wishes. After every valued finite target declines, otherwise-idle Energy,
+Magic, and Resource 3 are reclaimed into an unlocked no-currency persistent/reset-local sink;
+Resource 3 prefers a live Hack and may fall back to a valid Wish. The accepted native delta or
+exact topology blocker is reported. Allocation calls run on Unity's main thread; actual deltas,
+sync-pair costs, caps, and rebirth horizon must remain authoritative. A fallback must never start a
+paid Time Machine bar or debit Gold, and the outer allocation transaction proves the complete
+accepted target vector rather than trusting this local idle delta.
 The Wandoos selector/method pair crosses the build-pinned NativeBindingRegistry and is accepted
 only after the native OS plus level-reset postcondition is observed; name-only reflection is never
 an executable fallback.
@@ -47,6 +52,8 @@ namespace NGUInjector.AllocationProfiles
         private DateTime _lastEnergyActionLog = DateTime.MinValue;
         private string _lastMagicActionShape = string.Empty;
         private DateTime _lastMagicActionLog = DateTime.MinValue;
+        private string _lastR3ActionShape = string.Empty;
+        private DateTime _lastR3ActionLog = DateTime.MinValue;
 
         internal static string LastMagicAllocationDecision { get; private set; }
             = "Magic allocation has not completed a verified sweep yet";
@@ -538,22 +545,13 @@ namespace NGUInjector.AllocationProfiles
                 return;
 
             var bp = GetCurrentBreakpoint(true);
-            if (bp == null)
+            var temp = new List<BaseBreakpoint>();
+            if (bp != null)
             {
-                _character.removeAllEnergy();
-                return;
-            }
-
-            if (bp.Time != _currentEnergyBreakpoint.Time)
-            {
-                _currentEnergyBreakpoint = bp;
-            }
-
-            var temp = bp.Priorities.Where(x => x.IsValid()).ToList();
-            if (temp.Count == 0)
-            {
-                _character.removeAllEnergy();
-                return;
+                if (_currentEnergyBreakpoint == null || bp.Time != _currentEnergyBreakpoint.Time)
+                    _currentEnergyBreakpoint = bp;
+                if (bp.Priorities != null)
+                    temp = bp.Priorities.Where(x => x.IsValid()).ToList();
             }
             if (temp.Any(x => x is BasicTrainingBP))
             {
@@ -670,8 +668,7 @@ namespace NGUInjector.AllocationProfiles
             // Once every configured Energy sink has declined, idle Energy has no
             // opportunity cost. Fill all remaining productive Basic Training
             // headroom, ignoring the portfolio ceiling but never exceeding a native
-            // one-level-per-tick speed cap. Any surplus after this pass is genuinely
-            // unusable at the current unlock/horizon state and should remain idle.
+            // one-level-per-tick speed cap.
             var idleFallback = 0L;
             if (_character.idleEnergy > 0)
             {
@@ -682,6 +679,21 @@ namespace NGUInjector.AllocationProfiles
                     idleFallback += training.AllocateIdleFallback(_character.idleEnergy);
                 }
             }
+
+            /*
+            UNIVERSAL NO-CURRENCY FALLBACK
+
+            A capped profile is not permission to leave a productive resource idle.  NGU is
+            persistent and therefore preferred; Wandoos is used only when its feature and current
+            installation are live. Both allocations go through native add controllers and are
+            measured from the idle-pool delta. Time Machine is deliberately absent because a new
+            bar can spend Gold. The enclosing ResourceAllocationIntent independently seals and
+            verifies the complete post-sweep target vector.
+            */
+            string universalFallbackDecision;
+            var universalFallback = _character.idleEnergy > 0
+                ? AllocateEnergyNoCurrencyFallback(out universalFallbackDecision)
+                : NoFallbackNeeded(out universalFallbackDecision);
 
             _character.NGUController.refreshMenu();
             _character.wandoos98Controller.refreshMenu();
@@ -694,7 +706,8 @@ namespace NGUInjector.AllocationProfiles
             var priorityKinds = string.Join(", ", temp.Select(x => x is BasicTrainingBP
                 ? ((BasicTrainingBP)x).Label
                 : x.GetType().Name).Distinct().ToArray());
-            var actionShape = temp.Count + ":" + priorityKinds;
+            var actionShape = temp.Count + ":" + priorityKinds
+                              + ":no-currency=" + universalFallbackDecision;
             // Allocation still executes at 5 Hz. Coalesce identical telemetry so
             // synchronous AutoFlush I/O does not become part of the optimizer cost;
             // target-set changes are always logged immediately.
@@ -707,7 +720,14 @@ namespace NGUInjector.AllocationProfiles
                                         + (longHorizonTrainingSpent > 0 ? ", persistent-cap-reserve=" + longHorizonTrainingSpent : string.Empty)
                                         + (advancedTrainingSpent > 0 ? ", next-zone-AT=" + advancedTrainingSpent : string.Empty)
                                         + (swept > 0 ? ", event-residual->BT=" + swept : string.Empty)
-                                        + (idleFallback > 0 ? ", idle-fallback->BT=" + idleFallback : string.Empty));
+                                        + (idleFallback > 0 ? ", idle-fallback->BT=" + idleFallback : string.Empty)
+                                        + (universalFallback > 0
+                                            ? ", universal-no-currency->" + universalFallbackDecision
+                                              + "=" + universalFallback
+                                            : string.Empty)
+                                        + (_character.idleEnergy > 0
+                                            ? ", idle-topology-blocker=" + universalFallbackDecision
+                                            : string.Empty));
                 _lastEnergyActionShape = actionShape;
                 _lastEnergyActionLog = DateTime.UtcNow;
             }
@@ -719,26 +739,20 @@ namespace NGUInjector.AllocationProfiles
                 return;
 
             var bp = GetCurrentBreakpoint(false);
-            if (bp == null)
+            var temp = new List<BaseBreakpoint>();
+            if (bp != null)
             {
-                _character.removeAllMagic();
-                return;
-            }
-
-            if (bp.Time != _currentMagicBreakpoint.Time)
-            {
-                _currentMagicBreakpoint = bp;
-            }
-
-            var temp = bp.Priorities.Where(x => x.IsValid()).ToList();
-            if (temp.Count == 0)
-            {
-                _character.removeAllMagic();
-                return;
+                if (_currentMagicBreakpoint == null || bp.Time != _currentMagicBreakpoint.Time)
+                    _currentMagicBreakpoint = bp;
+                if (bp.Priorities != null)
+                    temp = bp.Priorities.Where(x => x.IsValid()).ToList();
             }
             var prioCount = temp.Count(x => !x.IsCapPrio());
 
-            _character.removeMostMagic();
+            if (temp.Count == 0)
+                _character.removeAllMagic();
+            else
+                _character.removeMostMagic();
             var toAdd = prioCount > 0
                 ? (long)Math.Ceiling((double)_character.magic.idleMagic / prioCount)
                 : 0L;
@@ -772,7 +786,8 @@ namespace NGUInjector.AllocationProfiles
             */
             var residualTimeMachine = 0L;
             var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
-            if (_character.magic.idleMagic > 0 && plan != null && plan.RebirthExecutionHold
+            if (_character.magic.idleMagic > 0 && plan != null
+                && (plan.RebirthExecutionHold || plan.RebirthBoundaryHold)
                 && BR.LastGoldShortfall > 0.0 && _character.machine != null
                 && _character.machine.goldMultiProgress > 0f
                 && _character.buttons.brokenTimeMachine.interactable
@@ -784,6 +799,11 @@ namespace NGUInjector.AllocationProfiles
                 residualTimeMachine = Math.Max(0L, beforeIdle - _character.magic.idleMagic);
             }
 
+            string universalFallbackDecision;
+            var universalFallback = _character.magic.idleMagic > 0
+                ? AllocateMagicNoCurrencyFallback(out universalFallbackDecision)
+                : NoFallbackNeeded(out universalFallbackDecision);
+
             var allocated = Math.Max(0L, _character.magic.curMagic - _character.magic.idleMagic);
             var timeMachine = _character.machine == null ? 0L : _character.machine.goldMultiMagic;
             var wandoos = _character.wandoos98 == null ? 0L : _character.wandoos98.wandoosMagic;
@@ -793,12 +813,10 @@ namespace NGUInjector.AllocationProfiles
             var targetKinds = string.Join(", ", temp.Select(x => x.GetType().Name).Distinct().ToArray());
             var idleReason = _character.magic.idleMagic <= 0 ? "fully allocated"
                 + (residualTimeMachine > 0 ? "; paid Time Machine progress receives the Blood gold-wait remainder" : string.Empty)
-                : allocated <= 0 ? "no active native target accepted Magic"
-                : blood > 0 && temp.All(x => x is BR)
-                    ? "active Blood ritual is at its productive cap; the small remainder has no other admitted Magic sink"
-                : blood <= 0 && temp.Any(x => x is BR)
-                    ? BR.LastDecision
-                : "remaining Magic exceeds the active targets' productive caps or cannot finish before rebirth";
+                + (universalFallback > 0
+                    ? "; universal no-currency fallback: " + universalFallbackDecision
+                    : string.Empty)
+                : "topology blocker: " + universalFallbackDecision;
             LastMagicAllocationDecision = "allocated " + allocated + "/" + _character.magic.curMagic
                                           + " (TM=" + timeMachine + ", Blood=" + blood
                                           + ", Wandoos=" + wandoos + "); idle=" + _character.magic.idleMagic
@@ -812,7 +830,8 @@ namespace NGUInjector.AllocationProfiles
             _character.wishesController.updateMenu();
             var actionShape = temp.Count + ":" + targetKinds + ":" + idleReason
                               + ":tm=" + (timeMachine > 0) + ":blood=" + (blood > 0)
-                              + ":wan=" + (wandoos > 0);
+                              + ":wan=" + (wandoos > 0)
+                              + ":no-currency=" + universalFallback;
             // Magic is recalculated at 5 Hz just like Energy. Emit state changes
             // immediately, but coalesce identical verified layouts so a valid
             // ritual/TM allocation does not look like constant destructive churn.
@@ -832,26 +851,13 @@ namespace NGUInjector.AllocationProfiles
                 return;
 
             var bp = GetCurrentR3Breakpoint();
-            if (bp == null)
-            {
-                _character.removeAllRes3();
-                LastR3AllocationDecision = "No Resource 3 breakpoint is active";
-                return;
-            }
-
-            if (bp.Time != _currentR3Breakpoint.Time)
-            {
+            if (bp != null && (_currentR3Breakpoint == null
+                               || bp.Time != _currentR3Breakpoint.Time))
                 _currentR3Breakpoint = bp;
-            }
 
-            var temp = bp.Priorities.Where(x => x.IsValid()).ToList();
-            if (temp.Count == 0)
-            {
-                _character.removeAllRes3();
-                LastR3AllocationDecision = "No unlocked persistent Resource 3 target is currently valid";
-                return;
-            }
-            
+            var temp = bp == null || bp.Priorities == null
+                ? new List<BaseBreakpoint>()
+                : bp.Priorities.Where(x => x.IsValid()).ToList();
             var prioCount = temp.Count(x => !x.IsCapPrio());
             _character.removeAllRes3();
             var toAdd = prioCount > 0
@@ -875,13 +881,48 @@ namespace NGUInjector.AllocationProfiles
                 }
             }
 
-            _character.hacksController.refreshMenu();
-            _character.wishesController.updateMenu();
+            /*
+            RESOURCE 3 NO-CURRENCY FALLBACK
+
+            Hack and Wish progress is permanent and neither native add controller debits Gold or a
+            second finite currency. A strategic CAP therefore cannot justify leaving the remainder
+            idle. Prefer Hacks because they progress from Resource 3 alone; use the planner's first
+            valid Wish only when every installed Hack is unavailable/hard-capped or its controller
+            accepts no Resource 3. A reached Hack target is advanced only through its native target
+            controller and the forward target transition is checked before allocation. Every add is
+            accepted solely from the observed idle-pool delta. The enclosing ResourceAllocationIntent
+            separately seals the complete Hack/Wish vector and quarantines any later drift.
+            */
+            string universalFallbackDecision;
+            var universalFallback = _character.res3.idleRes3 > 0
+                ? AllocateR3NoCurrencyFallback(out universalFallbackDecision)
+                : NoFallbackNeeded(out universalFallbackDecision);
+
+            if (_character.hacksController != null)
+                _character.hacksController.refreshMenu();
+            if (_character.wishesController != null)
+                _character.wishesController.updateMenu();
             LastR3AllocationDecision = "allocated "
                 + Math.Max(0L, _character.res3.curRes3 - _character.res3.idleRes3) + "/"
                 + _character.res3.curRes3 + " across " + temp.Count
-                + " persistent Hack/Wish priorities; idle=" + _character.res3.idleRes3;
-            Main.LogAction("ALLOC", "Rebalanced Resource 3 across " + temp.Count + " active priorities");
+                + " persistent Hack/Wish priorities; idle=" + _character.res3.idleRes3
+                + "; no-currency=" + universalFallbackDecision
+                + (_character.res3.idleRes3 > 0
+                    ? "; idle-topology-blocker=" + universalFallbackDecision
+                    : string.Empty);
+            var actionShape = temp.Count + ":" + string.Join(", ", temp.Select(x =>
+                                  x.GetType().Name).Distinct().ToArray())
+                              + ":no-currency=" + universalFallbackDecision
+                              + ":accepted=" + universalFallback
+                              + ":idle=" + _character.res3.idleRes3;
+            if (actionShape != _lastR3ActionShape
+                || (DateTime.UtcNow - _lastR3ActionLog).TotalSeconds >= 2.0)
+            {
+                Main.LogAction("ALLOC", "Rebalanced Resource 3 across " + temp.Count
+                                        + " active priorities: " + LastR3AllocationDecision);
+                _lastR3ActionShape = actionShape;
+                _lastR3ActionLog = DateTime.UtcNow;
+            }
         }
 
         public override void EquipGear()
@@ -1086,10 +1127,352 @@ namespace NGUInjector.AllocationProfiles
             return null;
         }
 
-        private void SetInput(float val)
+        private static long NoFallbackNeeded(out string decision)
         {
-            _character.energyMagicPanel.energyRequested.text = val.ToString();
+            decision = "not needed; valued targets consumed the full pool";
+            return 0L;
+        }
+
+        private long AllocateEnergyNoCurrencyFallback(out string decision)
+        {
+            var acceptedTotal = 0L;
+            var acceptedSinks = new List<string>();
+            var nguAvailable = _character.buttons != null
+                               && _character.buttons.ngu.interactable
+                               && _character.NGU != null && _character.NGU.skills != null
+                               && _character.NGU.skills.Count > 0
+                               && _character.NGUController != null
+                               && _character.NGUController.NGU != null
+                               && _character.NGUController.NGU.Length > 0;
+            var wandoosAvailable = _character.buttons != null
+                                    && _character.buttons.wandoos.interactable
+                                    && _character.settings != null
+                                    && _character.settings.wandoos98On
+                                    && _character.wandoos98 != null
+                                    && _character.wandoos98.installed
+                                    && !_character.wandoos98.disabled
+                                    && _character.wandoos98Controller != null;
+            var selected = ExactResourceAllocator.SelectNoCurrencyFallback(nguAvailable,
+                nguAvailable, wandoosAvailable, wandoosAvailable,
+                wandoosAvailable, _character.wandoos98 != null && _character.wandoos98.disabled);
+
+            if (selected == NoCurrencyFallbackKind.Ngu)
+            {
+                var accepted = TryAddIdleEnergyToNgu();
+                acceptedTotal += accepted;
+                if (accepted > 0L) acceptedSinks.Add("Energy NGU row 0");
+            }
+            if (_character.idleEnergy > 0 && wandoosAvailable)
+            {
+                var accepted = TryAddIdleEnergyToWandoos();
+                acceptedTotal += accepted;
+                if (accepted > 0L) acceptedSinks.Add("Wandoos Energy");
+            }
+
+            decision = DescribeNoCurrencyFallback("Energy", acceptedSinks,
+                acceptedTotal, _character.idleEnergy, nguAvailable, wandoosAvailable);
+            return acceptedTotal;
+        }
+
+        private long AllocateMagicNoCurrencyFallback(out string decision)
+        {
+            var acceptedTotal = 0L;
+            var acceptedSinks = new List<string>();
+            var nguAvailable = _character.buttons != null
+                               && _character.buttons.ngu.interactable
+                               && _character.NGU != null && _character.NGU.magicSkills != null
+                               && _character.NGU.magicSkills.Count > 0
+                               && _character.NGUController != null
+                               && _character.NGUController.NGUMagic != null
+                               && _character.NGUController.NGUMagic.Length > 0;
+            var wandoosAvailable = _character.buttons != null
+                                    && _character.buttons.wandoos.interactable
+                                    && _character.settings != null
+                                    && _character.settings.wandoos98On
+                                    && _character.wandoos98 != null
+                                    && _character.wandoos98.installed
+                                    && !_character.wandoos98.disabled
+                                    && _character.wandoos98Controller != null;
+            var selected = ExactResourceAllocator.SelectNoCurrencyFallback(nguAvailable,
+                nguAvailable, wandoosAvailable, wandoosAvailable,
+                wandoosAvailable, _character.wandoos98 != null && _character.wandoos98.disabled);
+
+            if (selected == NoCurrencyFallbackKind.Ngu)
+            {
+                var accepted = TryAddIdleMagicToNgu();
+                acceptedTotal += accepted;
+                if (accepted > 0L) acceptedSinks.Add("Magic NGU row 0");
+            }
+            if (_character.magic.idleMagic > 0 && wandoosAvailable)
+            {
+                var accepted = TryAddIdleMagicToWandoos();
+                acceptedTotal += accepted;
+                if (accepted > 0L) acceptedSinks.Add("Wandoos Magic");
+            }
+
+            decision = DescribeNoCurrencyFallback("Magic", acceptedSinks,
+                acceptedTotal, _character.magic.idleMagic, nguAvailable, wandoosAvailable);
+            return acceptedTotal;
+        }
+
+        private long AllocateR3NoCurrencyFallback(out string decision)
+        {
+            var acceptedTotal = 0L;
+            var acceptedSinks = new List<string>();
+            int hackId;
+            string hackTopology;
+            var hackAvailable = TrySelectR3FallbackHack(out hackId, out hackTopology);
+            if (hackAvailable)
+            {
+                var accepted = TryAddIdleR3ToHack(hackId, out hackTopology);
+                acceptedTotal += accepted;
+                if (accepted > 0L) acceptedSinks.Add("Hack " + hackId);
+            }
+
+            var wishId = -1;
+            var wishTopology = _character.res3.idleRes3 > 0L
+                ? string.Empty : "Hack fallback consumed the full Resource 3 pool";
+            var wishAvailable = _character.res3.idleRes3 > 0L
+                                && TrySelectR3FallbackWish(out wishId, out wishTopology);
+            if (wishAvailable)
+            {
+                var accepted = TryAddIdleR3ToWish(wishId);
+                acceptedTotal += accepted;
+                if (accepted > 0L) acceptedSinks.Add("Wish " + wishId);
+                else wishTopology = "valid Wish " + wishId
+                                    + " accepted zero through wishesController.addRes3";
+            }
+
+            decision = DescribeR3NoCurrencyFallback(acceptedSinks, acceptedTotal,
+                _character.res3.idleRes3, hackTopology, wishTopology);
+            return acceptedTotal;
+        }
+
+        private bool TrySelectR3FallbackHack(out int hackId, out string topology)
+        {
+            hackId = -1;
+            topology = string.Empty;
+            if (_character.buttons == null || !_character.buttons.hacks.interactable
+                || _character.hacks == null || _character.hacks.hacks == null
+                || _character.hacksController == null)
+            {
+                topology = "Hacks are locked or their native controller/state is unavailable";
+                return false;
+            }
+
+            var bestMilestoneDistance = long.MaxValue;
+            for (var id = 0; id < _character.hacks.hacks.Count; id++)
+            {
+                if (!ExactResourceAllocator.IsSupportedHackId(id,
+                        _character.hacks.hacks.Count))
+                    continue;
+                try
+                {
+                    var hack = _character.hacks.hacks[id];
+                    if (hack == null || hack.level >= _character.hacksController.hardCapLevel(id))
+                        continue;
+                    var distance = Math.Max(1L,
+                        _character.hacksController.levelsToNextMilestone(id));
+                    if (distance >= bestMilestoneDistance) continue;
+                    bestMilestoneDistance = distance;
+                    hackId = id;
+                }
+                catch
+                {
+                    // One malformed/unavailable row cannot hide a later installed Hack.
+                }
+            }
+            if (hackId >= 0)
+            {
+                topology = "Hack " + hackId + " is unlocked below its native hard cap";
+                return true;
+            }
+            topology = "every installed Hack is unavailable or at its native hard cap";
+            return false;
+        }
+
+        private bool TrySelectR3FallbackWish(out int wishId, out string topology)
+        {
+            wishId = -1;
+            topology = string.Empty;
+            if (_character.buttons == null || !_character.buttons.wishes.interactable
+                || _character.wishes == null || _character.wishes.wishes == null
+                || _character.wishesController == null || Main.WishManager == null
+                || _character.wishesController.curWishSlots() <= 0
+                || Main.Autopilot != null && Main.Autopilot.Config != null
+                && !Main.Autopilot.Config.ManageWishes)
+            {
+                topology = "Wishes are locked, disabled, slotless, or their native controller/state is unavailable";
+                return false;
+            }
+            try
+            {
+                var candidates = Enumerable.Range(0, _character.wishes.wishes.Count)
+                    .Where(Main.WishManager.isValidWish)
+                    // Prefer a Wish already supplied by Energy/Magic so fallback R3 produces
+                    // progress without creating a zero-factor third-resource-only bar.
+                    .OrderByDescending(id => _character.wishes.wishes[id].energy > 0L
+                                             && _character.wishes.wishes[id].magic > 0L)
+                    .ThenBy(id => id);
+                foreach (var candidate in candidates)
+                {
+                    wishId = candidate;
+                    topology = "Wish " + wishId
+                               + " is the first valid active-or-installed Wish";
+                    return true;
+                }
+            }
+            catch
+            {
+                topology = "the live Wish planner/controller topology could not be captured";
+                return false;
+            }
+            topology = "no valid unlocked Wish exists for the available native Wish slots";
+            return false;
+        }
+
+        private long TryAddIdleR3ToHack(int hackId, out string topology)
+        {
+            topology = "Hack " + hackId + " native allocation was not attempted";
+            var before = _character.res3.idleRes3;
+            if (before <= 0L) return 0L;
+            try
+            {
+                if (_character.hacksController.hitTarget(hackId))
+                {
+                    var targetBefore = _character.hacks.hacks[hackId].target;
+                    _character.hacksController.setToNextMilestone(hackId);
+                    var targetAfter = _character.hacks.hacks[hackId].target;
+                    if (targetAfter <= Math.Max(targetBefore,
+                            _character.hacks.hacks[hackId].level))
+                    {
+                        topology = "Hack " + hackId
+                                   + " reached its target and the native milestone controller did not advance it";
+                        return 0L;
+                    }
+                }
+                _character.hacksController.addR3(hackId, before);
+                long accepted;
+                if (!ExactResourceAllocator.TryObservedAcceptance(before,
+                        _character.res3.idleRes3, before, out accepted))
+                {
+                    topology = "Hack " + hackId
+                               + " produced an invalid observed Resource 3 idle delta";
+                    return 0L;
+                }
+                topology = accepted > 0L ? "Hack " + hackId + " accepted " + accepted
+                    : "Hack " + hackId + " accepted zero through hacksController.addR3";
+                return accepted;
+            }
+            catch (Exception error)
+            {
+                topology = "Hack " + hackId + " native controller failed: "
+                           + error.GetType().Name;
+                return 0L;
+            }
+        }
+
+        private long TryAddIdleR3ToWish(int wishId)
+        {
+            var before = _character.res3.idleRes3;
+            if (before <= 0L || !SetInput(before)) return 0L;
+            _character.wishesController.addRes3(wishId);
+            long accepted;
+            return ExactResourceAllocator.TryObservedAcceptance(before,
+                _character.res3.idleRes3, before, out accepted) ? accepted : 0L;
+        }
+
+        private long TryAddIdleEnergyToNgu()
+        {
+            var before = _character.idleEnergy;
+            if (before <= 0L || !SetInput(before)) return 0L;
+            _character.NGUController.NGU[0].add();
+            long accepted;
+            return ExactResourceAllocator.TryObservedAcceptance(before, _character.idleEnergy,
+                before, out accepted) ? accepted : 0L;
+        }
+
+        private long TryAddIdleEnergyToWandoos()
+        {
+            var before = _character.idleEnergy;
+            if (before <= 0L || !SetInput(before)) return 0L;
+            _character.wandoos98Controller.addEnergy();
+            long accepted;
+            return ExactResourceAllocator.TryObservedAcceptance(before, _character.idleEnergy,
+                before, out accepted) ? accepted : 0L;
+        }
+
+        private long TryAddIdleMagicToNgu()
+        {
+            var before = _character.magic.idleMagic;
+            if (before <= 0L || !SetInput(before)) return 0L;
+            _character.NGUController.NGUMagic[0].add();
+            long accepted;
+            return ExactResourceAllocator.TryObservedAcceptance(before,
+                _character.magic.idleMagic, before, out accepted) ? accepted : 0L;
+        }
+
+        private long TryAddIdleMagicToWandoos()
+        {
+            var before = _character.magic.idleMagic;
+            if (before <= 0L || !SetInput(before)) return 0L;
+            _character.wandoos98Controller.addMagic();
+            long accepted;
+            return ExactResourceAllocator.TryObservedAcceptance(before,
+                _character.magic.idleMagic, before, out accepted) ? accepted : 0L;
+        }
+
+        private static string DescribeNoCurrencyFallback(string resource,
+            IList<string> acceptedSinks, long accepted, long remaining,
+            bool nguAvailable, bool wandoosAvailable)
+        {
+            var sinks = acceptedSinks == null || acceptedSinks.Count == 0
+                ? string.Empty
+                : string.Join(" + ", acceptedSinks.ToArray());
+            if (remaining <= 0L && accepted > 0L)
+                return sinks;
+            if (!nguAvailable && !wandoosAvailable)
+                return "no unlocked no-currency " + resource
+                       + " sink (NGU/Wandoos) exists in the live topology";
+            if (accepted <= 0L)
+                return "unlocked no-currency " + resource
+                       + " sink topology accepted zero through its native controller";
+            return sinks + "; native no-currency sinks rejected the remaining " + remaining;
+        }
+
+        private static string DescribeR3NoCurrencyFallback(IList<string> acceptedSinks,
+            long accepted, long remaining, string hackTopology, string wishTopology)
+        {
+            var sinks = acceptedSinks == null || acceptedSinks.Count == 0
+                ? string.Empty : string.Join(" + ", acceptedSinks.ToArray());
+            if (remaining <= 0L && accepted > 0L) return sinks;
+            var topology = "Hack: " + (hackTopology ?? "unavailable") + "; Wish: "
+                           + (wishTopology ?? "unavailable");
+            if (accepted <= 0L)
+                return "no native no-currency Resource 3 sink accepted allocation ("
+                       + topology + ")";
+            return sinks + "; native Hack/Wish sinks rejected the remaining " + remaining
+                   + " (" + topology + ")";
+        }
+
+        private bool SetInput(long val)
+        {
+            if (_character == null || _character.energyMagicPanel == null
+                || _character.energyMagicPanel.energyRequested == null || val < 0L)
+                return false;
+            _character.energyMagicPanel.energyRequested.text =
+                ExactResourceAllocator.FormatExactInput(val);
             _character.energyMagicPanel.validateInput();
+            // This is the native controller request field, not an allocation target. The game's
+            // text parser narrows above 2^53, so restore the already-bounded Int64 request before a
+            // native add call; the enclosing full-vector transaction remains the settlement proof.
+            if (_character.energyMagicPanel.energyMagicInput != val)
+            {
+                _character.energyMagicPanel.energyMagicInput = val;
+                _character.energyMagicPanel.energyRequested.text =
+                    ExactResourceAllocator.FormatExactInput(val);
+            }
+            return _character.energyMagicPanel.energyMagicInput == val;
         }
     }
 

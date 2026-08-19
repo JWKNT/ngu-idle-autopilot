@@ -14,9 +14,11 @@ epoch-bound challenge intent; runner-ups remain diagnostics and can never become
 
 Mechanism: Recommend validates the global menu, native unlock/count/max/target facts for all eleven
 controllers, builds the minimum exact timing key, captures the complete valuable Titan clock vector,
-and sends only admission-grade routes to ChallengeIntentSelector. ActivePolicy reports the exact
-offline/deadline/budget/cadence/paired-track contract and accepts future exact route inputs through
-an overload while the current integration remains fail-closed.
+and sends only admission-grade routes to ChallengeIntentSelector. Admission also requires a
+same-state opportunity proof: pessimistic challenge clear plus current-run recovery and Titan loss
+must be strictly smaller than a source-modelled lower bound for continuing. ActivePolicy reports the
+exact offline/deadline/budget/cadence/paired-track contract and preserves an already-admitted
+ordinary-rebirth checkpoint after it becomes due.
 
 Inputs and outputs: Inputs are Character/controller snapshots, Main's installed assembly hash,
 ExecutionSafety's state version, bot-owned timing samples, an optional Laser route comparison, and
@@ -24,10 +26,13 @@ an optional exact rebirth event. Outputs are zero or one ChallengeAdmission plus
 ActiveChallengePolicy. This file never enters, quits, completes, or rebirths a challenge.
 
 Invariants and safety: Native bestTime is never timing evidence. Live serialized maxima are
-authoritative and native targets must equal the exact installed formula. Ready valuable Titans
-preempt entry; every other valued clock contributes its exact reset-loss vector. A 24-Hour route
-requires positive active-time slack. No-Rebirth is continuous, no probability label is emitted
-without calibrated coverage, and missing route evidence freezes destructive resets.
+authoritative and native targets must equal the exact installed formula. Every valued Titan clock,
+including a time-ready clock, contributes its exact reset-loss vector; the typed Titan, fruit, and
+Blood boundary is part of admission and is revalidated at mutation time. Reaching a target in the
+current run is never timing evidence and cannot bootstrap entry. Recovery evidence must restore at
+least the captured Boss and both current Number multipliers. A 24-Hour route requires positive
+active-time slack. No-Rebirth is continuous, no probability label is emitted without calibrated
+coverage, and missing route or continuation evidence freezes every destructive reset.
 
 Extension points and non-goals: Task 28 records formula-simulation/observed samples and supplies
 exact reset/Laser comparisons; tasks 17/29 validate the intent epoch and own entry/allocation
@@ -56,6 +61,7 @@ namespace NGUInjector.Autopilot
         internal ChallengeTimingEstimate Timing;
         internal TitanVectorCost TitanCost;
         internal ChallengeDeadlineProjection Deadline;
+        internal ChallengeOpportunityDecision Opportunity;
 
         internal string ProfileCode { get { return Code + "-" + Completion; } }
 
@@ -87,6 +93,9 @@ namespace NGUInjector.Autopilot
         internal int TargetLevel = -1;
         internal int RebirthSeconds = -1;
         internal bool ForbidRebirth = true;
+        internal bool MechanicallyAllowsRebirth;
+        internal string RulesSummary = string.Empty;
+        internal string RebirthPolicySummary = string.Empty;
         internal bool RequiresLaserSwordAllocation;
         internal bool RequiresTrollDialogService;
         internal bool RequiresHundredLevelBudget;
@@ -103,12 +112,90 @@ namespace NGUInjector.Autopilot
         internal ChallengeTimingEstimate Timing;
     }
 
+    /*
+    EXACT SAME-STATE OPPORTUNITY PROOF
+
+    Challenge timing alone answers only "how long might the challenge take?" It does not price the
+    run destroyed by hard entry. This evidence is produced by a bounded replay/formula model for the
+    exact live reset fingerprint. ContinuationLowerBoundSeconds is deliberately a lower bound while
+    CurrentRunRecoveryUpperSeconds and the foregone ordinary-rebirth opportunity are upper bounds:
+    only upper(challenge+recovery+rebirth-opportunity+Titan) strictly below lower(continue) can
+    authorize an irreversible entry.
+    */
+    internal sealed class ChallengeOpportunityEvidence
+    {
+        internal ChallengeTimingKey Key;
+        internal ChallengeTimingEvidenceKind EvidenceKind;
+        internal string ExpectedStateVersion = string.Empty;
+        internal string CurrentProgressionFingerprint = string.Empty;
+        internal string ObjectiveSignature = string.Empty;
+        internal double ContinuationLowerBoundSeconds = -1.0;
+        internal double CurrentRunRecoveryUpperSeconds = -1.0;
+        internal double ForegoneRebirthOpportunityUpperSeconds = -1.0;
+        internal int CurrentBossId = -1;
+        internal int HighestBossId = -1;
+        internal double CurrentAttackNumber = -1.0;
+        internal double CurrentDefenseNumber = -1.0;
+        internal int RecoveredBossId = -1;
+        internal double RecoveredAttackNumberLowerBound = -1.0;
+        internal double RecoveredDefenseNumberLowerBound = -1.0;
+
+        internal ChallengeOpportunityEvidence Clone()
+        {
+            var copy = (ChallengeOpportunityEvidence)MemberwiseClone();
+            copy.Key = Key == null ? null : Key.Clone();
+            return copy;
+        }
+    }
+
+    internal sealed class ChallengeOpportunityDecision
+    {
+        internal bool Admitted;
+        internal double ChallengeClearUpperSeconds = -1.0;
+        internal double CurrentRunRecoveryUpperSeconds = -1.0;
+        internal double ForegoneRebirthOpportunityUpperSeconds = -1.0;
+        internal double TitanOpportunitySeconds = -1.0;
+        internal double TotalChallengeUpperSeconds = -1.0;
+        internal double ContinuationLowerBoundSeconds = -1.0;
+        internal string Reason = string.Empty;
+    }
+
+    /*
+    ATOMIC PRODUCTION EVIDENCE INPUT
+
+    This is intentionally a proof payload, not a guess payload. A copied-state deterministic replay
+    or native-formula simulator supplies a pessimistic clear/recovery upper bound and an optimistic
+    continuation lower bound for one exact live reset snapshot. RecordRouteProof installs the keyed
+    timing and opportunity halves together.
+    */
+    internal sealed class ChallengeRouteProofCapture
+    {
+        internal ChallengeType Type;
+        internal int CompletedBefore;
+        internal int ExactTarget;
+        internal ChallengeTimingEvidenceKind EvidenceKind;
+        internal double ClearUpperSeconds = -1.0;
+        internal double RecoveryUpperSeconds = -1.0;
+        internal double ForegoneRebirthOpportunityUpperSeconds = -1.0;
+        internal double ContinuationLowerBoundSeconds = -1.0;
+        internal int RecoveredBossId = -1;
+        internal double RecoveredAttackNumberLowerBound = -1.0;
+        internal double RecoveredDefenseNumberLowerBound = -1.0;
+        internal string ObjectiveSignature = string.Empty;
+        internal string StartStateSignature = string.Empty;
+        internal string AllocationSignature = string.Empty;
+        internal string ResetSequenceSignature = string.Empty;
+    }
+
     internal static class ChallengeStrategyPlanner
     {
         private const double DeadlineSafetyMarginSeconds = 1.0;
         private static readonly object TimingGate = new object();
         private static readonly ChallengeTimingLedger TimingLedger =
             new ChallengeTimingLedger();
+        private static readonly Dictionary<string, ChallengeOpportunityEvidence>
+            OpportunityEvidence = new Dictionary<string, ChallengeOpportunityEvidence>(
+                StringComparer.Ordinal);
 
         private sealed class LiveCandidate
         {
@@ -117,6 +204,7 @@ namespace NGUInjector.Autopilot
             internal int Maximum;
             internal int NativeTarget;
             internal bool LevelTarget;
+            internal long ExpectedExp;
             internal string Constraints = string.Empty;
             internal string Reward = string.Empty;
         }
@@ -132,7 +220,241 @@ namespace NGUInjector.Autopilot
             lock (TimingGate) return TimingLedger.TryEstimate(key, out estimate);
         }
 
+        /*
+        ADMISSION EVIDENCE INGEST
+
+        A producer may record a proof only for the exact state version and complete reset snapshot
+        it modelled. This is the production hook for a copied-state replay or exact native-formula
+        simulation; merely observing that the current run has passed a target is not a proof.
+        */
+        internal static void RecordOpportunityEvidence(ChallengeOpportunityEvidence evidence)
+        {
+            if (evidence == null || evidence.Key == null)
+                throw new ArgumentNullException("evidence");
+            if (!ExactEvidence(evidence.EvidenceKind))
+                throw new ArgumentException("opportunity evidence must be exact deterministic or native-formula simulation");
+            if (string.IsNullOrEmpty(evidence.ExpectedStateVersion)
+                || string.IsNullOrEmpty(evidence.CurrentProgressionFingerprint)
+                || string.IsNullOrEmpty(evidence.ObjectiveSignature))
+                throw new ArgumentException("opportunity evidence identity is incomplete");
+            ValidateFiniteNonNegative(evidence.ContinuationLowerBoundSeconds,
+                "ContinuationLowerBoundSeconds");
+            ValidateFiniteNonNegative(evidence.CurrentRunRecoveryUpperSeconds,
+                "CurrentRunRecoveryUpperSeconds");
+            ValidateFiniteNonNegative(evidence.ForegoneRebirthOpportunityUpperSeconds,
+                "ForegoneRebirthOpportunityUpperSeconds");
+            ValidateFinitePositive(evidence.CurrentAttackNumber, "CurrentAttackNumber");
+            ValidateFinitePositive(evidence.CurrentDefenseNumber, "CurrentDefenseNumber");
+            ValidateFinitePositive(evidence.RecoveredAttackNumberLowerBound,
+                "RecoveredAttackNumberLowerBound");
+            ValidateFinitePositive(evidence.RecoveredDefenseNumberLowerBound,
+                "RecoveredDefenseNumberLowerBound");
+            if (evidence.CurrentBossId < 0 || evidence.HighestBossId < evidence.CurrentBossId
+                || evidence.RecoveredBossId < 0)
+                throw new ArgumentOutOfRangeException("evidence", "Boss recovery evidence is invalid");
+            lock (TimingGate)
+                OpportunityEvidence[OpportunityKey(evidence.Key,
+                    evidence.ExpectedStateVersion, evidence.CurrentProgressionFingerprint)] =
+                    evidence.Clone();
+        }
+
+        internal static void RecordRouteProof(Character c,
+            ResetExecutionSnapshot resetSnapshot, ChallengeRouteProofCapture proof)
+        {
+            if (c == null || c.settings == null || c.rebirthTime == null
+                || resetSnapshot == null || proof == null)
+                throw new ArgumentNullException("proof");
+            if (!ExactEvidence(proof.EvidenceKind))
+                throw new ArgumentException("route proof must be deterministic or native-formula evidence");
+            var liveReset = LiveResetSnapshot.Capture(c);
+            if (proof.CompletedBefore < 0 || proof.ExactTarget < 0
+                || resetSnapshot.Number == null || resetSnapshot.BossId != c.bossID
+                || resetSnapshot.HighestBoss != c.highestBoss
+                || liveReset == null
+                || !string.Equals(OpportunityProgressionFingerprint(resetSnapshot),
+                    OpportunityProgressionFingerprint(liveReset), StringComparison.Ordinal)
+                || proof.CompletedBefore != CurrentCompletions(c, proof.Type)
+                || proof.ExactTarget != ChallengeMechanics.ExactTarget(proof.Type,
+                    proof.CompletedBefore))
+                throw new ArgumentException("route proof does not describe the current reset snapshot");
+            ValidateFiniteNonNegative(proof.ClearUpperSeconds, "ClearUpperSeconds");
+            ValidateFiniteNonNegative(proof.RecoveryUpperSeconds, "RecoveryUpperSeconds");
+            ValidateFiniteNonNegative(proof.ForegoneRebirthOpportunityUpperSeconds,
+                "ForegoneRebirthOpportunityUpperSeconds");
+            ValidateFiniteNonNegative(proof.ContinuationLowerBoundSeconds,
+                "ContinuationLowerBoundSeconds");
+            ValidateFinitePositive(resetSnapshot.Number.CurrentAttack, "CurrentAttackNumber");
+            ValidateFinitePositive(resetSnapshot.Number.CurrentDefense, "CurrentDefenseNumber");
+            ValidateFinitePositive(proof.RecoveredAttackNumberLowerBound,
+                "RecoveredAttackNumberLowerBound");
+            ValidateFinitePositive(proof.RecoveredDefenseNumberLowerBound,
+                "RecoveredDefenseNumberLowerBound");
+            if (string.IsNullOrEmpty(proof.ObjectiveSignature)
+                || resetSnapshot.HighestBoss < resetSnapshot.BossId
+                || proof.RecoveredBossId < 0)
+                throw new ArgumentException("route proof recovery/objective identity is incomplete");
+            var difficulty = DifficultyOf(c.settings.rebirthDifficulty);
+            var key = CreateTimingKey(proof.Type, difficulty,
+                proof.CompletedBefore, proof.ExactTarget);
+            RecordTimingSample(new ChallengeTimingSample
+            {
+                Key = key, EvidenceKind = proof.EvidenceKind,
+                ObservedOnlineSeconds = proof.ClearUpperSeconds,
+                ObservedOfflineSeconds = 0.0,
+                RecoverySeconds = proof.RecoveryUpperSeconds,
+                PredictedUpperSeconds = proof.ClearUpperSeconds,
+                StartStateSignature = proof.StartStateSignature ?? string.Empty,
+                AllocationSignature = proof.AllocationSignature ?? string.Empty,
+                ResetSequenceSignature = proof.ResetSequenceSignature ?? string.Empty,
+                FinishedUtcTicks = DateTime.UtcNow.Ticks
+            });
+            RecordOpportunityEvidence(new ChallengeOpportunityEvidence
+            {
+                Key = key, EvidenceKind = proof.EvidenceKind,
+                ExpectedStateVersion = ExpectedStateVersion(c, proof.Type,
+                    difficulty, proof.CompletedBefore, proof.ExactTarget),
+                CurrentProgressionFingerprint = OpportunityProgressionFingerprint(resetSnapshot),
+                ObjectiveSignature = proof.ObjectiveSignature ?? string.Empty,
+                ContinuationLowerBoundSeconds = proof.ContinuationLowerBoundSeconds,
+                CurrentRunRecoveryUpperSeconds = proof.RecoveryUpperSeconds,
+                ForegoneRebirthOpportunityUpperSeconds =
+                    proof.ForegoneRebirthOpportunityUpperSeconds,
+                CurrentBossId = resetSnapshot.BossId,
+                HighestBossId = resetSnapshot.HighestBoss,
+                CurrentAttackNumber = resetSnapshot.Number.CurrentAttack,
+                CurrentDefenseNumber = resetSnapshot.Number.CurrentDefense,
+                RecoveredBossId = proof.RecoveredBossId,
+                RecoveredAttackNumberLowerBound = proof.RecoveredAttackNumberLowerBound,
+                RecoveredDefenseNumberLowerBound = proof.RecoveredDefenseNumberLowerBound
+            });
+        }
+
+        internal static ChallengeOpportunityDecision EvaluateOpportunity(ChallengeType type,
+            ChallengeTimingEstimate timing, TitanVectorCost titanCost,
+            ChallengeOpportunityEvidence evidence, ResetBoundarySnapshot boundary,
+            string expectedStateVersion, string currentProgressionFingerprint,
+            int currentBossId, int highestBossId, double currentAttackNumber,
+            double currentDefenseNumber)
+        {
+            var result = new ChallengeOpportunityDecision();
+            if (ChallengeMechanics.EntryKind(type) != ChallengeEntryTransformKind.HardReset)
+            {
+                result.Reason = "HOLD: this entry needs its specialized soft-reset opportunity model";
+                return result;
+            }
+            var resetGate = ResetBoundaryGate.Evaluate(boundary);
+            if (!resetGate.Clear)
+            {
+                result.Reason = "HOLD: " + resetGate.Reason;
+                return result;
+            }
+            if (timing == null || !timing.AdmissionGrade
+                || !Finite(timing.UpperClearSeconds) || !Finite(timing.RecoverySeconds))
+            {
+                result.Reason = "HOLD: finite admission-grade clear/recovery timing is missing";
+                return result;
+            }
+            if (titanCost == null || titanCost.TotalCycleDelaySeconds < 0L)
+            {
+                result.Reason = "HOLD: the complete Titan reset-loss vector is missing";
+                return result;
+            }
+            if (evidence == null)
+            {
+                result.Reason = "HOLD: exact same-state continuation/recovery evidence is missing";
+                return result;
+            }
+            if (!ExactEvidence(evidence.EvidenceKind) || evidence.Key == null
+                || timing.Key == null || !evidence.Key.Equals(timing.Key)
+                || !string.Equals(evidence.ExpectedStateVersion,
+                    expectedStateVersion ?? string.Empty, StringComparison.Ordinal)
+                || !string.Equals(evidence.CurrentProgressionFingerprint,
+                    currentProgressionFingerprint ?? string.Empty, StringComparison.Ordinal)
+                || string.IsNullOrEmpty(evidence.ObjectiveSignature))
+            {
+                result.Reason = "HOLD: opportunity evidence is not exact-key/current-state comparable";
+                return result;
+            }
+            if (evidence.CurrentBossId != currentBossId
+                || evidence.HighestBossId != highestBossId
+                || !Same(evidence.CurrentAttackNumber, currentAttackNumber)
+                || !Same(evidence.CurrentDefenseNumber, currentDefenseNumber))
+            {
+                result.Reason = "HOLD: current Boss/Number changed after opportunity modelling";
+                return result;
+            }
+            if (!Finite(evidence.ContinuationLowerBoundSeconds)
+                || !Finite(evidence.CurrentRunRecoveryUpperSeconds)
+                || !Finite(evidence.ForegoneRebirthOpportunityUpperSeconds)
+                || evidence.RecoveredBossId < currentBossId
+                || !FinitePositive(evidence.RecoveredAttackNumberLowerBound)
+                || !FinitePositive(evidence.RecoveredDefenseNumberLowerBound)
+                || evidence.RecoveredAttackNumberLowerBound + 1e-12 < currentAttackNumber
+                || evidence.RecoveredDefenseNumberLowerBound + 1e-12 < currentDefenseNumber)
+            {
+                result.Reason = "HOLD: recovery does not restore the captured Boss and both Number multipliers";
+                return result;
+            }
+            var recoveryUpper = Math.Max(timing.RecoverySeconds,
+                evidence.CurrentRunRecoveryUpperSeconds);
+            double total;
+            try
+            {
+                total = checked(timing.UpperClearSeconds + recoveryUpper
+                                + evidence.ForegoneRebirthOpportunityUpperSeconds
+                                + titanCost.TotalCycleDelaySeconds);
+            }
+            catch (OverflowException)
+            {
+                result.Reason = "HOLD: challenge opportunity total overflowed";
+                return result;
+            }
+            result.ChallengeClearUpperSeconds = timing.UpperClearSeconds;
+            result.CurrentRunRecoveryUpperSeconds = recoveryUpper;
+            result.ForegoneRebirthOpportunityUpperSeconds =
+                evidence.ForegoneRebirthOpportunityUpperSeconds;
+            result.TitanOpportunitySeconds = titanCost.TotalCycleDelaySeconds;
+            result.TotalChallengeUpperSeconds = total;
+            result.ContinuationLowerBoundSeconds = evidence.ContinuationLowerBoundSeconds;
+            if (!Finite(total) || total + 1e-12 >= evidence.ContinuationLowerBoundSeconds)
+            {
+                result.Reason = "HOLD: challenge upper " + FormatSeconds(total)
+                                + " does not strictly beat continuation lower "
+                                + FormatSeconds(evidence.ContinuationLowerBoundSeconds)
+                                + " for " + evidence.ObjectiveSignature;
+                return result;
+            }
+            result.Admitted = true;
+            result.Reason = "exact opportunity proof: clear upper "
+                            + FormatSeconds(timing.UpperClearSeconds) + ", current-run recovery upper "
+                            + FormatSeconds(recoveryUpper) + ", foregone ordinary-rebirth opportunity "
+                            + FormatSeconds(evidence.ForegoneRebirthOpportunityUpperSeconds)
+                            + ", Titan loss "
+                            + FormatSeconds(titanCost.TotalCycleDelaySeconds) + " = "
+                            + FormatSeconds(total) + " < continuation lower "
+                            + FormatSeconds(evidence.ContinuationLowerBoundSeconds) + " for "
+                            + evidence.ObjectiveSignature + "; recovers Boss " + currentBossId
+                            + " and Number A/D " + currentAttackNumber.ToString("R",
+                                CultureInfo.InvariantCulture) + "/"
+                            + currentDefenseNumber.ToString("R", CultureInfo.InvariantCulture);
+            return result;
+        }
+
         internal static IList<ChallengeAdmission> Recommend(Character c,
+            out string evidenceSummary)
+        {
+            return Recommend(c, null, null, out evidenceSummary);
+        }
+
+        /*
+        MUTATION-GRADE RECOMMENDATION
+
+        The no-boundary overload above remains useful for read-only telemetry, but deliberately
+        cannot produce an executable admission. The reset runtime supplies one atomic reset and
+        loss-boundary snapshot so the opportunity proof is tied to the exact state it may destroy.
+        */
+        internal static IList<ChallengeAdmission> Recommend(Character c,
+            ResetBoundarySnapshot resetBoundary, ResetExecutionSnapshot resetSnapshot,
             out string evidenceSummary)
         {
             evidenceSummary = "Challenge HOLD: live state unavailable";
@@ -164,13 +486,6 @@ namespace NGUInjector.Autopilot
                 evidenceSummary = "Challenge HOLD: " + titanEvidence;
                 return empty;
             }
-            if (titanCost.AnyReady)
-            {
-                evidenceSummary = "Challenge HOLD: consume the ready valuable Titan vector before an entry reset; "
-                                  + titanEvidence;
-                return empty;
-            }
-
             var difficulty = DifficultyOf(c.settings.rebirthDifficulty);
             var intents = new List<ChallengeIntent>();
             var admissions = new Dictionary<string, ChallengeAdmission>(StringComparer.Ordinal);
@@ -188,11 +503,30 @@ namespace NGUInjector.Autopilot
                 }
                 var key = CreateTimingKey(live.Type, difficulty, live.Complete, exactTarget);
                 ChallengeTimingEstimate timing;
-                if (!TryTimingEstimate(key, out timing) || !timing.AdmissionGrade
+                if (!TryTimingEstimate(key, out timing) || timing == null
+                    || !timing.AdmissionGrade
                     || !Finite(timing.UpperClearSeconds) || !Finite(timing.RecoverySeconds))
                 {
                     rejected.Add(ChallengeMechanics.Code(live.Type)
                                  + " lacks comparable admission-grade timing");
+                    continue;
+                }
+                var stateVersion = ExpectedStateVersion(c, live.Type,
+                    difficulty, live.Complete, exactTarget);
+                var progressionFingerprint = resetSnapshot == null
+                    ? string.Empty : OpportunityProgressionFingerprint(resetSnapshot);
+                ChallengeOpportunityEvidence opportunityEvidence;
+                lock (TimingGate)
+                    OpportunityEvidence.TryGetValue(OpportunityKey(key, stateVersion,
+                        progressionFingerprint), out opportunityEvidence);
+                var opportunity = EvaluateOpportunity(live.Type, timing, titanCost,
+                    opportunityEvidence, resetBoundary, stateVersion,
+                    progressionFingerprint, c.bossID, c.highestBoss,
+                    c.attackMulti, c.defenseMulti);
+                if (!opportunity.Admitted)
+                {
+                    rejected.Add(ChallengeMechanics.Code(live.Type) + " "
+                                 + opportunity.Reason);
                     continue;
                 }
                 ChallengeDeadlineProjection deadline = null;
@@ -213,15 +547,13 @@ namespace NGUInjector.Autopilot
                     Type = live.Type,
                     Completion = live.Complete + 1,
                     ProfileCode = code + "-" + (live.Complete + 1),
-                    ExpectedStateVersion = ExpectedStateVersion(c, live.Type,
-                        difficulty, live.Complete, exactTarget),
+                    ExpectedStateVersion = stateVersion,
                     TimingKey = key,
-                    TotalRouteSeconds = timing.UpperClearSeconds + timing.RecoverySeconds
-                                        + titanCost.TotalCycleDelaySeconds,
-                    Evidence = timing.EvidenceLabel
+                    TotalRouteSeconds = opportunity.TotalChallengeUpperSeconds,
+                    Evidence = timing.EvidenceLabel + "; " + opportunity.Reason
                 };
                 var evidence = timing.EvidenceLabel + " key=" + key + ", n="
-                               + timing.SampleCount;
+                               + timing.SampleCount + "; " + opportunity.Reason;
                 if (timing.P90LabelAllowed)
                     evidence += ", " + timing.QuantileLabel + " calibrated coverage="
                                 + timing.EmpiricalCoverage.ToString("0.000",
@@ -233,12 +565,12 @@ namespace NGUInjector.Autopilot
                     TargetBoss = live.LevelTarget ? -1 : exactTarget,
                     TargetLevel = live.LevelTarget ? exactTarget : -1,
                     PessimisticClearSeconds = timing.UpperClearSeconds,
-                    RecoverySeconds = timing.RecoverySeconds,
+                    RecoverySeconds = opportunity.CurrentRunRecoveryUpperSeconds,
                     TitanOpportunitySeconds = titanCost.TotalCycleDelaySeconds,
                     Constraints = live.Constraints, Reward = live.Reward,
                     Evidence = evidence, Score = -intent.TotalRouteSeconds,
                     Intent = intent, Timing = timing, TitanCost = titanCost,
-                    Deadline = deadline
+                    Deadline = deadline, Opportunity = opportunity
                 };
                 intents.Add(intent);
                 admissions[intent.ProfileCode] = admission;
@@ -257,11 +589,6 @@ namespace NGUInjector.Autopilot
             evidenceSummary = AdmissionSummary(selected) + " | diagnostic alternatives: "
                               + alternatives + " | " + titanEvidence;
             return new List<ChallengeAdmission> {selected};
-        }
-
-        internal static ActiveChallengePolicy ActivePolicy(Character c)
-        {
-            return ActivePolicy(c, null, -1);
         }
 
         internal static ActiveChallengePolicy ActivePolicy(Character c,
@@ -283,6 +610,11 @@ namespace NGUInjector.Autopilot
                 TargetBoss = type == ChallengeType.LaserSword ? -1 : exactTarget,
                 TargetLevel = type == ChallengeType.LaserSword ? exactTarget : -1,
                 OfflineMode = ChallengeMechanics.OfflineKind(type),
+                MechanicallyAllowsRebirth = AllowsOrdinaryRebirth(type),
+                RulesSummary = RulesSummary(type),
+                RebirthPolicySummary = AllowsOrdinaryRebirth(type)
+                    ? "Ordinary rebirths are allowed; no valid strategic checkpoint is available yet."
+                    : "This challenge forbids ordinary rebirths.",
                 ForbidRebirth = true, RebirthSeconds = -1
             };
             if (nativeTarget != exactTarget)
@@ -340,8 +672,10 @@ namespace NGUInjector.Autopilot
                     p.ForbidRebirth = false;
                     p.RebirthSeconds = exactRebirthSeconds;
                 }
-                p.Objective = "reach Boss " + (exactTarget + 1)
-                              + " under " + p.Code + " restrictions";
+                p.Objective = type == ChallengeType.Basic
+                    ? "reach Boss " + (exactTarget + 1) + "; no systems are disabled"
+                    : "reach Boss " + (exactTarget + 1)
+                      + " under " + p.Code + " restrictions";
             }
 
             if (type == ChallengeType.OneHundredLC)
@@ -359,7 +693,60 @@ namespace NGUInjector.Autopilot
                 && (p.LaserPhase == null
                     || p.LaserPhase.Phase != LaserChallengePhase.Commit))
                 p.EtaReason += "; destructive reset frozen until an exact successor route is supplied";
+            p.RebirthPolicySummary = !p.MechanicallyAllowsRebirth
+                ? "This challenge forbids ordinary rebirths."
+                : !p.ForbidRebirth
+                    ? "Ordinary rebirths are allowed; the normal optimizer selected run age "
+                      + p.RebirthSeconds + "s."
+                    : type == ChallengeType.LaserSword && p.LaserPhase != null
+                      && p.LaserPhase.Phase == LaserChallengePhase.Commit
+                        ? "Ordinary rebirths are allowed, but the current paired Laser progress is being protected."
+                        : "Ordinary rebirths are allowed; the bot is waiting for a valid strategic checkpoint.";
             return p;
+        }
+
+        /*
+        PLAYER-FACING CHALLENGE RULES
+
+        A negative planner countdown is not a game rule.  Native challenge legality permits an
+        ordinary rebirth in every challenge except No-Rebirth; Laser and Troll can still make a
+        particular reset strategically wasteful.  Keep that mechanical fact separate from the
+        current policy hold so telemetry and dashboards never relabel Basic as a no-reset mode.
+        */
+        internal static bool AllowsOrdinaryRebirth(ChallengeType type)
+        {
+            return type != ChallengeType.NoRebirth;
+        }
+
+        internal static string RulesSummary(ChallengeType type)
+        {
+            switch (type)
+            {
+                case ChallengeType.Basic:
+                    return "No systems are disabled. Ordinary rebirths are allowed.";
+                case ChallengeType.NoAug:
+                    return "Augments and upgrades are disabled. Ordinary rebirths are allowed.";
+                case ChallengeType.TwentyFourHour:
+                    return "Finish within 24 hours of active challenge time. Ordinary rebirths are allowed.";
+                case ChallengeType.OneHundredLC:
+                    return "Each rebirth has one shared 100-level budget. Ordinary rebirths are allowed.";
+                case ChallengeType.NoEquip:
+                    return "Equipment effects are disabled. Ordinary rebirths are allowed.";
+                case ChallengeType.Troll:
+                    return "Troll effects follow their native counter. Ordinary rebirths are allowed; they clear active penalties but preserve that counter.";
+                case ChallengeType.NoRebirth:
+                    return "Reach the target in one continuous run; ordinary rebirths are forbidden.";
+                case ChallengeType.LaserSword:
+                    return "Raise both Laser Sword tracks to the target. Rebirths are allowed but reset run-local track progress.";
+                case ChallengeType.Blind:
+                    return "The challenge hides normal feedback and its timer does not advance offline. Ordinary rebirths are allowed.";
+                case ChallengeType.NoNGU:
+                    return "NGU effects and progress are disabled. Ordinary rebirths are allowed.";
+                case ChallengeType.NoTimeMachine:
+                    return "The Time Machine is unavailable. Ordinary rebirths are allowed.";
+                default:
+                    throw new ArgumentOutOfRangeException("type");
+            }
         }
 
         private static void ApplyActiveTiming(Character c, ActiveChallengePolicy p,
@@ -420,74 +807,66 @@ namespace NGUInjector.Autopilot
             {
                 C(ChallengeType.Basic, a.basicChallenge.currentCompletions(),
                     a.basicChallenge.maxCompletions, a.basicChallenge.targetBoss(), false,
-                    "hard entry", NativeReward(a.basicChallenge.expectedEXP(),
-                        a.basicChallenge.expectedAPReward(), a.basicChallenge.specialRewards())),
+                    "hard entry; no systems disabled", a.basicChallenge.expectedEXP(),
+                    a.basicChallenge.expectedAPReward(), a.basicChallenge.specialRewards()),
                 C(ChallengeType.NoAug, a.noAugsChallenge.currentCompletions(),
                     a.noAugsChallenge.maxCompletions, a.noAugsChallenge.targetBoss(), false,
-                    "hard entry; Augments and Upgrades disabled",
-                    NativeReward(a.noAugsChallenge.expectedEXP(),
-                        a.noAugsChallenge.expectedAPReward(), a.noAugsChallenge.specialRewards())),
+                    "hard entry; Augments and Upgrades disabled", a.noAugsChallenge.expectedEXP(),
+                    a.noAugsChallenge.expectedAPReward(), a.noAugsChallenge.specialRewards()),
                 C(ChallengeType.TwentyFourHour, a.hour24Challenge.currentCompletions(),
                     a.hour24Challenge.maxCompletions, a.hour24Challenge.targetBoss(), false,
-                    "hard entry; active-time deadline; offline frozen",
-                    NativeReward(a.hour24Challenge.expectedEXP(),
-                        a.hour24Challenge.expectedAPReward(), a.hour24Challenge.specialRewards())),
+                    "hard entry; active-time deadline; offline frozen", a.hour24Challenge.expectedEXP(),
+                    a.hour24Challenge.expectedAPReward(), a.hour24Challenge.specialRewards()),
                 C(ChallengeType.OneHundredLC, a.level100Challenge.currentCompletions(),
                     a.level100Challenge.maxCompletions, a.level100Challenge.targetBoss(), false,
-                    "hard entry; one shared 100-completed-level budget per rebirth",
-                    NativeReward(a.level100Challenge.expectedEXP(),
-                        a.level100Challenge.expectedAPReward(), a.level100Challenge.specialRewards())),
+                    "hard entry; one shared 100-completed-level budget per rebirth", a.level100Challenge.expectedEXP(),
+                    a.level100Challenge.expectedAPReward(), a.level100Challenge.specialRewards()),
                 C(ChallengeType.NoEquip, a.noEquipmentChallenge.currentCompletions(),
                     a.noEquipmentChallenge.maxCompletions, a.noEquipmentChallenge.targetBoss(), false,
-                    "hard entry; equipment effects disabled",
-                    NativeReward(a.noEquipmentChallenge.expectedEXP(),
-                        a.noEquipmentChallenge.expectedAPReward(), a.noEquipmentChallenge.specialRewards())),
+                    "hard entry; equipment effects disabled", a.noEquipmentChallenge.expectedEXP(),
+                    a.noEquipmentChallenge.expectedAPReward(), a.noEquipmentChallenge.specialRewards()),
                 C(ChallengeType.Troll, a.trollChallenge.currentCompletions(),
                     a.trollChallenge.maxCompletions, a.trollChallenge.targetBoss(), false,
-                    "hard entry; exact persistent-counter Troll cadence; offline frozen",
-                    NativeReward(a.trollChallenge.expectedEXP(),
-                        a.trollChallenge.expectedAPReward(), a.trollChallenge.specialRewards())),
+                    "hard entry; exact persistent-counter Troll cadence; offline frozen", a.trollChallenge.expectedEXP(),
+                    a.trollChallenge.expectedAPReward(), a.trollChallenge.specialRewards()),
                 C(ChallengeType.NoRebirth, a.noRebirthChallenge.currentCompletions(),
                     a.noRebirthChallenge.maxCompletions, a.noRebirthChallenge.targetBoss(), false,
-                    "hard entry; one continuous no-reset path",
-                    NativeReward(a.noRebirthChallenge.expectedEXP(),
-                        a.noRebirthChallenge.expectedAPReward(), a.noRebirthChallenge.specialRewards())),
+                    "hard entry; one continuous no-reset path", a.noRebirthChallenge.expectedEXP(),
+                    a.noRebirthChallenge.expectedAPReward(), a.noRebirthChallenge.specialRewards()),
                 C(ChallengeType.LaserSword, a.laserSwordChallenge.currentCompletions(),
                     a.laserSwordChallenge.maxCompletions,
                     a.laserSwordChallenge.laserSwordTarget(), true,
-                    "soft entry; both pair tracks; build then commit",
-                    NativeReward(a.laserSwordChallenge.expectedEXP(),
-                        a.laserSwordChallenge.expectedAPReward(), a.laserSwordChallenge.specialRewards())),
+                    "soft entry; both pair tracks; build then commit", a.laserSwordChallenge.expectedEXP(),
+                    a.laserSwordChallenge.expectedAPReward(), a.laserSwordChallenge.specialRewards()),
                 C(ChallengeType.Blind, a.blindChallenge.currentCompletions(),
                     a.blindChallenge.maxCompletions, a.blindChallenge.targetBoss(), false,
-                    "hard entry; offline progress without challenge-timer advance",
-                    NativeReward(a.blindChallenge.expectedEXP(),
-                        a.blindChallenge.expectedAPReward(), a.blindChallenge.specialRewards())),
+                    "hard entry; offline progress without challenge-timer advance", a.blindChallenge.expectedEXP(),
+                    a.blindChallenge.expectedAPReward(), a.blindChallenge.specialRewards()),
                 C(ChallengeType.NoNGU, a.NGUChallenge.currentCompletions(),
                     a.NGUChallenge.maxCompletions, a.NGUChallenge.targetBoss(), false,
-                    "hard entry; NGU effects and progress disabled",
-                    NativeReward(a.NGUChallenge.expectedEXP(),
-                        a.NGUChallenge.expectedAPReward(), a.NGUChallenge.specialRewards())),
+                    "hard entry; NGU effects and progress disabled", a.NGUChallenge.expectedEXP(),
+                    a.NGUChallenge.expectedAPReward(), a.NGUChallenge.specialRewards()),
                 C(ChallengeType.NoTimeMachine, a.timeMachineChallenge.currentCompletions(),
                     a.timeMachineChallenge.maxCompletions, a.timeMachineChallenge.targetBoss(), false,
-                    "hard entry; Time Machine unavailable",
-                    NativeReward(a.timeMachineChallenge.expectedEXP(),
-                        a.timeMachineChallenge.expectedAPReward(), a.timeMachineChallenge.specialRewards()))
+                    "hard entry; Time Machine unavailable", a.timeMachineChallenge.expectedEXP(),
+                    a.timeMachineChallenge.expectedAPReward(), a.timeMachineChallenge.specialRewards())
             };
         }
 
         private static LiveCandidate C(ChallengeType type, int complete, int maximum,
-            int target, bool level, string constraints, string reward)
+            int target, bool level, string constraints, long expectedExp,
+            string expectedAp, string special)
         {
             return new LiveCandidate
             {
                 Type = type, Complete = complete, Maximum = maximum,
                 NativeTarget = target, LevelTarget = level,
-                Constraints = constraints, Reward = reward
+                ExpectedExp = expectedExp, Constraints = constraints,
+                Reward = NativeReward(expectedExp, expectedAp, special)
             };
         }
 
-        private static bool TryCaptureTitanVector(Character c, out TitanVectorCost cost,
+        internal static bool TryCaptureTitanVector(Character c, out TitanVectorCost cost,
             out string evidence)
         {
             cost = null;
@@ -542,13 +921,39 @@ namespace NGUInjector.Autopilot
                    + "|rebirth=task15-exact|allocation=task18-exact|gold=task19-ledger";
         }
 
-        private static string ExpectedStateVersion(Character c, ChallengeType type,
+        internal static string ExpectedStateVersion(Character c, ChallengeType type,
             ChallengeDifficultyBand difficulty, int completedBefore, int target)
         {
             return (Main.GameAssemblySha256 ?? string.Empty) + "|s="
                    + ExecutionSafety.StateVersion + "|d=" + difficulty + "|t=" + type
                    + "|c=" + completedBefore + "|target=" + target + "|boss=" + c.bossID
                    + "|run=" + Math.Floor(c.rebirthTime.totalseconds);
+        }
+
+        /* Titan clocks and sub-second run time are priced/revalidated separately. Excluding those
+           continuously moving values lets one same-frame source model survive until Apply while
+           Boss, Number, challenge, difficulty, and persistent progression remain exact. */
+        internal static string OpportunityProgressionFingerprint(ResetExecutionSnapshot value)
+        {
+            if (value == null || value.Number == null) return string.Empty;
+            var inv = CultureInfo.InvariantCulture;
+            return value.RebirthNumber + "|difficulty=" + value.CurrentDifficulty + "/"
+                   + value.NextDifficulty + "/" + value.NguLevelTrack + "|number="
+                   + value.Number.CurrentAttack.ToString("R", inv) + ","
+                   + value.Number.CurrentDefense.ToString("R", inv) + ","
+                   + value.Number.NextAttack.ToString("R", inv) + ","
+                   + value.Number.NextDefense.ToString("R", inv) + ","
+                   + value.Number.BossMultiplier.ToString("R", inv) + ","
+                   + value.Number.TimeMultiplier.ToString("R", inv) + ","
+                   + value.Number.OldBossMultiplier.ToString("R", inv) + ","
+                   + value.Number.OldTimeMultiplier.ToString("R", inv) + "|boss="
+                   + value.BossId + "/" + value.CurrentHighestBoss + "|records="
+                   + value.HighestBoss + "/" + value.HighestHardBoss + "/"
+                   + value.HighestSadisticBoss + "|challenge=" + value.InChallenge + ":"
+                   + (value.CurrentChallengeTypeToken ?? string.Empty) + ":"
+                   + (value.ChallengeFlags == null ? "missing"
+                       : string.Join(",", value.ChallengeFlags)) + "|persistent="
+                   + (value.PersistentStateFingerprint ?? string.Empty);
         }
 
         private static bool TryOneActiveType(Character c, out ChallengeType type)
@@ -569,7 +974,7 @@ namespace NGUInjector.Autopilot
             return active.Count == 1;
         }
 
-        private static int CurrentCompletions(Character c, ChallengeType type)
+        internal static int CurrentCompletions(Character c, ChallengeType type)
         {
             switch (type)
             {
@@ -657,8 +1062,22 @@ namespace NGUInjector.Autopilot
             if (c == null || c.rebirth == null || c.rebirthTime == null
                 || targetSeconds < 0) return false;
             var minimum = Math.Ceiling((double)c.rebirth.minRebirthTime());
-            return targetSeconds + 1e-12 >= minimum
-                   && targetSeconds + 1e-12 >= c.rebirthTime.totalseconds;
+            // The stage optimizer owns admission. Once its checkpoint is due, the integer target
+            // is normally below the live fractional run timer; requiring target >= now made the
+            // checkpoint invalid precisely when it was executable and rolled it forward forever.
+            // Active challenge policy checks only native reset legality here. The transaction
+            // re-captures the root and all reset boundaries immediately before mutation.
+            return AdmittedRebirthCheckpointIsLegal(minimum, targetSeconds);
+        }
+
+        internal static bool AdmittedRebirthCheckpointIsLegal(double nativeMinimumSeconds,
+            int targetSeconds)
+        {
+            return !double.IsNaN(nativeMinimumSeconds)
+                   && !double.IsInfinity(nativeMinimumSeconds)
+                   && nativeMinimumSeconds >= 0.0
+                   && targetSeconds >= 0
+                   && targetSeconds + 1e-12 >= Math.Ceiling(nativeMinimumSeconds);
         }
 
         private static string AdmissionSummary(ChallengeAdmission x)
@@ -699,6 +1118,41 @@ namespace NGUInjector.Autopilot
         private static bool Finite(double value)
         {
             return value >= 0.0 && !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private static bool FinitePositive(double value)
+        {
+            return value > 0.0 && !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private static bool ExactEvidence(ChallengeTimingEvidenceKind kind)
+        {
+            return kind == ChallengeTimingEvidenceKind.ExactDeterministic
+                   || kind == ChallengeTimingEvidenceKind.NativeFormulaSimulation;
+        }
+
+        private static bool Same(double left, double right)
+        {
+            return left.ToString("R", CultureInfo.InvariantCulture) ==
+                   right.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static string OpportunityKey(ChallengeTimingKey key,
+            string stateVersion, string progressionFingerprint)
+        {
+            return (key == null ? "missing" : key.ToString()) + "|state="
+                   + (stateVersion ?? string.Empty) + "|progression="
+                   + (progressionFingerprint ?? string.Empty);
+        }
+
+        private static void ValidateFiniteNonNegative(double value, string name)
+        {
+            if (!Finite(value)) throw new ArgumentOutOfRangeException(name);
+        }
+
+        private static void ValidateFinitePositive(double value, string name)
+        {
+            if (!FinitePositive(value)) throw new ArgumentOutOfRangeException(name);
         }
     }
 }

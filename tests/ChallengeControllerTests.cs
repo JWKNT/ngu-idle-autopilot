@@ -5,7 +5,10 @@ ChallengeControllerTests is task 16's isolated reflection suite. It loads only a
 and proves all eleven challenge target/entry/offline/completion transforms, keyed timing evidence,
 one-hot intent selection, the shared 100-Level budget, Troll cadence/reset preservation, Laser's
 build-versus-commit switch, No-Rebirth continuity, 24-Hour slack/race, Titan-vector cost, and the
-single final recovery charge. It never loads Unity state or mutates a save.
+single final recovery charge. It also proves that only No-Rebirth mechanically forbids ordinary
+rebirths, that the player-facing rule summaries preserve each native restriction, and that an
+admitted checkpoint remains legal after becoming due instead of rolling forward forever. It never
+loads Unity state or mutates a save.
 */
 using System;
 using System.Collections;
@@ -38,9 +41,12 @@ internal static class ChallengeControllerTests
         Run("all difficulty-local target and completion matrices", TargetMatrix);
         Run("all eleven hard/soft entry transforms are one-hot", EntryMatrix);
         Run("all eleven offline transforms", OfflineMatrix);
+        Run("player-facing challenge rules and rebirth legality", PlayerFacingRules);
         Run("all eleven completion transforms and Basic double count", CompletionMatrix);
         Run("native minimum/latest time writes", NativeTimeWrites);
         Run("bot-owned keys and calibrated labels", TimingEvidence);
+        Run("challenge opportunity proof and Boss-58 incident", ChallengeOpportunityAdmission);
+        Run("production route proof boundary fails closed", RouteProofProducer);
         Run("exactly one epoch-bound intent", IntentSelection);
         Run("shared 100-Level competing budget", HundredLevelBudget);
         Run("Troll fifth event and rebirth preservation", TrollCadence);
@@ -84,6 +90,39 @@ internal static class ChallengeControllerTests
                             completed), "Laser requires both pair tracks");
             }
         }
+    }
+
+    private static void PlayerFacingRules()
+    {
+        for (var typeIndex = 0; typeIndex < Types.Length; typeIndex++)
+        {
+            var type = EnumValue("NGUInjector.AllocationProfiles.RebirthStuff.ChallengeType",
+                Types[typeIndex]);
+            var allowed = (bool)Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+                "AllowsOrdinaryRebirth", type);
+            True(allowed == (typeIndex != 6),
+                Types[typeIndex] + " ordinary-rebirth legality");
+            var rules = Convert.ToString(Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+                "RulesSummary", type));
+            True(!string.IsNullOrWhiteSpace(rules), Types[typeIndex] + " has readable rules");
+            True(rules.Contains(typeIndex == 6 ? "forbidden" : "allowed"),
+                Types[typeIndex] + " says whether ordinary rebirths are allowed");
+        }
+        var basic = EnumValue("NGUInjector.AllocationProfiles.RebirthStuff.ChallengeType",
+            "Basic");
+        var basicRules = Convert.ToString(Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+            "RulesSummary", basic));
+        True(basicRules.StartsWith("No systems are disabled", StringComparison.Ordinal),
+            "Basic is described as unrestricted");
+        True(!(bool)Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+                "AdmittedRebirthCheckpointIsLegal", 60.01, 60),
+            "a checkpoint below the native minimum is rejected");
+        True((bool)Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+                "AdmittedRebirthCheckpointIsLegal", 60.0, 60),
+            "a checkpoint at the native minimum is legal");
+        True((bool)Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+                "AdmittedRebirthCheckpointIsLegal", 60.0, 9471),
+            "an admitted checkpoint stays legal when the fractional live timer has passed it");
     }
 
     private static void EntryMatrix()
@@ -258,6 +297,165 @@ internal static class ChallengeControllerTests
             "native-formula simulation is admission grade immediately");
         True(!(bool)Field(exact, "P90LabelAllowed"),
             "deterministic evidence is not mislabeled as a quantile");
+    }
+
+    private static void ChallengeOpportunityAdmission()
+    {
+        var type = ChallengeType(0);
+        var key = TimingKey("build", 0, 0, 57, "policy");
+        var titan = New("NGUInjector.Autopilot.TitanVectorCost");
+        Set(titan, "TotalCycleDelaySeconds", 50L);
+        var boundary = New("NGUInjector.Autopilot.ResetBoundarySnapshot");
+        Set(boundary, "GameplaySynchronized", true);
+        Set(boundary, "RootLeaseCurrent", true);
+        Set(boundary, "TitanBoundaryClear", true);
+        Set(boundary, "FruitBoundaryClear", true);
+        Set(boundary, "BloodBoundaryClear", true);
+
+        // Live incident regression: the ordinary run and all-time record have passed Boss 58 and
+        // own valuable Number, but that fact alone supplies no challenge clear/recovery timing.
+        var incident = Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+            "EvaluateOpportunity", type, null, titan, null, boundary, "state", "progress",
+            59, 59, 1234.0, 987.0);
+        True(!(bool)Field(incident, "Admitted"),
+            "Boss 59 plus valuable current Number cannot bootstrap challenge entry");
+        True(((string)Field(incident, "Reason")).Contains("timing is missing"),
+            "incident HOLD names missing finite clear/recovery timing");
+
+        var timing = New("NGUInjector.Autopilot.ChallengeTimingEstimate");
+        Set(timing, "Key", key);
+        Set(timing, "AdmissionGrade", true);
+        Set(timing, "UpperClearSeconds", 100.0);
+        Set(timing, "RecoverySeconds", 200.0);
+        var missingComparison = Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+            "EvaluateOpportunity", type, timing, titan, null, boundary, "state", "progress",
+            59, 59, 1234.0, 987.0);
+        True(!(bool)Field(missingComparison, "Admitted"),
+            "challenge timing without a continuing-route comparison still holds");
+
+        var evidence = New("NGUInjector.Autopilot.ChallengeOpportunityEvidence");
+        Set(evidence, "Key", key);
+        Set(evidence, "EvidenceKind", EnumValue(
+            "NGUInjector.Autopilot.ChallengeTimingEvidenceKind", "NativeFormulaSimulation"));
+        Set(evidence, "ExpectedStateVersion", "state");
+        Set(evidence, "CurrentProgressionFingerprint", "progress");
+        Set(evidence, "ObjectiveSignature", "same terminal checkpoint");
+        Set(evidence, "ContinuationLowerBoundSeconds", 1000.0);
+        Set(evidence, "CurrentRunRecoveryUpperSeconds", 300.0);
+        Set(evidence, "ForegoneRebirthOpportunityUpperSeconds", 25.0);
+        Set(evidence, "CurrentBossId", 59);
+        Set(evidence, "HighestBossId", 59);
+        Set(evidence, "CurrentAttackNumber", 1234.0);
+        Set(evidence, "CurrentDefenseNumber", 987.0);
+        Set(evidence, "RecoveredBossId", 59);
+        Set(evidence, "RecoveredAttackNumberLowerBound", 1234.0);
+        Set(evidence, "RecoveredDefenseNumberLowerBound", 987.0);
+        var admitted = Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+            "EvaluateOpportunity", type, timing, titan, evidence, boundary, "state", "progress",
+            59, 59, 1234.0, 987.0);
+        True((bool)Field(admitted, "Admitted"),
+            "exact same-state proof may admit the valuable first Basic reward");
+        Near(475.0, Number(admitted, "TotalChallengeUpperSeconds"),
+            "route includes clear, full current-run recovery, ordinary-rebirth opportunity, and Titan loss");
+        Near(1000.0, Number(admitted, "ContinuationLowerBoundSeconds"),
+            "admission compares against the same objective's continuation lower bound");
+
+        Set(evidence, "RecoveredAttackNumberLowerBound", 1233.0);
+        var numberLoss = Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+            "EvaluateOpportunity", type, timing, titan, evidence, boundary, "state", "progress",
+            59, 59, 1234.0, 987.0);
+        True(!(bool)Field(numberLoss, "Admitted"),
+            "recovery below either captured Number multiplier holds");
+        Set(evidence, "RecoveredAttackNumberLowerBound", 1234.0);
+
+        Set(evidence, "ContinuationLowerBoundSeconds", 475.0);
+        var tie = Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+            "EvaluateOpportunity", type, timing, titan, evidence, boundary, "state", "progress",
+            59, 59, 1234.0, 987.0);
+        True(!(bool)Field(tie, "Admitted"), "a tie cannot beat continuing");
+        Set(evidence, "ContinuationLowerBoundSeconds", 1000.0);
+
+        foreach (var gate in new[] {"TitanBoundaryClear", "FruitBoundaryClear", "BloodBoundaryClear"})
+        {
+            Set(boundary, gate, false);
+            var held = Call("NGUInjector.Autopilot.ChallengeStrategyPlanner",
+                "EvaluateOpportunity", type, timing, titan, evidence, boundary,
+                "state", "progress", 59, 59, 1234.0, 987.0);
+            True(!(bool)Field(held, "Admitted"),
+                gate + " is part of admission, not only Apply");
+            Set(boundary, gate, true);
+        }
+    }
+
+    private static void RouteProofProducer()
+    {
+        var type = ChallengeType(0);
+        var bounds = New("NGUInjector.Autopilot.ChallengeRouteBoundResult");
+        Set(bounds, "ModelComplete", true);
+        Set(bounds, "Provenance", EnumValue(
+            "NGUInjector.Autopilot.ChallengeRouteBoundProvenance", "DeterministicCopiedState"));
+        Set(bounds, "ClearUpperSeconds", 100.0);
+        Set(bounds, "RecoveryUpperSeconds", 200.0);
+        Set(bounds, "ForegoneRebirthOpportunityUpperSeconds", 25.0);
+        Set(bounds, "ContinuationLowerBoundSeconds", 1000.0);
+        Set(bounds, "RecoveredBossId", 59);
+        Set(bounds, "RecoveredAttackNumberLowerBound", 1234.0);
+        Set(bounds, "RecoveredDefenseNumberLowerBound", 987.0);
+        Set(bounds, "ObjectiveSignature", "same terminal checkpoint");
+        Set(bounds, "StartStateSignature", "copied-start");
+        Set(bounds, "AllocationSignature", "allocation-v1");
+        Set(bounds, "ResetSequenceSignature", "hard-basic-v1");
+        var accepted = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 0, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
+        True((bool)Field(accepted, "Recorded"),
+            "finite deterministic first-Basic proof can cross the production boundary");
+        Near(375.0, Number(accepted, "TotalChallengeUpperSeconds"),
+            "producer prices clear, recovery, foregone rebirth, and Titan clocks");
+        var proof = Field(accepted, "Proof");
+        Equal(57, Convert.ToInt32(Field(proof, "ExactTarget")),
+            "producer retains exact first-Basic target");
+        Near(25.0, Number(proof, "ForegoneRebirthOpportunityUpperSeconds"),
+            "producer retains explicit ordinary-rebirth opportunity cost");
+        foreach (var typeIndex in new[] {0, 1, 4, 8, 9, 10})
+        {
+            var safe = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+                ChallengeType(typeIndex), 0, ExpectedTarget(typeIndex, 0),
+                59, 59, 1234.0, 987.0, 50L, bounds);
+            True((bool)Field(safe, "Recorded"),
+                Types[typeIndex] + " shares the audited hard-Normal proof boundary");
+        }
+
+        var noModel = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 0, 57, 59, 59, 1234.0, 987.0, 50L, null);
+        True(!(bool)Field(noModel, "Recorded"),
+            "missing model output leaves challenge authority dormant");
+        Set(bounds, "ClearUpperSeconds", 0.0);
+        var zeroTime = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 0, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
+        True(!(bool)Field(zeroTime, "Recorded"),
+            "boss already past target cannot become a zero-second clear bound");
+        Set(bounds, "ClearUpperSeconds", 100.0);
+
+        Set(bounds, "ContinuationLowerBoundSeconds", 375.0);
+        var tie = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 0, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
+        True(!(bool)Field(tie, "Recorded"),
+            "production producer requires strict improvement over continuing");
+        Set(bounds, "ContinuationLowerBoundSeconds", 1000.0);
+
+        Set(bounds, "RecoveredDefenseNumberLowerBound", 986.0);
+        var numberLoss = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 0, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
+        True(!(bool)Field(numberLoss, "Recorded"),
+            "production producer rejects incomplete current-Number recovery");
+        Set(bounds, "RecoveredDefenseNumberLowerBound", 987.0);
+
+        Set(bounds, "Provenance", EnumValue(
+            "NGUInjector.Autopilot.ChallengeRouteBoundProvenance", "Unknown"));
+        var unknown = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 0, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
+        True(!(bool)Field(unknown, "Recorded"),
+            "unknown/empirical provenance cannot authorize production capture");
     }
 
     private static void IntentSelection()

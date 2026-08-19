@@ -7,10 +7,12 @@ using NGUInjector.Autopilot;
 FILE PURPOSE
 
 AdventureCollectionPlanner converts fightable zones and Item List state into permanent MAXX debt.
-It takes stronger forward gear first, then backfills older sets, known Bonus Accessories, and
-discovered equipment. It also owns collection-aware inventory pressure and protection queries.
-Drop-source tables are audited from LootDrop; unknown/misc IDs are filtered by native item type.
-Never treat a set as disposable until its game completion flag is confirmed.
+It takes stronger forward gear first, then backfills older sets. Optional accessories and rare
+equipment remain protected collection debt, but own Adventure only when their completed physical
+copy has a proven loadout payoff; otherwise ITOPOD may outrank them. It also owns collection-aware
+inventory pressure and protection queries. Drop-source tables are audited from LootDrop;
+unknown/misc IDs are filtered by native item type. Never treat a set as disposable until its game
+completion flag is confirmed.
 */
 namespace NGUInjector.Managers
 {
@@ -33,6 +35,9 @@ namespace NGUInjector.Managers
         internal double UsefulBoostDebt;
         internal double UsefulBoostGain;
         internal double SetRewardNativeMagnitude;
+        internal bool StrategicDebt;
+        internal double OptionalProgressionGain;
+        internal string OptionalProgressionTarget = string.Empty;
         internal string UsefulBoostTarget = string.Empty;
         internal string CadenceSignature = string.Empty;
         internal double ObservedKillSeconds = -1.0;
@@ -115,6 +120,17 @@ namespace NGUInjector.Managers
             result.UsefulBoostDebt = needsNormalEnemyBoosts ? usefulBoostDebt : 0.0;
             result.UsefulBoostGain = needsNormalEnemyBoosts ? usefulBoostGain : 0.0;
             result.UsefulBoostTarget = needsNormalEnemyBoosts ? usefulBoostTarget : string.Empty;
+            var optionalGain = 0.0;
+            var optionalTarget = string.Empty;
+            var optionalProgression = !selected.CoreSetIncomplete
+                                      && TryGetOptionalProgressionValue(c, selected,
+                                          out optionalGain, out optionalTarget);
+            result.OptionalProgressionGain = optionalProgression ? optionalGain : 0.0;
+            result.OptionalProgressionTarget = optionalProgression
+                ? optionalTarget : string.Empty;
+            result.StrategicDebt = StrategicDebtOwnsAdventure(selected.CoreSetIncomplete,
+                result.SetRewardNativeMagnitude, result.UsefulBoostGain,
+                result.OptionalProgressionGain);
 
             // Bosses are the fast source of duplicate set pieces and early-zone EXP, while ordinary
             // enemies are the source of Power/Toughness boost drops. Pure boss sniping is therefore
@@ -147,9 +163,45 @@ namespace NGUInjector.Managers
                       + " have a proven complete-loadout gain; unclaimed set reward is " + result.SetReward
                     : (result.IsBackfill ? "Full-clearing an older incomplete MAXX set because no source-derived boss-snipe advantage is proven; unclaimed set reward is " + result.SetReward
                         : "Full-clearing the newest incomplete MAXX set because no source-derived boss-snipe advantage is proven; unclaimed set reward is " + result.SetReward)
-                : (result.IsBackfill ? "Backtracking for permanent Item List MAXX collection debt"
-                    : "Collecting non-set equipment and the zone bonus accessory before moving to optional farming");
+                : optionalProgression
+                    ? "Optional MAXX debt is eligible for route comparison because completed "
+                      + optionalTarget + " has a proven loadout gain of "
+                      + optionalGain.ToString("0.######")
+                    : "Optional MAXX debt is tracked and protected, but has no proven equipped, set-reward, or progression value; it does not outrank ITOPOD";
             return result;
+        }
+
+        internal static bool StrategicDebtOwnsAdventure(bool coreSetIncomplete,
+            double setRewardMagnitude, double usefulBoostGain,
+            double optionalProgressionGain)
+        {
+            return coreSetIncomplete || setRewardMagnitude > 0.0
+                   || usefulBoostGain > 0.0 || optionalProgressionGain > 1e-7;
+        }
+
+        private static bool TryGetOptionalProgressionValue(Character c, ZoneDebt debt,
+            out double gain, out string target)
+        {
+            gain = 0.0;
+            target = string.Empty;
+            if (c == null || debt == null || debt.Items == null) return false;
+            foreach (var state in debt.Items)
+            {
+                if (state == null) continue;
+                var sources = state.Sources();
+                if (sources.Length == 0 || sources.Any(x => x.IsCoreSetItem)) continue;
+                foreach (var copy in PhysicalCopiesFor(c, state.ItemId))
+                {
+                    var equipment = copy.Identity as Equipment;
+                    if (equipment == null) continue;
+                    var projected = ProgressionLoadoutOptimizer.MaxxedFullyBoostedLoadoutGain(
+                        c, equipment);
+                    if (projected <= gain) continue;
+                    gain = projected;
+                    target = ItemName(c, state.ItemId);
+                }
+            }
+            return gain > 1e-7;
         }
 
         internal static int FreeInventorySlots(Character c)

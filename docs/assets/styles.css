@@ -2,11 +2,11 @@
 FILE PURPOSE
 
 This stylesheet adds NGU-specific information architecture to the shared JWKNT v1 foundation.
-It keeps a very large game-state reference calm through typographic hierarchy, hairline structure,
-native disclosure controls, compact tables, and semantic reset/transaction states. Held, Pending,
-and Quarantined are deliberately different visual states. Rebirth, challenge, difficulty, and END
-decisions remain scannable as dedicated strips, while repeated action failures stay
-visually distinct without overwhelming the broader reference. Responsive layouts hide no data.
+It keeps a very large game-state reference calm through plain headings, typographic hierarchy,
+hairline structure, native disclosure controls, compact tables, and semantic reset states. The
+default view emphasizes game facts; epoch/hash, root, scheduler, and authority diagnostics share
+one collapsed technical disclosure. Held, Pending, and Quarantined remain deliberately distinct,
+and responsive layouts hide no data.
 */
 
 :root {
@@ -110,7 +110,16 @@ body { padding-bottom: 40px; font-size: 15px; line-height: 1.5; }
 .decision-strip > div:last-child { padding-right: 0; border-right: 0; }
 .decision-strip dd { color: var(--blue-dark); font-size: 12px; font-weight: 600; }
 .rebirth-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px; margin: 15px 0 0; }
+.rebirth-details { margin-top: 14px; }
+.rebirth-details .section-note { margin-bottom: 0; }
 .challenge-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; margin: 15px 0 0; }
+
+.progression-horizons { margin-top: 0; padding-top: 0; border-top: 0; }
+.technical-diagnostics { margin-top: 20px; padding: 0 14px 14px; border: 1px solid var(--line-strong); background: var(--surface); }
+.technical-diagnostics > summary { margin: 0 -14px; padding: 11px 14px; }
+.technical-diagnostics[open] > summary { margin-bottom: 14px; border-bottom: 1px solid var(--line-strong); }
+.technical-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 18px; }
+.technical-diagnostics .execution-grid { margin-top: 4px; }
 
 .execution-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 34px; }
 .execution-card { min-width: 0; padding: 13px 0 0; border-top: 2px solid var(--line-strong); }

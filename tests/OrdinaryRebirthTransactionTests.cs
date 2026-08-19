@@ -81,6 +81,11 @@ internal static class OrdinaryRebirthTransactionTests
         input = Ready(); input.NoRebirthChallenge = true; AssertHeld(input, "No Rebirth");
         input = Ready(); input.DifficultySelectorClear = false; AssertHeld(input, "difficulty");
         input = Ready(); input.TitanBoundaryClear = false; AssertHeld(input, "Titan");
+        input = Ready(); input.TitanBoundaryClear = false;
+        input.TitanBoundaryReason = "typed Titan 3 commitment is still active";
+        var typedTitan = OrdinaryRebirthGate.Evaluate(input);
+        Assert(!typedTitan.Ready && typedTitan.Reason == input.TitanBoundaryReason,
+            "typed Titan interlock reason reaches the final rebirth gate unchanged");
         input = Ready(); input.HarvestBoundaryClear = false; AssertHeld(input, "mature fruit");
         input = Ready(); input.BloodBoundaryClear = false; AssertHeld(input, "Blood");
         input = Ready(); input.GrbWindowClear = false; AssertHeld(input, "GRB");
@@ -104,8 +109,12 @@ internal static class OrdinaryRebirthTransactionTests
 
         Assert(config.IndexOf("config.AllowRebirths = false;", StringComparison.Ordinal) < 0,
             "deployment ceiling does not erase explicit ordinary-rebirth authority");
-        Assert(config.IndexOf("config.AllowChallenges = false;", StringComparison.Ordinal) >= 0,
-            "challenge entry remains independently fail-closed");
+        Assert(config.IndexOf("config.AllowChallenges = false;", StringComparison.Ordinal) < 0,
+            "deployment normalization preserves explicit typed challenge authority");
+        Assert(config.IndexOf("config.ManageMoneyPit = false;", StringComparison.Ordinal) < 0
+               && config.IndexOf("config.AllowMoneyPitExecution = false;",
+                   StringComparison.Ordinal) < 0,
+            "deployment normalization preserves explicit typed Money Pit authority");
         Assert(main.IndexOf("ExecuteOrdinaryRebirth(mutationRoot)",
                    StringComparison.Ordinal) >= 0,
             "Main dispatches ordinary rebirth only through the caller-owned root");
@@ -132,6 +141,29 @@ internal static class OrdinaryRebirthTransactionTests
                    StringComparison.Ordinal) >= 0
                && transaction.IndexOf("plan.RebirthRecoveryMode", StringComparison.Ordinal) >= 0,
             "typed ordinary final admission preserves recovery mode and finite-route evidence");
+        var firstPreview = transaction.IndexOf(
+            "root.ExecuteChild(new RebirthPreviewIntent(character))", StringComparison.Ordinal);
+        var policyPreview = transaction.IndexOf(
+            "var preBloodPolicy = EvaluateLive", StringComparison.Ordinal);
+        var bloodSpend = transaction.IndexOf(
+            "root.ExecuteChild(new RebirthBloodSpendIntent(character))",
+            StringComparison.Ordinal);
+        var secondPreview = transaction.IndexOf(
+            "post-Blood rebirth preview", StringComparison.Ordinal);
+        Assert(firstPreview >= 0 && policyPreview > firstPreview && bloodSpend > policyPreview
+               && secondPreview > bloodSpend,
+            "Blood is spent only after recovery/value admission and is followed by a fresh native preview");
+        Assert(transaction.IndexOf(
+                   "_character.bloodSpells.castRebirthSpell(before.Blood)",
+                   StringComparison.Ordinal) >= 0
+               && transaction.IndexOf("after.Blood == 0.0", StringComparison.Ordinal) >= 0
+               && transaction.IndexOf("after.RebirthPower == expectedPower",
+                   StringComparison.Ordinal) >= 0,
+            "typed boundary Blood spend proves exact full-pool debit and rebirth-power credit");
+        Assert(transaction.IndexOf(
+                   "before.Blood >= MechanicsEndgame.EndBloodCost",
+                   StringComparison.Ordinal) >= 0,
+            "ordinary NUMBER spend cannot destroy a fully-funded END Blood delivery");
         Assert(legacyBoundary.IndexOf("minimumNumberRatio, recoveryMode, resetRouteEtaSeconds",
                    StringComparison.Ordinal) >= 0
                && legacyBoundary.IndexOf("minimumNumberRatio, false, -1, -1",

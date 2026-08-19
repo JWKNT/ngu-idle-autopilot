@@ -25,6 +25,10 @@ Inputs and outputs: Inputs are live Character/Adventure/PlayerController/EnemyAI
 settings, Titan descriptors, and controller button readiness. Outputs are native zone/toggle/move
 calls, recovery/hold telemetry, fight samples, and loadout-lock completion signals.
 
+ITOPOD is a continuous native floor state: ordinary recovery never exits it because re-entry resets
+the ten-kill counter. Enemy-free floor boundaries may spend ready Heal/Hyper Regen moves in place;
+only a native defeat may force Safe Zone recovery.
+
 Invariants and safety: Regular Attack unlock is row 0 >= 5,000. A Walderp command permits exactly
 the requested move when Walderp Says and only a different damaging move otherwise; no buff or MOVE
 69 may consume that response. Three-second Block is reserved for a bounded near-impact window while
@@ -91,6 +95,14 @@ namespace NGUInjector.Managers
             new Dictionary<string, FightSample>();
 
         internal string RecoveryReason { get; private set; } = string.Empty;
+
+        internal bool HasTerminalLethalReservation(int titanId)
+        {
+            if (titanId != 13 && titanId != 14) return false;
+            var reservation = _terminalReservation;
+            return reservation != null && !reservation.Fired
+                   && reservation.Zone == TitanMechanics.Describe(titanId).Zone;
+        }
 
         internal float RecoveryTargetHP
         {
@@ -1188,7 +1200,11 @@ namespace NGUInjector.Managers
                     // improvement without discarding any live enemy or special target.
                     ProgressionLoadoutOptimizer.Manage();
 
-                    if (recoverHealth && NeedsRecoveryForNextFight())
+                    // Safe-Zone re-entry restarts ITOPOD at its configured range start and clears
+                    // the native ten-kill counter. Never turn a low-HP reading into a voluntary
+                    // exit there; the bounded route proof plus the enemy-free Heal/Hyper Regen
+                    // path below owns recovery, while an actual defeat still reconciles normally.
+                    if (recoverHealth && zone != 1000 && NeedsRecoveryForNextFight())
                     {
                         Main.LogAction("RECOVERY", RecoveryReason + ": HP "
                             + Math.Floor(_character.adventure.curHP) + "/"
@@ -1201,6 +1217,12 @@ namespace NGUInjector.Managers
                 _fightTimer = 0;
                 if (IsTerminalTitanZone(zone) && _terminalReservation != null)
                     return;
+                if (zone == 1000 && _character.adventureController.itopodKillCount == 0
+                    && GetHPPercentage() < .95)
+                {
+                    if (CastHeal()) return;
+                    if (CastHyperRegen()) return;
+                }
                 if (!precastBuffs && bossOnly)
                 {
                     if (!ChargeActive())

@@ -13,7 +13,11 @@ keys, quest drops, END pieces, and exact objects referenced by the optimizer are
 Every merge is performed one physical source at a time; native saved-loadout slot references are
 retargeted before deletion and verified afterward, while an optimizer-authoritative source is never
 retargeted. Trash and exact filtering require confirmed Item List MAXX plus retained physical-copy
-demand. The native boost auto-transform is forced off until all Item List IDs 1-39 are MAXXED.
+demand. The native boost auto-transform is forced off until all Item List IDs 1-39 are MAXXED, but
+physical boost drops are immediate progression fuel: full automation unlocks and applies them to
+objective-ranked strongest gear/Cube instead of hoarding arbitrary locked boost objects.
+State-machine equipment retains the exact simultaneous physical-copy demand, not every duplicate:
+one unfinished-clue Stick is preserved while a weaker surplus copy may be reclaimed.
 
 Inputs are live Inventory/InventoryController state, the build-pinned native binding registry,
 autopilot settings, and exact physical Equipment references. Outputs are verified native mutations
@@ -45,12 +49,40 @@ namespace NGUInjector.Managers
         Cards
     }
 
+    internal enum ProgressionConsumableKind
+    {
+        GiantSeed,
+        Wandoos98,
+        WandoosXL
+    }
+
+    internal sealed class ProgressionConsumableCandidate
+    {
+        internal readonly ProgressionConsumableKind Kind;
+        internal readonly Equipment Identity;
+        internal readonly int Slot;
+        internal readonly int ItemId;
+        internal readonly int Level;
+
+        internal ProgressionConsumableCandidate(ProgressionConsumableKind kind,
+            Equipment identity, int slot)
+        {
+            Kind = kind;
+            Identity = identity;
+            Slot = slot;
+            ItemId = identity == null ? 0 : identity.id;
+            Level = identity == null ? -1 : identity.level;
+        }
+    }
+
     internal static class InventoryTopologyPolicy
     {
         private static readonly int[] PendantTransformChain =
             {53, 76, 94, 142, 170, 229, 295, 388, 430, 504, 480};
         private static readonly int[] LootyTransformChain =
             {67, 128, 169, 230, 296, 389, 431, 505, 485};
+        private static readonly int[] FlubberTransformChain = {120, 121};
+        private static readonly int[] CaneTransformChain = {154, 159};
 
         internal static bool AllBoostEntriesMaxxed(IList<bool> itemMaxxed)
         {
@@ -94,12 +126,67 @@ namespace NGUInjector.Managers
             return true;
         }
 
-        internal static bool TryNextTransformItemId(int itemId, out int nextItemId)
+        internal static bool TryNextTransformItemId(int itemId, bool sadistic,
+            out int nextItemId)
         {
             nextItemId = NextInChain(PendantTransformChain, itemId);
             if (nextItemId > 0) return true;
             nextItemId = NextInChain(LootyTransformChain, itemId);
+            if (nextItemId > 0) return true;
+            nextItemId = NextInChain(FlubberTransformChain, itemId);
+            if (nextItemId > 0) return true;
+            nextItemId = NextInChain(CaneTransformChain, itemId);
+            if (nextItemId > 0) return true;
+            nextItemId = itemId == 195 && sadistic ? 506 : 0;
             return nextItemId > 0;
+        }
+
+        internal static bool IsAuditedBoost(int itemId, int nativePartType)
+        {
+            return itemId >= 1 && itemId <= 13 && nativePartType == 6
+                   || itemId >= 14 && itemId <= 26 && nativePartType == 7
+                   || itemId >= 27 && itemId <= 39 && nativePartType == 8;
+        }
+
+        internal static bool RequiresStateMachineCopy(int itemId, bool clueTwoComplete)
+        {
+            return itemId == 75 && !clueTwoComplete;
+        }
+
+        internal static bool StateMachineCopySatisfiedForFilter(int itemId,
+            bool clueTwoComplete, int ownedCopies, int requiredCopies)
+        {
+            return !RequiresStateMachineCopy(itemId, clueTwoComplete)
+                   || ownedCopies >= Math.Max(1, requiredCopies);
+        }
+
+        internal static bool StateMachineCopyIsSurplus(int itemId,
+            bool clueTwoComplete, int ownedCopies, int requiredCopies)
+        {
+            return !RequiresStateMachineCopy(itemId, clueTwoComplete)
+                   || ownedCopies > Math.Max(1, requiredCopies);
+        }
+
+        internal static long Wandoos98RequiredLevel(bool enabled, long osLevel,
+            bool installed, double installSeconds)
+        {
+            if (osLevel < 0 || osLevel >= 100) return -1;
+            if (!enabled) return 0;
+            return installed || installSeconds >= 86400.0 ? osLevel + 1 : -1;
+        }
+
+        internal static long WandoosXlRequiredLevel(bool enabled, long xlLevel)
+        {
+            if (!enabled || xlLevel < 0 || xlLevel >= 100) return -1;
+            return xlLevel == 0 ? 0 : xlLevel + 1;
+        }
+
+        internal static long GiantSeedGain(bool yggdrasilEnabled, int itemLevel)
+        {
+            if (itemLevel < 0) throw new ArgumentOutOfRangeException("itemLevel");
+            if (!yggdrasilEnabled) return 1L;
+            return Math.Max(1L, Math.Min(200L,
+                (long)Math.Floor(itemLevel * (1.0 + itemLevel / 100f))));
         }
 
         private static int NextInChain(int[] chain, int itemId)
@@ -230,14 +317,101 @@ namespace NGUInjector.Managers
         }
 
         /*
+        ONE-ITEM PROGRESSION-CONSUMABLE ADMISSION
+
+        Giant Seed and both Wandoos disks change permanent controller state while deleting or
+        decrementing one physical object. They therefore execute outside aggregate maintenance,
+        one exact identity per root. Native removable state, configured/native/optimizer references,
+        level requirements, install readiness, and level-100 caps are checked before the pinned
+        consumer is called. The owning typed intent verifies the exact feature/resource transition.
+        */
+        internal bool TrySelectProgressionConsumable(out ProgressionConsumableCandidate selected)
+        {
+            selected = null;
+            if (_character == null || _character.inventory == null
+                || _character.inventory.inventory == null || _controller == null
+                || _controller.midDrag)
+                return false;
+            var candidates = _character.inventory.inventory
+                .Select((item, slot) => new {Item = item, Slot = slot})
+                .Where(x => x.Item != null && x.Item.removable
+                    && !ProgressionLoadoutOptimizer.IsAuthoritativeItem(x.Item)
+                    && !IsNativeLoadoutReference(_character, x.Slot)
+                    && !IsConfiguredLoadoutItem(x.Item.id)).ToArray();
+
+            var seed = candidates.Where(x => x.Item.id == 92
+                    && (!_character.settings.yggdrasilOn || x.Item.level >= 100))
+                .OrderBy(x => x.Item.level).ThenBy(x => x.Slot).FirstOrDefault();
+            if (seed != null)
+            {
+                selected = new ProgressionConsumableCandidate(
+                    ProgressionConsumableKind.GiantSeed, seed.Item, seed.Slot);
+                return true;
+            }
+
+            var wandoosRequired = InventoryTopologyPolicy.Wandoos98RequiredLevel(
+                _character.settings.wandoos98On, _character.wandoos98.OSlevel,
+                _character.wandoos98.installed,
+                _character.wandoos98.installTime.totalseconds);
+            if (wandoosRequired >= 0)
+            {
+                var disk = candidates.Where(x => x.Item.id == 66
+                        && x.Item.level >= wandoosRequired)
+                    .OrderBy(x => x.Item.level).ThenBy(x => x.Slot).FirstOrDefault();
+                if (disk != null)
+                {
+                    selected = new ProgressionConsumableCandidate(
+                        ProgressionConsumableKind.Wandoos98, disk.Item, disk.Slot);
+                    return true;
+                }
+            }
+
+            var xlRequired = InventoryTopologyPolicy.WandoosXlRequiredLevel(
+                _character.settings.wandoos98On, _character.wandoos98.XLLevels);
+            if (xlRequired >= 0)
+            {
+                var disk = candidates.Where(x => x.Item.id == 163
+                        && x.Item.level >= xlRequired)
+                    .OrderBy(x => x.Item.level).ThenBy(x => x.Slot).FirstOrDefault();
+                if (disk != null)
+                {
+                    selected = new ProgressionConsumableCandidate(
+                        ProgressionConsumableKind.WandoosXL, disk.Item, disk.Slot);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        internal bool HasProgressionConsumable()
+        {
+            ProgressionConsumableCandidate ignored;
+            return TrySelectProgressionConsumable(out ignored);
+        }
+
+        internal bool ConsumeProgressionConsumable(ProgressionConsumableCandidate selected)
+        {
+            if (selected == null || selected.Identity == null || selected.Slot < 0
+                || selected.Slot >= _character.inventory.inventory.Count
+                || !ReferenceEquals(_character.inventory.inventory[selected.Slot], selected.Identity)
+                || !selected.Identity.removable)
+                return false;
+            var controller = ItemControllerForOrdinarySlot(selected.Slot);
+            var invocation = controller == null ? null
+                : CreateNativeMutations().ConsumeItem(controller);
+            return invocation != null && invocation.ReturnedNormally;
+        }
+
+        /*
         CONSERVATIVE ONE-SECOND MAINTENANCE SWEEP
 
         This is the typed transaction entrypoint used by ProgressionTransactions. It deliberately
         excludes progression-key consumption, quest turn-in, END placement, Daycare, loadout swaps,
         and any broad native merge/trash operation. Exact-ID filters are reconciled first; one
-        source-audited, already-MAXXED Pendant/Looty may advance to its exact successor; reference-aware
-        merges then collapse development copies. Only already-MAXXED boost IDs may be consumed, and
-        finally one independently proven redundant MAXXED item may enter the native recovery slot.
+        source-audited, already-MAXXED transform may advance to its exact successor; reference-aware
+        merges then collapse development copies. Every physical boost is unlocked and consumed into
+        objective-ranked gear/Cube; A Stick is unlocked for its exact clue equip while ID retention
+        still protects it. Finally one independently proven redundant MAXXED item may enter recovery.
         Every helper retains its own exact native delta checks and the outer intent verifies Item
         List/contribution monotonicity and physical inventory bounds.
         */
@@ -255,7 +429,8 @@ namespace NGUInjector.Managers
             converted = _character.inventory.GetConvertedInventory().ToArray();
             MergeBoosts(converted);
 
-            ConsumeOnlyMaxxedBoosts();
+            NormalizeAutomationLocks();
+            ConsumeAllBoosts();
             ManageBoostConversion();
             TrashProvenRedundantItem();
         }
@@ -263,7 +438,7 @@ namespace NGUInjector.Managers
         /*
         MAXXED TRANSFORM-CHAIN TRANSACTION
 
-        Pendant and Looty level-100 consumption is not disposal: on audited game build 1.260 it
+        Pendant, Looty, Flubber, Cane, and Sadistic Gerbil level-100 consumption is not disposal: on audited game build 1.260 it
         replaces the exact source with the next ID in the native chain. The former handler lived only
         in a disconnected legacy block, so completed chain pieces accumulated forever (and a fresh
         duplicate could not merge into the level-100 object). Advance at most one ordinary-inventory
@@ -288,7 +463,9 @@ namespace NGUInjector.Managers
                          && x.slot >= 0 && x.slot < inv.inventory.Count))
             {
                 int successorId;
-                if (!InventoryTopologyPolicy.TryNextTransformItemId(candidate.id, out successorId))
+                if (!InventoryTopologyPolicy.TryNextTransformItemId(candidate.id,
+                        _character.settings.rebirthDifficulty >= difficulty.sadistic,
+                        out successorId))
                     continue;
                 if (candidate.id >= list.itemMaxxed.Count || !list.itemMaxxed[candidate.id])
                     continue;
@@ -318,34 +495,24 @@ namespace NGUInjector.Managers
                 Main.LogAction(confirmed ? "INVENTORY" : "REJECTED", LastTransformDecision);
                 return;
             }
-            LastTransformDecision = "No unreferenced MAXXED Pendant/Looty transform is ready";
+            LastTransformDecision = "No unreferenced MAXXED audited transform is ready";
         }
 
-        private void ConsumeOnlyMaxxedBoosts()
+        private void NormalizeAutomationLocks()
         {
-            var list = _character.inventory.itemList;
-            if (list == null || list.itemMaxxed == null) return;
-            var protectedBoosts = _character.inventory.inventory
-                .Where(x => x != null && x.id > 0 && x.id < 40
-                            && (x.id >= list.itemMaxxed.Count || !list.itemMaxxed[x.id]))
-                .Select(x => new {Item = x, Removable = x.removable}).ToArray();
-            try
-            {
-                // Native apply-all and Cube helpers respect locks. Temporarily lock every
-                // un-MAXXED boost identity so collection progress cannot be converted into stats.
-                foreach (var entry in protectedBoosts) entry.Item.removable = false;
-                var converted = _character.inventory.GetConvertedInventory().ToArray();
-                var targets = GetImmediateBoostSlots(converted);
-                BoostInventory(targets);
-                BoostInfinityCubeToSoftcaps();
-                BoostInfinityCube();
-            }
-            finally
-            {
-                foreach (var entry in protectedBoosts)
-                    if (_character.inventory.inventory.Any(x => ReferenceEquals(x, entry.Item)))
-                        entry.Item.removable = entry.Removable;
-            }
+            foreach (var item in _character.inventory.inventory.Where(x => x != null
+                         && (InventoryTopologyPolicy.IsAuditedBoost(x.id, (int)x.type)
+                             || InventoryTopologyPolicy.RequiresStateMachineCopy(x.id,
+                                 _character.adventure.clue2Complete))))
+                item.removable = true;
+        }
+
+        private void ConsumeAllBoosts()
+        {
+            var converted = _character.inventory.GetConvertedInventory().ToArray();
+            BoostInventory(GetImmediateBoostSlots(converted));
+            BoostInfinityCubeToSoftcaps();
+            BoostInfinityCube();
         }
 
         internal ih[] GetBoostSlots(ih[] ci)
@@ -386,15 +553,11 @@ namespace NGUInjector.Managers
             var optimized = GetProgressionBoostSlots(ci).ToArray();
             result.AddRange(optimized);
 
-            // Locked, unequipped gear can be useful later but is speculative. The
-            // caller gives active/explicit gear first claim, then brings the always-
-            // on Cube to its full-value softcap, then returns here for this tier.
-            if (includeSpeculativeLockedItems)
-            {
-                var invItems = ci.Where(x => x.locked && x.equipment.isEquipment()
-                    && !Settings.BoostBlacklist.Contains(x.id) && !Settings.PriorityBoosts.Contains(x.id));
-                result = result.Concat(invItems).ToList();
-            }
+            // A user lock is retention state, not proof that an obsolete item deserves finite
+            // boosts.  Do not append every locked object after the objective-ranked candidates:
+            // that old tier drained Power/Toughness/Special into arbitrary keepsakes after the
+            // strongest combat/progression set and Cube had taken only their compatible share.
+            // Explicit PriorityBoosts remains the intentional override above.
 
             //Make sure we filter out non-equips again, just in case one snuck into priorityboosts
             return result.Where(x => x.equipment.isEquipment())
@@ -406,7 +569,8 @@ namespace NGUInjector.Managers
         {
             internal ih Item;
             internal BoostsNeeded Needed;
-            internal double Gain;
+            internal double ImmediateGain;
+            internal double MaxxedGain;
             internal double RelevantNeed;
             internal double Score;
         }
@@ -419,11 +583,14 @@ namespace NGUInjector.Managers
 
             var inventory = convertedInventory.ToArray();
             var powerAvailable = inventory.Any(x => x != null && x.equipment != null
-                && !x.locked && x.equipment.type == part.atkBoost);
+                && !x.locked && InventoryTopologyPolicy.IsAuditedBoost(x.id,
+                    (int)x.equipment.type) && x.equipment.type == part.atkBoost);
             var toughnessAvailable = inventory.Any(x => x != null && x.equipment != null
-                && !x.locked && x.equipment.type == part.defBoost);
+                && !x.locked && InventoryTopologyPolicy.IsAuditedBoost(x.id,
+                    (int)x.equipment.type) && x.equipment.type == part.defBoost);
             var specialAvailable = inventory.Any(x => x != null && x.equipment != null
-                && !x.locked && x.equipment.type == part.specBoost);
+                && !x.locked && InventoryTopologyPolicy.IsAuditedBoost(x.id,
+                    (int)x.equipment.type) && x.equipment.type == part.specBoost);
             var anyBoost = powerAvailable || toughnessAvailable || specialAvailable;
 
             var candidates = c.inventory.GetConvertedEquips().Concat(inventory)
@@ -439,18 +606,23 @@ namespace NGUInjector.Managers
                           + (toughnessAvailable ? needed.Toughness : 0m)
                           + (specialAvailable ? needed.Special : 0m)
                         : needed.Total();
-                    var gain = ProgressionLoadoutOptimizer.AvailableBoostedLoadoutGain(c, x.equipment,
+                    var immediate = ProgressionLoadoutOptimizer.AvailableBoostedLoadoutGain(c, x.equipment,
                         powerAvailable, toughnessAvailable, specialAvailable);
+                    var maxxed = ProgressionLoadoutOptimizer.MaxxedFullyBoostedLoadoutGain(
+                        c, x.equipment);
                     return new BoostRoute
                     {
                         Item = x,
                         Needed = needed,
-                        Gain = gain,
+                        ImmediateGain = immediate,
+                        MaxxedGain = maxxed,
                         RelevantNeed = (double)relevant,
-                        Score = relevant > 0 ? gain / (double)relevant : 0.0
+                        Score = BoostDevelopmentScore(immediate, maxxed,
+                            (double)relevant)
                     };
                 })
-                .Where(x => x.Needed.Total() > 0 && x.Gain > 1e-7
+                .Where(x => x.Needed.Total() > 0
+                            && Math.Max(x.ImmediateGain, x.MaxxedGain) > 1e-7
                             && (!anyBoost || x.RelevantNeed > 0.0))
                 .OrderByDescending(x => x.Score)
                 .ThenByDescending(x => x.Item.equipment.bossRequired)
@@ -480,16 +652,33 @@ namespace NGUInjector.Managers
             LastBoostDecision = "Routing " + (kinds.Length == 0 ? "the next compatible boost" : kinds)
                                 + " to " + SanitizeName(first.Item.name) + ": "
                                 + first.RelevantNeed.ToString("0.##") + " relevant points complete a proven "
-                                + ProgressionLoadoutOptimizer.LastObjective + " loadout gain";
+                                + ProgressionLoadoutOptimizer.LastObjective + " loadout gain; immediate="
+                                + first.ImmediateGain.ToString("0.######") + ", MAXX projection="
+                                + first.MaxxedGain.ToString("0.######");
             return new[] {first}.Concat(candidates.Where(x => !ReferenceEquals(x.Item.equipment, first.Item.equipment)))
                 .Select(x => x.Item);
+        }
+
+        internal static double BoostDevelopmentScore(double immediateLoadoutGain,
+            double maxxedLoadoutGain, double compatiblePointsNeededNow)
+        {
+            if (double.IsNaN(immediateLoadoutGain) || double.IsInfinity(immediateLoadoutGain)
+                || double.IsNaN(maxxedLoadoutGain) || double.IsInfinity(maxxedLoadoutGain)
+                || double.IsNaN(compatiblePointsNeededNow)
+                || double.IsInfinity(compatiblePointsNeededNow)
+                || immediateLoadoutGain < 0.0 || maxxedLoadoutGain < 0.0
+                || compatiblePointsNeededNow <= 0.0)
+                return 0.0;
+            return Math.Max(immediateLoadoutGain, maxxedLoadoutGain)
+                   / compatiblePointsNeededNow;
         }
 
         internal void BoostInventory(ih[] boostSlots)
         {
             foreach (var item in boostSlots)
             {
-                var removableBefore = _character.inventory.inventory.Count(x => x.id > 0 && x.id < 40 && x.removable);
+                var removableBefore = _character.inventory.inventory.Count(x => x != null
+                    && InventoryTopologyPolicy.IsAuditedBoost(x.id, (int)x.type) && x.removable);
                 if (removableBefore == 0)
                     break;
                 var equipment = item.equipment;
@@ -497,7 +686,8 @@ namespace NGUInjector.Managers
                 var defenseBefore = equipment.curDefense;
                 var specialBefore = equipment.spec1Cur + equipment.spec2Cur + equipment.spec3Cur;
                 _controller.applyAllBoosts(item.slot);
-                var removableAfter = _character.inventory.inventory.Count(x => x.id > 0 && x.id < 40 && x.removable);
+                var removableAfter = _character.inventory.inventory.Count(x => x != null
+                    && InventoryTopologyPolicy.IsAuditedBoost(x.id, (int)x.type) && x.removable);
                 var confirmed = removableAfter < removableBefore || equipment.curAttack > attackBefore
                                 || equipment.curDefense > defenseBefore
                                 || equipment.spec1Cur + equipment.spec2Cur + equipment.spec3Cur > specialBefore;
@@ -573,14 +763,16 @@ namespace NGUInjector.Managers
 
         internal void BoostInfinityCube()
         {
-            var removableBefore = _character.inventory.inventory.Count(x => x.id > 0 && x.id < 40 && x.removable);
+            var removableBefore = _character.inventory.inventory.Count(x => x != null
+                && InventoryTopologyPolicy.IsAuditedBoost(x.id, (int)x.type) && x.removable);
             if (removableBefore == 0)
                 return;
             var powerBefore = _character.inventory.cubePower;
             var toughnessBefore = _character.inventory.cubeToughness;
             _controller.infinityCubeAll();
             _controller.updateInventory();
-            var removableAfter = _character.inventory.inventory.Count(x => x.id > 0 && x.id < 40 && x.removable);
+            var removableAfter = _character.inventory.inventory.Count(x => x != null
+                && InventoryTopologyPolicy.IsAuditedBoost(x.id, (int)x.type) && x.removable);
             var confirmed = removableAfter < removableBefore || _character.inventory.cubePower > powerBefore
                             || _character.inventory.cubeToughness > toughnessBefore;
             Main.LogAction(confirmed ? "INVENTORY" : "REJECTED",
@@ -674,7 +866,9 @@ namespace NGUInjector.Managers
 
         internal void MergeBoosts(ih[] ci)
         {
-            var grouped = ci.Where(x => x.id <= 39 && !_character.inventory.itemList.itemMaxxed[x.id])
+            var grouped = ci.Where(x => x != null && x.equipment != null
+                && InventoryTopologyPolicy.IsAuditedBoost(x.id, (int)x.equipment.type)
+                && !_character.inventory.itemList.itemMaxxed[x.id])
                 .GroupBy(x => x.id)
                 .Where(x => x.Count() > 1);
 
@@ -1299,16 +1493,23 @@ namespace NGUInjector.Managers
                 && _character.inventory.inventory[x.slot].removable
                 && !ProgressionLoadoutOptimizer.IsAuthoritativeItem(_character.inventory.inventory[x.slot])
                 && !IsNativeLoadoutReference(_character, x.slot) && !IsConfiguredLoadoutItem(x.id)
-                && (!_character.settings.wandoos98On
-                    || _character.wandoos98.installed && _character.wandoos98.installTime.totalseconds >= 86400
-                    && x.level >= _character.wandoos98.OSlevel + 1));
+                && InventoryTopologyPolicy.Wandoos98RequiredLevel(
+                    _character.settings.wandoos98On, _character.wandoos98.OSlevel,
+                    _character.wandoos98.installed,
+                    _character.wandoos98.installTime.totalseconds) >= 0
+                && x.level >= InventoryTopologyPolicy.Wandoos98RequiredLevel(
+                    _character.settings.wandoos98On, _character.wandoos98.OSlevel,
+                    _character.wandoos98.installed,
+                    _character.wandoos98.installTime.totalseconds));
             if (wandoos == null)
                 wandoos = ci.FirstOrDefault(x => x.slot >= 0 && x.id == 163
                     && _character.inventory.inventory[x.slot].removable
                     && !ProgressionLoadoutOptimizer.IsAuthoritativeItem(_character.inventory.inventory[x.slot])
                     && !IsNativeLoadoutReference(_character, x.slot) && !IsConfiguredLoadoutItem(x.id)
-                    && _character.settings.wandoos98On
-                    && (_character.wandoos98.XLLevels == 0 || x.level >= _character.wandoos98.XLLevels + 1));
+                    && InventoryTopologyPolicy.WandoosXlRequiredLevel(
+                        _character.settings.wandoos98On, _character.wandoos98.XLLevels) >= 0
+                    && x.level >= InventoryTopologyPolicy.WandoosXlRequiredLevel(
+                        _character.settings.wandoos98On, _character.wandoos98.XLLevels));
             if (wandoos != null)
             {
                 var osBefore = _character.wandoos98.OSlevel;
@@ -1709,7 +1910,9 @@ namespace NGUInjector.Managers
 
             var converted = _character.inventory.GetConvertedInventory();
             //If we have a boost locked, we want to stay on that until its maxxed
-            var lockedBoosts = converted.Where(x => x.id < 40 && x.locked).ToArray();
+            var lockedBoosts = converted.Where(x => x != null && x.equipment != null
+                && InventoryTopologyPolicy.IsAuditedBoost(x.id, (int)x.equipment.type)
+                && x.locked).ToArray();
             if (lockedBoosts.Any())
             {
                 // Only one auto-transform mode can be active.  Continue the first
@@ -1916,6 +2119,11 @@ namespace NGUInjector.Managers
             if (id >= _character.inventory.itemList.itemMaxxed.Count
                 || !_character.inventory.itemList.itemMaxxed[id])
                 return false;
+            // MAXX is permanent Item List progress, not permission to erase a unique utility
+            // profile. Retain every gear object with a native special cap; loadout optimization
+            // may need its Drop/respawn/resource effect long after its raw combat slot is obsolete.
+            if (item.spec1Cap > 0f || item.spec2Cap > 0f || item.spec3Cap > 0f)
+                return false;
             // A set-completion flag is the authoritative collection checkpoint. Even
             // if one piece's individual Item List entry is already MAXXED, retain all
             // drops from that source while another piece keeps the set incomplete.
@@ -1923,7 +2131,10 @@ namespace NGUInjector.Managers
             // its own merge material.
             if (AdventureCollectionPlanner.IsProtectedCollectionItem(_character, id))
                 return false;
-            if (_pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id)
+            if (!InventoryTopologyPolicy.StateMachineCopyIsSurplus(id,
+                    _character.adventure.clue2Complete, CurrentOwnedCopyCount(id),
+                    RequiredPhysicalCopyCount(id))
+                || _pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id)
                 || _filterExcludes.Contains(id) || _guffs.Contains(id)
                 || _mergeBlacklist.Contains(id) || _convertibles.Contains(id)
                 || EndgameDependencyModel.IsEndItem(id)
@@ -2022,6 +2233,17 @@ namespace NGUInjector.Managers
         private static int OwnedCopyCount(int id, IEnumerable<Equipment> owned)
         {
             return owned.Count(x => x != null && x.id == id);
+        }
+
+        private int CurrentOwnedCopyCount(int id)
+        {
+            var inv = _character.inventory;
+            var count = new[] {inv.head, inv.chest, inv.legs, inv.boots, inv.weapon, inv.weapon2}
+                .Count(x => x != null && x.id == id);
+            if (inv.accs != null) count += inv.accs.Count(x => x != null && x.id == id);
+            if (inv.inventory != null) count += inv.inventory.Count(x => x != null && x.id == id);
+            if (inv.daycare != null) count += inv.daycare.Count(x => x != null && x.id == id);
+            return count;
         }
 
         private static bool AllOwnedCopiesMaxxed(int id, IEnumerable<Equipment> owned)
@@ -2197,7 +2419,10 @@ namespace NGUInjector.Managers
                 return false;
             if (!AdventureCollectionPlanner.IsKnownCompletedOrdinaryItem(_character, id))
                 return false;
-            if (_pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id)
+            if (!InventoryTopologyPolicy.StateMachineCopySatisfiedForFilter(id,
+                    _character.adventure.clue2Complete, CurrentOwnedCopyCount(id),
+                    RequiredPhysicalCopyCount(id))
+                || _pendants.Contains(id) || _lootys.Contains(id) || _wandoos.Contains(id)
                 || _filterExcludes.Contains(id) || _guffs.Contains(id) || _mergeBlacklist.Contains(id)
                 || _convertibles.Contains(id) || EndgameDependencyModel.IsEndItem(id)
                 || id >= 278 && id <= 287)
