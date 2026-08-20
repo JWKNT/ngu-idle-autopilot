@@ -1029,6 +1029,14 @@ exposes no mutation endpoint.
       scheduler: { ...fallback.scheduler, ...(incoming.scheduler || {}) },
       bindings: { ...fallback.bindings, ...(incoming.bindings || {}) },
     };
+    // The raw state and server-normalized view arrive in the same envelope, but a dashboard
+    // server left running across a frontend update can still contain the previous formatter.
+    // For challenge continuation, the raw post-transaction Boss ETA is also newer than the
+    // planner's pre-transaction prose, so keep the client-derived countdown authoritative.
+    if (fallback.rebirth.actionLabel === "DEFERRED — continue to the next challenge Boss") {
+      observability.rebirth.actionLabel = fallback.rebirth.actionLabel;
+      observability.rebirth.reason = fallback.rebirth.reason;
+    }
     const age = Math.max(0, number(envelope.stateAgeSeconds, 9999));
     const live = s.synced && observability.transaction.complete && observability.identity.verifiedEnvelope && age <= 5;
     setConnection(live ? "live" : "stale", live
