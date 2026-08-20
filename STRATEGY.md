@@ -527,34 +527,30 @@ Immediately before rebirth, the bot checks again that:
 
 - the same run and checkpoint are still active;
 - the native Number preview is valid;
-- boss-record recovery policy allows the reset;
+- the selected reset still has positive total persistent-cycle value;
 - no executable Titan or active Titan cleanup is being lost;
-- no protected fight, quest, challenge, fruit, or progression transition owns the boundary;
+- no protected fight, quest, fruit, or progression transition owns the boundary;
+- the native No-Rebirth challenge is not active;
 - the remaining managed Blood can be settled;
 - the game is still synchronized.
 
 The bot then spends the exact remaining Blood pool on Blood NUMBER, checks the debit and permanent
 Number effect, refreshes the native preview, and performs the reset. Any uncertainty stops the reset.
 
-While the current run is still replaying toward the saved Boss record, the planner and the final
-reset gate use the same rule. A lower post-reset Number needs a finite, bounded Boss-0 replay proof
-that beats continuing. The early-game live planner does not yet have that complete replay model, so
-it waits for the first positive-value checkpoint whose native Attack and Defense Number previews
-are both at least as strong as the current run. That projection is limited to the rolling event
-horizon in which its one-Boss and current-allocation assumptions are valid. It reports an unknown
-ETA instead of extending a frozen snapshot into a precise-looking multi-day forecast. Fresh
-training, Blood, boss, and time changes are reevaluated every second and can move the safe checkpoint
-earlier.
+Rebirth replaces the current run's Number by design. A lower post-reset Number is therefore priced
+as one cost in the cycle alongside the lasting AP, EXP, cap compression, and repeatable Boss rewards;
+it is not a separate reason to remove the rebirth clock while replaying toward the saved Boss record.
+The planner always publishes its selected finite checkpoint and refreshes the estimate every second.
+When the countdown reaches zero, the typed transaction repeats the live safety checks and rebirths.
 
 Ordinary rebirth timing is not changed merely because Basic or another ordinary-rebirth-compatible
-challenge is active. Those challenges still use the same Number, event, and permanent-growth
-comparison as any other run. Only a challenge whose native rules explicitly forbid ordinary rebirths
-overrides the rebirth planner. When a reset is deferred because its native Number preview is weaker,
-the monitor reports the exact retained percentage; it does not attribute that decision to the active
-challenge or call it “calculating.”
-A Boss estimate is discarded when it crosses an earlier Basic Training unlock, because that unlock
-changes the resource-allocation topology. The monitor shows the unlock ETA as the next trustworthy
-recalculation boundary instead of publishing the stale, longer Boss extrapolation.
+challenge is active. Only the native No-Rebirth challenge suppresses the clock. Challenge-specific
+resource restrictions still affect allocation, but they do not replace the ordinary rebirth ETA.
+
+The Boss ETA is also always presented as a rolling estimate. It may begin rough because future
+training unlocks, drops, and allocation changes are not yet known. The bot recalculates it from the
+fresh live state every second, so it becomes more useful as the projected fight approaches instead
+of disappearing whenever an earlier model-changing event exists.
 
 ### MacGuffins, Beards, and long runs
 

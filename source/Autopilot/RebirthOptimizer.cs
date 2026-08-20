@@ -666,6 +666,7 @@ namespace NGUInjector.Autopilot
         private static int _lastElapsed = -1;
         private static int _stickyTarget = -1;
         private static string _stickyKind = string.Empty;
+        private static double _stickyScore = double.NaN;
 
         internal static RebirthRecommendation EarlyNormal(Character c)
         {
@@ -674,6 +675,7 @@ namespace NGUInjector.Autopilot
             {
                 _stickyTarget = -1;
                 _stickyKind = string.Empty;
+                _stickyScore = double.NaN;
             }
             _lastElapsed = elapsed;
 
@@ -728,18 +730,47 @@ namespace NGUInjector.Autopilot
             }
 
             var recoveryMode = c.bossID < c.highestBoss;
-            if (recoveryMode)
+
+            // A forecast which was admitted earlier in this run is a real lease, not a suggestion
+            // that may roll forward at zero. Re-evaluation may pull it earlier below, but once its
+            // countdown reaches zero this branch keeps the exact absolute target due until the
+            // verified ordinary-rebirth transaction consumes it or the game starts a new run.
+            if (_stickyKind == "first-positive-forecast" && _stickyTarget > 0
+                && elapsed >= _stickyTarget
+                && (!grbWindowRequired || _stickyTarget >= 3600))
             {
-                // The final mutation gate deliberately refuses a lower-Number record-recovery
-                // reset unless a bounded Boss-0 replay model supplies a finite route ETA. The
-                // live early-game planner does not yet own such a model, so add the first native
-                // preview which is non-regressive instead of selecting an earlier checkpoint
-                // which the irreversible gate can never execute.
-                var nonRegressiveAt = FindFirstNonRegressiveCheckpoint(c, minimum,
-                    elapsed, bossEta, horizon);
-                if (nonRegressiveAt >= 0)
-                    AddCandidate(candidates, nonRegressiveAt, "number-non-regression",
-                        "wait for the first projected native Number preview that cannot weaken boss-record replay");
+                var due = new Candidate
+                {
+                    Time = _stickyTarget,
+                    Kind = "latched-forecast-due",
+                    Reason = "execute the admitted rolling rebirth checkpoint"
+                };
+                Score(c, due, elapsed, bossEta);
+                return new RebirthRecommendation
+                {
+                    TargetSeconds = _stickyTarget,
+                    Reason = due.Reason,
+                    RunnerUpSeconds = _stickyTarget,
+                    RunnerUpReason = "the admitted checkpoint is due",
+                    SelectedScorePerHour = ResetBeatsHold(_stickyScore)
+                        ? _stickyScore : 1e-9,
+                    RunnerUpScorePerHour = due.Score,
+                    ProjectedMultiplier = due.ProjectedMultiplier,
+                    ProjectedAP = due.ProjectedAP,
+                    CandidateSummary = _stickyTarget + "s latched-forecast-due",
+                    CandidateCount = candidates.Count + 1,
+                    RecoveryMode = recoveryMode,
+                    RecoveryEtaSeconds = -1,
+                    RecoveryRemainingBosses = due.RemainingCatchupBosses,
+                    RecoveryReason = "the finite ordinary checkpoint reached zero",
+                    ExpectedCatchupExp = due.ExpectedCatchupExp,
+                    ExpectedCatchupExpPerHour = due.ExpectedCatchupExpPerHour,
+                    MinimumNumberRatio = due.ProjectedGainRatio,
+                    ExecutionHold = false,
+                    NextPositiveEtaSeconds = 0,
+                    NextEvaluationEtaSeconds = 1,
+                    EtaReason = "rebirth countdown reached zero; execute verified native reset"
+                };
             }
 
             AddCandidate(candidates, Math.Max(minimum, 3600), "one-hour-comparison",
@@ -780,6 +811,7 @@ namespace NGUInjector.Autopilot
                 var holdUntil = minimum;
                 _stickyTarget = -1;
                 _stickyKind = string.Empty;
+                _stickyScore = double.NaN;
                 return new RebirthRecommendation
                 {
                     TargetSeconds = holdUntil,
@@ -801,62 +833,12 @@ namespace NGUInjector.Autopilot
                 };
             }
 
-            // Planning and execution must use the same record-recovery proof. Previously the
-            // optimizer could latch a profitable lower-Number checkpoint while the final gate
-            // correctly rejected it forever as having an unknown Boss-0 replay ETA.
-            var executable = viable.Where(x => RecoveryCandidateHasProof(
-                recoveryMode, x.ProjectedGainRatio, -1)).ToList();
-            if (executable.Count == 0)
-            {
-                _stickyTarget = -1;
-                _stickyKind = string.Empty;
-                var nativeNumberRatio = Math.Min(
-                    c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
-                    c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0);
-                var numberPercent = (100.0 * nativeNumberRatio).ToString("0.###",
-                    System.Globalization.CultureInfo.InvariantCulture);
-                string nextTrainingGoal;
-                int nextTrainingEta;
-                AutopilotManager.GetNextTrainingGoal(c, out nextTrainingGoal,
-                    out nextTrainingEta);
-                var nextEvidence = nextTrainingEta > 0
-                    && nextTrainingGoal.StartsWith("Unlock ", StringComparison.Ordinal)
-                    ? " Recalculate after " + nextTrainingGoal + " in "
-                      + nextTrainingEta.ToString("N0") + "s."
-                    : " Recalculate from each fresh training, allocation, and Boss state.";
-                return new RebirthRecommendation
-                {
-                    TargetSeconds = minimum,
-                    Reason = recoveryMode
-                        ? "hold: the native reset preview retains only " + numberPercent
-                          + "% of current Number and no faster Boss-0 replay is proven"
-                        : "hold: no counterfactual reset is executable",
-                    RunnerUpSeconds = minimum,
-                    RunnerUpReason = "reevaluate from the next fresh native preview",
-                    SelectedScorePerHour = 0.0,
-                    RunnerUpScorePerHour = 0.0,
-                    ProjectedMultiplier = c.nextAttackMulti,
-                    ProjectedAP = minimum < 4100 ? 0 : 1 + (minimum - 4100) / 500,
-                    CandidateSummary = recoveryMode
-                        ? "HOLD weaker reset | native preview retains " + numberPercent
-                          + "% Number"
-                        : "all positive candidates failed the final execution proof",
-                    CandidateCount = candidates.Count + 1,
-                    RecoveryMode = recoveryMode,
-                    RecoveryEtaSeconds = -1,
-                    RecoveryRemainingBosses = Math.Max(0, c.highestBoss - c.bossID),
-                    RecoveryReason = "bounded Boss-0 replay is unavailable; lower native Number remains fail-closed",
-                    MinimumNumberRatio = nativeNumberRatio,
-                    ExecutionHold = true,
-                    NextPositiveEtaSeconds = FindNextPositiveResetEta(c, elapsed, bossEta,
-                        recoveryMode, horizon),
-                    NextEvaluationEtaSeconds = 1,
-                    EtaReason = recoveryMode
-                        ? "ordinary reset is deferred because its native preview retains only "
-                          + numberPercent + "% of current Number." + nextEvidence
-                        : "waiting for a positive checkpoint which the final execution gate can execute"
-                };
-            }
+            // Rebirth replaces Number by design. A lower preview is a priced cycle cost, not a
+            // reason to make the ordinary reset clock disappear. Persistent AP, EXP, cap
+            // compression and repeatable Boss rewards determine whether that reset is worthwhile.
+            // The challenge layer is not involved here; only the native No-Rebirth flag can stop
+            // the final transaction.
+            var executable = viable;
 
             var ordered = executable.OrderByDescending(x => x.Score)
                 .ThenByDescending(x => x.CapScore).ThenBy(x => x.Time).ToList();
@@ -873,10 +855,65 @@ namespace NGUInjector.Autopilot
             if (!ResetBeatsHold(ordered[0].Score))
             {
                 var bestRejected = ordered[0];
-                var positiveEta = FindNextPositiveResetEta(c, elapsed, bossEta,
-                    recoveryMode, horizon);
+                var positiveEta = FindNextPositiveResetEta(c, elapsed, bossEta);
+                if (positiveEta >= 0)
+                {
+                    // The live snapshot already supplies a finite first positive checkpoint.
+                    // Publish it as the ordinary rebirth clock instead of hiding it behind a
+                    // planner HOLD. The estimate is intentionally rolling: every fresh snapshot
+                    // may move it earlier as training, Bosses and allocations improve. Once it is
+                    // due, the existing checkpoint latch and final native preflight execute it.
+                    var proposedTarget = elapsed > int.MaxValue - positiveEta
+                        ? int.MaxValue : elapsed + positiveEta;
+                    // New evidence may shorten an admitted estimate, but may never roll the
+                    // absolute reset checkpoint forward. This makes the visible countdown
+                    // monotone and guarantees that it eventually reaches the due branch above.
+                    var forecastTarget = _stickyKind == "first-positive-forecast"
+                                         && _stickyTarget > elapsed
+                        ? Math.Min(_stickyTarget, proposedTarget) : proposedTarget;
+                    var forecast = new Candidate
+                    {
+                        Time = forecastTarget,
+                        Kind = "first-positive-forecast",
+                        Reason = "take the first projected positive persistent-value checkpoint"
+                    };
+                    Score(c, forecast, elapsed, bossEta);
+                    _stickyTarget = forecastTarget;
+                    _stickyKind = forecast.Kind;
+                    if (ResetBeatsHold(forecast.Score) || !ResetBeatsHold(_stickyScore))
+                        _stickyScore = forecast.Score;
+                    return new RebirthRecommendation
+                    {
+                        TargetSeconds = forecastTarget,
+                        Reason = forecast.Reason,
+                        RunnerUpSeconds = bestRejected.Time,
+                        RunnerUpDeltaSeconds = Math.Abs(bestRejected.Time - forecastTarget),
+                        RunnerUpReason = bestRejected.Reason,
+                        SelectedScorePerHour = forecast.Score,
+                        RunnerUpScorePerHour = bestRejected.Score,
+                        ProjectedMultiplier = forecast.ProjectedMultiplier,
+                        ProjectedAP = forecast.ProjectedAP,
+                        CandidateSummary = forecastTarget + "s first-positive-forecast="
+                                           + forecast.Score.ToString("0.000000") + "/h",
+                        CandidateCount = candidates.Count + 2,
+                        RecoveryMode = recoveryMode,
+                        RecoveryEtaSeconds = -1,
+                        RecoveryRemainingBosses = forecast.RemainingCatchupBosses,
+                        RecoveryReason = recoveryMode
+                            ? "finite ordinary checkpoint remains active while replaying toward the Boss record"
+                            : "finite ordinary checkpoint selected from the rolling cycle forecast",
+                        ExpectedCatchupExp = forecast.ExpectedCatchupExp,
+                        ExpectedCatchupExpPerHour = forecast.ExpectedCatchupExpPerHour,
+                        MinimumNumberRatio = forecast.ProjectedGainRatio,
+                        ExecutionHold = false,
+                        NextPositiveEtaSeconds = positiveEta,
+                        NextEvaluationEtaSeconds = 1,
+                        EtaReason = "rolling rebirth estimate; recomputed from live state every second"
+                    };
+                }
                 _stickyTarget = -1;
                 _stickyKind = string.Empty;
+                _stickyScore = double.NaN;
                 return new RebirthRecommendation
                 {
                     TargetSeconds = Math.Max(minimum, elapsed),
@@ -904,9 +941,7 @@ namespace NGUInjector.Autopilot
                     ExecutionHold = true,
                     NextPositiveEtaSeconds = positiveEta,
                     NextEvaluationEtaSeconds = 1,
-                    EtaReason = positiveEta >= 0
-                        ? "first conservative positive-value reset probe in " + positiveEta.ToString("N0") + "s"
-                        : "positive-value reset ETA unknown outside the 48-hour modeled horizon; reevaluate in 1s"
+                    EtaReason = "positive-value reset ETA unavailable outside the seven-day rolling horizon; reevaluate in 1s"
                 };
             }
 
@@ -936,6 +971,7 @@ namespace NGUInjector.Autopilot
                 selected = sticky;
             _stickyTarget = selected.Time;
             _stickyKind = selected.Kind;
+            _stickyScore = selected.Score;
 
             var runnerUp = ordered.FirstOrDefault(x => x != selected) ?? selected;
             var meaningful = ordered.Where(x => x.Kind != "integer-second-scan").Take(5).ToList();
@@ -946,13 +982,13 @@ namespace NGUInjector.Autopilot
             {
                 TargetSeconds = selected.Time,
                 Reason = recoveryMode
-                    ? selected.Reason + "; projected native Number is non-regressive while replaying toward Boss "
-                      + (c.highestBoss + 1)
+                    ? selected.Reason + "; aggregate persistent value remains positive while replaying toward Boss "
+                      + (c.highestBoss + 1) + " even though native Number is replaced on reset"
                     : selected.Reason,
                 RunnerUpSeconds = runnerUp.Time,
                 RunnerUpDeltaSeconds = Math.Abs(runnerUp.Time - selected.Time),
                 RunnerUpReason = recoveryMode
-                    ? runnerUp.Reason + "; alternate executable below-record route"
+                    ? runnerUp.Reason + "; alternate below-record persistent-value route"
                     : runnerUp.Reason,
                 SelectedScorePerHour = selected.Score,
                 RunnerUpScorePerHour = runnerUp.Score,
@@ -964,7 +1000,7 @@ namespace NGUInjector.Autopilot
                 RecoveryEtaSeconds = -1,
                 RecoveryRemainingBosses = selected.RemainingCatchupBosses,
                 RecoveryReason = recoveryMode
-                    ? "no finite Boss-0 replay ETA is available, so only a non-regressive native Number preview can authorize this record-recovery checkpoint"
+                    ? "native rebirth replaces Number; the finite checkpoint is selected from total persistent cycle value"
                     : "boss record is already caught up",
                 ExpectedCatchupExp = selected.ExpectedCatchupExp,
                 ExpectedCatchupExpPerHour = selected.ExpectedCatchupExpPerHour,
@@ -985,13 +1021,6 @@ namespace NGUInjector.Autopilot
                    && selectedScorePerHour > 1e-12;
         }
 
-        internal static bool BossEtaFitsBeforeModelChange(int bossEtaSeconds,
-            int modelChangeEtaSeconds)
-        {
-            return bossEtaSeconds >= 0
-                   && (modelChangeEtaSeconds < 0 || bossEtaSeconds <= modelChangeEtaSeconds);
-        }
-
         internal static bool ShouldKeepAdmittedCheckpoint(int admittedTargetSeconds,
             int elapsedSeconds, double resetNowScorePerHour, bool firstGrbWindowRequired)
         {
@@ -1000,25 +1029,15 @@ namespace NGUInjector.Autopilot
                    && ResetBeatsHold(resetNowScorePerHour);
         }
 
-        internal static bool RecoveryCandidateHasProof(bool recoveryMode,
-            double minimumNumberRatio, int resetRouteEtaSeconds)
-        {
-            if (!recoveryMode) return true;
-            if (double.IsNaN(minimumNumberRatio) || double.IsInfinity(minimumNumberRatio)
-                || minimumNumberRatio <= 0.0)
-                return false;
-            return minimumNumberRatio >= 1.0 || resetRouteEtaSeconds >= 0;
-        }
-
         /*
         FINAL MUTATION ADMISSION
 
         This pure policy kernel is shared by the optimizer tests and TimeRebirth's irreversible
-        boundary.  A positive aggregate reset value may legitimately include a lower Number when
-        persistent AP/EXP/cap gains repay it. During boss-record recovery, a non-regressive Number
-        is a bounded scalar replay proof; a lower Number instead requires an executable finite reset
-        ETA that beats the finite continue ETA. Challenge entry deliberately does not call this
-        ordinary-rebirth kernel.
+        boundary. A positive aggregate reset value may legitimately include a lower Number when
+        persistent AP/EXP/cap gains repay it. Rebirth replaces Number by native design, including
+        while replaying toward the Boss record; record-recovery status and ordinary challenges do
+        not add a second admission rule. The native No-Rebirth challenge is enforced separately by
+        OrdinaryRebirthGate.
         */
         internal static RebirthMutationDecision EvaluateMutationPolicy(double selectedScorePerHour,
             bool previewValid, double minimumNumberRatio, bool recoveryMode, int resetRouteEtaSeconds,
@@ -1035,65 +1054,25 @@ namespace NGUInjector.Autopilot
                 {
                     Reason = "hold: no-reset baseline (0/h) dominates the selected reset"
                 };
-            if (!recoveryMode)
-                return new RebirthMutationDecision
-                {
-                    Authorized = true,
-                    PreferredRouteEtaSeconds = 0,
-                    Reason = minimumNumberRatio < 1.0
-                        ? "lower Number is repaid by positive modeled persistent value; boss-record recovery is not active"
-                        : "reset has positive persistent value; boss-record recovery is not active"
-                };
-            // A non-regressive native Number preview is itself a bounded recovery proof: every
-            // replayed Boss starts with at least the current run's Number multiplier, while the
-            // selected reset also has positive persistent value.  Requiring an independently
-            // modeled replay ETA in this case can hold forever even though reset cannot weaken the
-            // scalar that controls the replay.  Only a lower-Number recovery branch needs the exact
-            // reset-versus-continue ETA comparison below.
-            if (minimumNumberRatio >= 1.0)
-                return new RebirthMutationDecision
-                {
-                    Authorized = true,
-                    PreferredRouteEtaSeconds = resetRouteEtaSeconds,
-                    Reason = resetRouteEtaSeconds < 0
-                        ? "recovery reset is admitted without a modeled ETA because native Number is non-regressive and persistent value is positive"
-                        : "recovery reset has non-regressive Number, positive persistent value, and a finite replay ETA"
-                };
-            if (resetRouteEtaSeconds < 0)
-                return new RebirthMutationDecision
-                {
-                    Reason = "hold: reset-route recovery ETA is unknown"
-                };
-            if (continueRouteEtaSeconds >= 0 && continueRouteEtaSeconds < resetRouteEtaSeconds)
-                return new RebirthMutationDecision
-                {
-                    PreferredRouteEtaSeconds = continueRouteEtaSeconds,
-                    Reason = "hold: continuing reaches the boss record sooner than resetting"
-                };
             return new RebirthMutationDecision
             {
                 Authorized = true,
-                PreferredRouteEtaSeconds = resetRouteEtaSeconds,
-                Reason = continueRouteEtaSeconds < 0
-                    ? "reset has the only finite boss-record recovery ETA"
-                    : "reset has the shorter finite boss-record recovery ETA"
+                PreferredRouteEtaSeconds = 0,
+                Reason = minimumNumberRatio < 1.0
+                    ? "lower Number is priced into a positive persistent-value reset"
+                    : "reset has positive persistent value"
             };
         }
 
-        private static int FindNextPositiveResetEta(Character c, int elapsed, int bossEta,
-            bool recoveryMode, int projectionHorizon)
+        private static int FindNextPositiveResetEta(Character c, int elapsed, int bossEta)
         {
-            var horizon = recoveryMode
-                ? Math.Max(elapsed, projectionHorizon)
-                : elapsed > int.MaxValue - 172800 ? int.MaxValue : elapsed + 172800;
+            var horizon = elapsed > int.MaxValue - 604800 ? int.MaxValue : elapsed + 604800;
             var previous = elapsed;
             for (var target = elapsed + 60; target > elapsed && target <= horizon; target += 60)
             {
                 var probe = new Candidate {Time = target, Kind = "positive-value-eta-probe"};
                 Score(c, probe, elapsed, bossEta);
-                if (!ResetBeatsHold(probe.Score)
-                    || !RecoveryCandidateHasProof(recoveryMode,
-                        probe.ProjectedGainRatio, -1))
+                if (!ResetBeatsHold(probe.Score))
                 {
                     previous = target;
                     continue;
@@ -1102,60 +1081,12 @@ namespace NGUInjector.Autopilot
                 {
                     var exactProbe = new Candidate {Time = exact, Kind = "positive-value-eta-probe"};
                     Score(c, exactProbe, elapsed, bossEta);
-                    if (ResetBeatsHold(exactProbe.Score)
-                        && RecoveryCandidateHasProof(recoveryMode,
-                            exactProbe.ProjectedGainRatio, -1))
+                    if (ResetBeatsHold(exactProbe.Score))
                         return Math.Max(0, exact - elapsed);
                 }
                 return Math.Max(0, target - elapsed);
             }
             return -1;
-        }
-
-        private static int FindFirstNonRegressiveCheckpoint(Character c, int minimum,
-            int elapsed, int bossEta, int horizon)
-        {
-            var lower = Math.Max(minimum, elapsed);
-            var first = new Candidate {Time = lower, Kind = "number-proof-probe"};
-            Score(c, first, elapsed, bossEta);
-            if (RecoveryCandidateHasProof(true, first.ProjectedGainRatio, -1))
-                return lower;
-
-            // This projection freezes every event after the one selected Boss outcome. Searching
-            // it for days produces precise-looking nonsense because later Boss wins, allocation
-            // changes and purchases are omitted. Stay inside the rolling event horizon used by
-            // the rest of EarlyNormal; a fresh native snapshot extends that horizon every second.
-            horizon = Math.Max(lower, horizon);
-            var previous = lower;
-            var step = 60;
-            var upper = -1;
-            while (previous < horizon)
-            {
-                var next = previous > horizon - step ? horizon : previous + step;
-                var probe = new Candidate {Time = next, Kind = "number-proof-probe"};
-                Score(c, probe, elapsed, bossEta);
-                if (RecoveryCandidateHasProof(true, probe.ProjectedGainRatio, -1))
-                {
-                    upper = next;
-                    break;
-                }
-                previous = next;
-                if (step < 86400) step = Math.Min(86400, step * 2);
-            }
-            if (upper < 0) return -1;
-            var left = previous + 1;
-            var right = upper;
-            while (left < right)
-            {
-                var middle = left + (right - left) / 2;
-                var probe = new Candidate {Time = middle, Kind = "number-proof-probe"};
-                Score(c, probe, elapsed, bossEta);
-                if (RecoveryCandidateHasProof(true, probe.ProjectedGainRatio, -1))
-                    right = middle;
-                else
-                    left = middle + 1;
-            }
-            return left;
         }
 
         private static void AddCandidate(ICollection<Candidate> candidates, int time, string kind, string reason)

@@ -428,9 +428,6 @@ namespace NGUInjector.Autopilot
             // including unrestricted Basic, look like a native no-reset mode.
             var ordinaryRebirthSeconds = plan.RebirthSeconds;
             var ordinaryRebirthHold = plan.RebirthExecutionHold;
-            var ordinaryRebirthReason = plan.RebirthReason;
-            var ordinaryRebirthEtaReason = plan.RebirthEtaReason;
-            var ordinaryNextEvaluationEta = plan.RebirthNextEvaluationEtaSeconds;
             // A mechanical permission to rebirth cannot promote an optimizer HOLD into an exact
             // checkpoint. Supply no event until the ordinary planner has admitted one.
             var active = ChallengeStrategyPlanner.ActivePolicy(c, null,
@@ -456,43 +453,31 @@ namespace NGUInjector.Autopilot
             plan.Magic.Clear();
             plan.R3.Clear();
 
-            var noRebirth = active.ForbidRebirth;
+            // Challenge restrictions still alter the resources which are legal to allocate, but
+            // they do not own ordinary rebirth timing. Only NGU Idle's actual No-Rebirth challenge
+            // may suppress the finite checkpoint selected by the normal optimizer.
+            var noRebirth = !active.MechanicallyAllowsRebirth;
             var noAugs = c.challenges.noAugsChallenge.inChallenge;
             var noTM = c.challenges.timeMachineChallenge.inChallenge;
             if (noRebirth)
             {
                 plan.RebirthSeconds = -1;
-                plan.RebirthReason = active.MechanicallyAllowsRebirth && ordinaryRebirthHold
-                    ? ordinaryRebirthReason : active.Objective;
+                plan.RebirthReason = active.Objective;
                 plan.RebirthExecutionHold = true;
                 plan.RebirthNextPositiveEtaSeconds = -1;
-                plan.RebirthNextEvaluationEtaSeconds = active.MechanicallyAllowsRebirth
-                                                       && ordinaryRebirthHold
-                    ? ordinaryNextEvaluationEta : 1;
-                plan.RebirthEtaReason = active.MechanicallyAllowsRebirth && ordinaryRebirthHold
-                    ? ordinaryRebirthEtaReason : active.EtaReason;
+                plan.RebirthNextEvaluationEtaSeconds = 1;
+                plan.RebirthEtaReason = active.EtaReason;
                 plan.RebirthRunnerUpSeconds = -1;
                 plan.RebirthRunnerUpDeltaSeconds = -1;
             }
             else
             {
-                plan.RebirthSeconds = active.RebirthSeconds;
-                plan.RebirthExecutionHold = false;
-                plan.RebirthNextPositiveEtaSeconds = Math.Max(0,
-                    active.RebirthSeconds - (int)Math.Floor(c.rebirthTime.totalseconds));
-                plan.RebirthNextEvaluationEtaSeconds = 1;
-                // An unrestricted active challenge owns the long-term objective, not the
-                // ordinary checkpoint's evidence fields.  Basic previously replaced a valid
-                // reset countdown/reason with its unrelated (and often unknown) challenge-clear
-                // ETA, making dashboards claim the reset ETA was unknown.  Preserve the ordinary
-                // optimizer explanation unless challenge policy actually changed the checkpoint.
-                if (active.RebirthSeconds != ordinaryRebirthSeconds)
-                {
-                    plan.RebirthReason = active.Objective + "; " + active.RebirthPolicySummary;
-                    plan.RebirthEtaReason = active.EtaReason;
-                    plan.RebirthRunnerUpSeconds = -1;
-                    plan.RebirthRunnerUpDeltaSeconds = -1;
-                }
+                plan.RebirthSeconds = ordinaryRebirthSeconds;
+                plan.RebirthExecutionHold = ordinaryRebirthHold;
+                plan.ChallengeRebirthPolicy = "Ordinary rebirth timing is controlled by the normal optimizer.";
+                plan.ChallengeEvidenceSummary = active.Code + " active. " + active.RulesSummary
+                                                + " Ordinary rebirth timing is independent of this challenge."
+                                                + " Clear estimate: " + active.EtaReason;
             }
 
             var energy = new List<string> {"CAPALLBT:20"};

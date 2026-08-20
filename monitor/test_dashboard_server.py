@@ -140,7 +140,7 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIsNone(view["challenge"]["targetLevel"])
         self.assertFalse(view["identity"]["verifiedEnvelope"])
 
-    def test_weaker_number_reset_hold_is_human_readable(self) -> None:
+    def test_temporary_recalculation_does_not_publish_internal_scoring_criteria(self) -> None:
         view = build_observability(
             {
                 "challengeActive": True,
@@ -152,15 +152,7 @@ class ObservabilityTests(unittest.TestCase):
             }
         )
         self.assertEqual(view["rebirth"]["action"], "hold")
-        self.assertEqual(
-            view["rebirth"]["actionLabel"],
-            "DEFERRED — the current reset would weaken Number",
-        )
-        self.assertEqual(
-            view["rebirth"]["reason"],
-            "ordinary reset is deferred because its native preview retains only 0.36% "
-            "of current Number. Recalculate after Unlock Piercing Attack in 2,004s.",
-        )
+        self.assertEqual(view["rebirth"]["actionLabel"], "RECALCULATING")
         self.assertIsNone(view["rebirth"]["resetEtaSeconds"])
 
     def test_due_final_boundary_hold_never_displays_reset_now(self) -> None:
@@ -431,21 +423,15 @@ class DashboardMarkupTests(unittest.TestCase):
         self.assertIn("Recent errors and blocked actions", html)
         self.assertNotIn("<details open", html)
 
-    def test_rebirth_model_is_collapsed_but_policy_and_challenge_rules_are_visible(self) -> None:
+    def test_rebirth_panel_leads_with_clocks_not_optimizer_criteria(self) -> None:
         html = Path("docs/index.html").read_text(encoding="utf-8")
-        marker = '<details class="rebirth-details">'
-        self.assertIn(marker, html)
-        start = html.index(marker)
-        end = html.index("</details>", start)
-        disclosure = html[start:end]
-        self.assertIn("Why this rebirth timing?", disclosure)
-        self.assertIn('id="rebirth-current"', disclosure)
-        self.assertIn('id="rebirth-candidates"', disclosure)
-        self.assertLess(html.index('id="rebirth-policy"'), start)
-        self.assertLess(html.index('id="rebirth-next-action"'), start)
-        self.assertLess(html.index('id="rebirth-reset-eta"'), start)
-        self.assertGreater(html.index('id="challenge-rebirth-policy"'), end)
-        self.assertGreater(html.index('id="challenge-rules"'), end)
+        self.assertNotIn('class="rebirth-details"', html)
+        self.assertNotIn("Why this rebirth timing?", html)
+        self.assertIn("Current run age", html)
+        self.assertIn("Target run age", html)
+        self.assertIn("Rebirth ETA", html)
+        self.assertIn('id="challenge-rebirth-policy"', html)
+        self.assertIn('id="challenge-rules"', html)
 
     def test_browser_fallback_uses_explicit_challenge_policy_and_selected_boss(self) -> None:
         source = Path("docs/assets/app.js").read_text(encoding="utf-8")

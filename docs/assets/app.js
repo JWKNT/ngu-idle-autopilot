@@ -252,15 +252,13 @@ exposes no mutation endpoint.
     const boundaryHold = Boolean(s.rebirthBoundaryHold);
     const hold = Boolean(s.rebirthExecutionHold) || boundaryHold || noResetChallenge;
     const etaReason = text(s.rebirthEtaReason, "");
-    const weakerResetHold = Boolean(s.rebirthExecutionHold)
-      && etaReason.includes("native preview retains only");
     const resetEta = !hold && target !== null && target >= 0 && elapsed !== null ? Math.max(0, target - elapsed) : null;
     const executionEnabled = typeof s.rebirthExecutionEnabled === "boolean" ? s.rebirthExecutionEnabled : null;
     const action = noResetChallenge ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) || boundaryHold ? "hold"
       : executionEnabled === false ? "disabled" : resetEta === 0 ? "reset-due" : resetEta !== null ? "reset-at-checkpoint" : "unknown";
     const labels = {
       "no-reset-challenge": "NO RESET — this challenge forbids ordinary rebirths",
-      hold: "HOLD — no executable reset is scheduled",
+      hold: "RECALCULATING",
       disabled: "DISABLED — rebirth execution is off",
       "reset-due": "RESET DUE — waiting for the verified native boundary",
       "reset-at-checkpoint": "RESET at the selected checkpoint",
@@ -314,9 +312,8 @@ exposes no mutation endpoint.
     return {
       rebirth: {
         action,
-        actionLabel: weakerResetHold ? "DEFERRED — the current reset would weaken Number" : labels[action],
-        reason: weakerResetHold ? etaReason
-          : s.rebirthSafetyBlockReason || s.rebirthBoundaryReason || s.rebirthReason || "No decision reason was emitted.",
+        actionLabel: labels[action],
+        reason: s.rebirthSafetyBlockReason || s.rebirthBoundaryReason || s.rebirthReason || "No decision reason was emitted.",
         noResetHold: hold || executionEnabled === false,
         targetRunAgeSeconds: target !== null && target >= 0 ? target : null,
         currentRunAgeSeconds: elapsed !== null && elapsed >= 0 ? elapsed : null,
@@ -437,16 +434,14 @@ exposes no mutation endpoint.
   function renderHeadline(s, observability) {
     const rebirth = observability.rebirth;
     const challenge = observability.challenge;
-    const weakerResetHold = rebirth.action === "hold"
-      && String(rebirth.etaReason || "").includes("native preview retains only");
     const headline = rebirth.action === "reset-at-checkpoint" ? optionalDuration(rebirth.resetEtaSeconds)
       : rebirth.action === "reset-due" ? "Reset due"
         : rebirth.action === "no-reset-challenge" ? "No reset"
-          : weakerResetHold ? "Keep growing"
-          : rebirth.action === "hold" ? "Planner hold"
+          : rebirth.action === "hold" ? "Recalculating"
             : rebirth.action === "disabled" ? "Disabled" : "Unavailable";
     setText("metric-rebirth", headline);
-    setText("metric-rebirth-note", rebirth.actionLabel);
+    setText("metric-rebirth-note", rebirth.action === "no-reset-challenge"
+      ? "paused by the No-Rebirth challenge" : "live estimate · updates every second");
 
     setText("metric-challenge", challenge.active ? "Active" : challenge.admitted ? text(challenge.label) : "None admitted");
     setText("metric-challenge-note", challenge.active ? text(challenge.label) : challenge.admitted
@@ -459,10 +454,7 @@ exposes no mutation endpoint.
     setText("metric-boss", selectedBoss === null ? "Unavailable" : `#${selectedBoss.toLocaleString()}`);
     setText("metric-boss-record", highestBoss === null ? "Unavailable" : `#${highestBoss.toLocaleString()}`);
     const bossNote = recordBoss === null ? "next record unavailable" : `next record #${recordBoss.toLocaleString()}`;
-    const bossEtaNote = s.bossEtaState === "model-changes-at-training-unlock"
-      ? `recalculate after ${text(s.trainingGoal, "the next training unlock")} · ${optionalDuration(s.trainingEtaSeconds)}`
-      : `target ETA ${optionalDuration(s.bossDefeatEtaSeconds, "unavailable")}`;
-    setText("metric-boss-note", `${bossNote} · ${bossEtaNote}`);
+    setText("metric-boss-note", `${bossNote} · target ETA ${optionalDuration(s.bossDefeatEtaSeconds, "estimating")}`);
 
     setText("metric-adventure", s.adventureTargetName, "Selecting route");
     const routeMode = s.goldBootstrapActive ? `Gold bootstrap · ${text(s.goldBootstrapMode, "ordinary Adventure")}`
@@ -693,9 +685,7 @@ exposes no mutation endpoint.
 
   function renderCombatInventory(s) {
     setText("combat-boss", `Boss #${number(s.bossSelectedId)}${s.bossTargetMatchesSelected ? " · record target" : ` · catching up to #${number(s.bossRecordTargetId)}`}`);
-    setText("combat-eta", s.bossEtaState === "model-changes-at-training-unlock"
-      ? `Recalculate after ${text(s.trainingGoal, "the next training unlock")} · ${duration(s.trainingEtaSeconds, true)}`
-      : `${duration(s.bossDefeatEtaSeconds, true)} · ${text(s.bossEtaConfidence, "model pending")}`);
+    setText("combat-eta", `${duration(s.bossDefeatEtaSeconds, true)} · rolling live estimate`);
     setText("combat-zone", `${text(s.adventureTargetName, "—")} · ${text(s.adventureControlReason, "route pending")}`);
     setText("combat-stats", `${shortNumber(s.adventurePower)} / ${shortNumber(s.adventureToughness)}`);
     setText("combat-hp", `${shortNumber(s.adventureHP)} / ${shortNumber(s.adventureMaxHP)}`);
@@ -733,18 +723,11 @@ exposes no mutation endpoint.
   function renderRebirth(s, observability) {
     const rebirth = observability.rebirth;
     setText("rebirth-state", rebirth.actionLabel);
-    setText("rebirth-reason", sentence(rebirth.reason));
-    setText("rebirth-policy", rebirth.actionLabel);
-    const weakerResetHold = rebirth.action === "hold"
-      && String(rebirth.etaReason || "").includes("native preview retains only");
-    setText("rebirth-next-action", rebirth.action === "reset-at-checkpoint" ? "Execute verified native rebirth"
-      : rebirth.action === "reset-due" ? "Verify and execute now"
-        : rebirth.action === "no-reset-challenge" ? "Continue the active challenge"
-          : weakerResetHold ? "Continue growing until the reset preview is competitive"
-          : rebirth.action === "hold" ? "Wait for a finite admitted checkpoint"
-            : rebirth.action === "disabled" ? "Observe only" : "Await complete telemetry");
+    setText("rebirth-reason", "Both countdowns are rolling estimates and update from the live game every second.");
+    setText("rebirth-policy", optionalDuration(rebirth.currentRunAgeSeconds));
+    setText("rebirth-next-action", optionalDuration(rebirth.targetRunAgeSeconds));
     setText("rebirth-reset-eta", optionalDuration(rebirth.resetEtaSeconds, rebirth.noResetHold ? "No reset scheduled" : "Unavailable"));
-    setText("rebirth-hold", rebirth.noResetHold ? "Yes" : "No");
+    setText("rebirth-hold", rebirth.action === "no-reset-challenge" ? "Paused by challenge" : "Counting down");
     setText("rebirth-current", rebirth.currentAttack === null || rebirth.currentDefense === null
       ? "Unavailable" : `${scientific(rebirth.currentAttack)} / ${scientific(rebirth.currentDefense)}`);
     setText("rebirth-preview", rebirth.previewAttack === null || rebirth.previewDefense === null
@@ -1029,12 +1012,6 @@ exposes no mutation endpoint.
       scheduler: { ...fallback.scheduler, ...(incoming.scheduler || {}) },
       bindings: { ...fallback.bindings, ...(incoming.bindings || {}) },
     };
-    // A dashboard server can remain alive across a frontend update. Keep the raw decision's
-    // exact Number-dominance explanation authoritative over an older generic formatter.
-    if (fallback.rebirth.actionLabel === "DEFERRED — the current reset would weaken Number") {
-      observability.rebirth.actionLabel = fallback.rebirth.actionLabel;
-      observability.rebirth.reason = fallback.rebirth.reason;
-    }
     const age = Math.max(0, number(envelope.stateAgeSeconds, 9999));
     const live = s.synced && observability.transaction.complete && observability.identity.verifiedEnvelope && age <= 5;
     setConnection(live ? "live" : "stale", live

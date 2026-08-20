@@ -441,8 +441,6 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let selectedBoss = number(state, "bossSelectedId")
         let bossEta = number(state, "bossDefeatEtaSeconds")
-        let bossEtaHorizon = state["bossEtaProjectionHorizonSeconds"] == nil
-            ? 604800 : max(1, number(state, "bossEtaProjectionHorizonSeconds"))
         let zone = state["adventureTargetName"] as? String ?? "selecting zone"
         let rebirthTarget = number(state, "rebirthSeconds")
         let rebirthElapsed = number(state, "rebirthElapsed")
@@ -455,22 +453,14 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
         let rebirthBoundaryHold = state["rebirthBoundaryHold"] as? Bool ?? false
         let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold || rebirthBoundaryHold
-        let bossEtaState = state["bossEtaState"] as? String ?? ""
-        let trainingGoal = state["trainingGoal"] as? String ?? "training topology change"
-        let trainingETA = number(state, "trainingEtaSeconds")
-        let weakerResetHold = rebirthExecutionHold
-            && (state["rebirthEtaReason"] as? String ?? "").contains("native preview retains only")
         // A final live boundary hold is distinct from the optimizer's continuation hold.
         // Both suppress a countdown: neither may be displayed as an executable reset.
         let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
         let rebirthText = noResetPolicy ? "no reset — challenge rule"
-            : weakerResetHold ? "deferred — weaker Number"
-            : rebirthUnscheduled ? "hold — no reset scheduled"
+            : rebirthUnscheduled ? "estimating"
             : rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
             : rebirthBlocked ? "route hold" : "now"
-        let bossText = bossEtaState == "model-changes-at-training-unlock"
-            ? "recheck after \(trainingGoal) in \(formatEstimate(trainingETA))"
-            : bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
+        let bossText = bossEta < 0 ? "estimating"
             : "in " + formatEstimate(bossEta)
         statusLabel.stringValue = "REBIRTH \(rebirthText)   •   BOSS \(selectedBoss) \(bossText)"
         statusLabel.textColor = rebirthUnscheduled
@@ -523,8 +513,6 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let bossKillETA = number(state, "bossKillEtaSeconds")
         let bossViabilityETA = state["bossDefeatEtaSeconds"] == nil
             ? number(state, "bossViabilityEtaSeconds") : number(state, "bossDefeatEtaSeconds")
-        let bossEtaHorizon = state["bossEtaProjectionHorizonSeconds"] == nil
-            ? 604800 : max(1, number(state, "bossEtaProjectionHorizonSeconds"))
         let bossFitsRebirth = state["bossDefeatFitsRebirthHorizon"] as? Bool ?? (bossViabilityETA >= 0)
         let bossRebirthSlack = number(state, "bossRebirthSlackSeconds")
         let bossViabilityReason = state["bossViabilityReason"] as? String ?? "waiting for the next exact combat viability result"
@@ -881,9 +869,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let nextEvaluationText = state["rebirthNextEvaluationEtaSeconds"] != nil
             && rebirthNextEvaluationETA >= 0 ? formatEstimate(rebirthNextEvaluationETA) : "next live control tick"
         let rebirthPolicy = noResetPolicy ? "NO RESET — this challenge forbids ordinary rebirths"
-            : rebirthExecutionHold && rebirthETAReason.contains("native preview retains only")
-                ? "DEFERRED — the current reset would weaken Number"
-            : rebirthUnscheduled ? "HOLD — no executable reset is scheduled"
+            : rebirthUnscheduled ? "ESTIMATING"
             : !rebirthExecutionEnabled ? "DISABLED — rebirth execution is off"
             : rebirthRemaining <= 0 ? "RESET DUE — verify the native boundary"
             : "RESET at the selected checkpoint"
@@ -905,9 +891,7 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ? "WHY THE ROUND NUMBER: this second is a discontinuity in NGU Idle's native Number time-multiplier formula; it was evaluated, not assumed."
             : "WHY THIS SECOND: it is the highest-scoring live event or integer-second candidate in the current finite-horizon model."
         let bossGlance = bossReady ? "READY NOW"
-            : (state["bossEtaState"] as? String ?? "") == "model-changes-at-training-unlock"
-                ? "RECALCULATE AFTER \(trainingGoal.uppercased()) — \(formatEstimate(trainingETA))"
-            : bossViabilityETA < 0 ? "NO FINITE ETA ≤ " + formatEstimate(bossEtaHorizon)
+            : bossViabilityETA < 0 ? "ESTIMATING"
             : "ETA " + formatEstimate(bossViabilityETA)
 
         let body = """

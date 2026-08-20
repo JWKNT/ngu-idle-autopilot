@@ -288,8 +288,8 @@ def build_observability(
 ) -> dict[str, Any]:
     """Build a stable read-only decision view from optional producer telemetry.
 
-    Missing data stays ``None``.  In particular, an execution hold has no countdown,
-    and an unadmitted challenge has no ETA.  This is presentation normalization only:
+    Missing data stays ``None``. An unadmitted challenge has no ETA. This is
+    presentation normalization only:
     admission and mutation authority remain wholly owned by the injector.
     """
     target = finite_number(state.get("rebirthSeconds"))
@@ -319,19 +319,12 @@ def build_observability(
     boundary_reason = first_text(state, "rebirthBoundaryReason")
     selection_reason = first_text(state, "rebirthReason", "rebirthObjective")
     eta_reason = first_text(state, "rebirthEtaReason")
-    weaker_reset_hold = bool(
-        execution_hold and "native preview retains only" in eta_reason
-    )
     if no_reset_challenge:
         action = "no-reset-challenge"
         action_label = "NO RESET — this challenge forbids ordinary rebirths"
     elif execution_hold or boundary_hold:
         action = "hold"
-        action_label = (
-            "DEFERRED — the current reset would weaken Number"
-            if weaker_reset_hold
-            else "HOLD — no executable reset is scheduled"
-        )
+        action_label = "RECALCULATING"
     elif execution_enabled is False:
         action = "disabled"
         action_label = "DISABLED — rebirth execution is off"
@@ -502,10 +495,8 @@ def build_observability(
         "rebirth": {
             "action": action,
             "actionLabel": action_label,
-            "reason": eta_reason if weaker_reset_hold else (
-                safety_reason or boundary_reason or selection_reason
-                or "No decision reason was emitted."
-            ),
+            "reason": safety_reason or boundary_reason or selection_reason
+            or "No decision reason was emitted.",
             "noResetHold": execution_hold or boundary_hold or no_reset_challenge or execution_enabled is False,
             "targetRunAgeSeconds": optional_seconds(target),
             "currentRunAgeSeconds": optional_seconds(elapsed),

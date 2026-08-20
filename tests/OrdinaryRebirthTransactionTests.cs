@@ -104,6 +104,8 @@ internal static class OrdinaryRebirthTransactionTests
             "AutopilotManager.cs"));
         var planner = File.ReadAllText(Path.Combine("source", "Autopilot",
             "AutopilotPlanner.cs"));
+        var optimizer = File.ReadAllText(Path.Combine("source", "Autopilot",
+            "RebirthOptimizer.cs"));
         var transaction = File.ReadAllText(Path.Combine("source", "Autopilot",
             "OrdinaryRebirthTransaction.cs"));
         var legacyBoundary = File.ReadAllText(Path.Combine("source", "AllocationProfiles",
@@ -129,16 +131,33 @@ internal static class OrdinaryRebirthTransactionTests
                    StringComparison.Ordinal) >= 0
                && planner.IndexOf("ordinaryRebirthHold ? -1 : ordinaryRebirthSeconds",
                    StringComparison.Ordinal) >= 0
-               && planner.IndexOf("ordinaryRebirthHold",
+               && planner.IndexOf("var noRebirth = !active.MechanicallyAllowsRebirth;",
                    StringComparison.Ordinal) >= 0
-               && planner.IndexOf("if (active.RebirthSeconds != ordinaryRebirthSeconds)",
+               && planner.IndexOf("plan.RebirthSeconds = ordinaryRebirthSeconds;",
                    StringComparison.Ordinal) >= 0,
-            "an unrestricted active challenge preserves both ordinary checkpoint and hold evidence");
+            "only native No-Rebirth suppresses the ordinary checkpoint; all other challenges preserve it");
+        var forecast = optimizer.IndexOf("Kind = \"first-positive-forecast\"",
+            StringComparison.Ordinal);
+        Assert(forecast >= 0
+               && optimizer.IndexOf("TargetSeconds = forecastTarget", forecast,
+                   StringComparison.Ordinal) > forecast
+               && optimizer.IndexOf("ExecutionHold = false", forecast,
+                   StringComparison.Ordinal) > forecast,
+            "the first finite positive forecast is published as an executable rolling countdown");
+        Assert(optimizer.IndexOf("Math.Min(_stickyTarget, proposedTarget)",
+                   StringComparison.Ordinal) >= 0
+               && optimizer.IndexOf("elapsed >= _stickyTarget",
+                   StringComparison.Ordinal) >= 0
+               && optimizer.IndexOf("Kind = \"latched-forecast-due\"",
+                   StringComparison.Ordinal) >= 0
+               && optimizer.IndexOf("NextPositiveEtaSeconds = 0",
+                   StringComparison.Ordinal) >= 0,
+            "an admitted rolling estimate can move earlier but cannot roll past zero");
         Assert(manager.IndexOf("var recoveryPolicy = RebirthOptimizer.EvaluateMutationPolicy(",
                    StringComparison.Ordinal) >= 0
                && manager.IndexOf("recoveryMode && !recoveryPolicy.Authorized",
                    StringComparison.Ordinal) >= 0,
-            "runtime telemetry mirrors the final recovery admission instead of aggregate score");
+            "runtime telemetry mirrors the same positive-value mutation admission as execution");
         Assert(transaction.IndexOf("RefreshRebirthTimeMultiplier", StringComparison.Ordinal)
                < transaction.IndexOf("RefreshRebirthPreview", StringComparison.Ordinal),
             "preview child preserves native calculateTimeMulti then calculateNextMultis order");

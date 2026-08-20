@@ -92,58 +92,36 @@ internal static class RebirthPolicyGoldenTests
 
     private static void TestRecoveryCounterfactuals()
     {
-        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "RecoveryCandidateHasProof", true, 0.999, -1),
-            "planner rejects the same unknown lower-Number recovery route as the final gate");
-        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "RecoveryCandidateHasProof", true, 1.0, -1),
-            "planner accepts non-regressive native Number without inventing a replay ETA");
-        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "RecoveryCandidateHasProof", true, 0.9, 600),
-            "planner may accept lower Number only with a finite bounded replay ETA");
-        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "RecoveryCandidateHasProof", false, 0.1, -1),
-            "outside record recovery, the aggregate positive-value policy remains unchanged");
-
         var nonRegressive = Call("NGUInjector.Autopilot.RebirthOptimizer",
             "EvaluateMutationPolicy",
             0.5, true, 1.0, true, -1, 900);
         Assert((bool)Field(nonRegressive, "Authorized"),
-            "non-regressive recovery Number is a bounded replay proof even without an ETA");
-        Assert(((string)Field(nonRegressive, "Reason")).Contains("non-regressive"),
-            "non-regressive recovery authorization is explicit");
+            "positive recovery reset is authorized without a second replay gate");
 
         var unknownRegression = Call("NGUInjector.Autopilot.RebirthOptimizer",
             "EvaluateMutationPolicy", 0.5, true, 0.9, true, -1, 900);
-        Assert(!(bool)Field(unknownRegression, "Authorized"),
-            "lower-Number recovery still fails closed without reset ETA");
+        Assert((bool)Field(unknownRegression, "Authorized"),
+            "lower Number during record replay remains a priced cycle cost, not an indefinite hold");
+        Assert(((string)Field(unknownRegression, "Reason")).Contains("positive persistent-value"),
+            "recovery authorization names the aggregate value that selected the checkpoint");
 
         var continueWins = Call("NGUInjector.Autopilot.RebirthOptimizer", "EvaluateMutationPolicy",
             0.5, true, 0.9, true, 1800, 900);
-        Assert(!(bool)Field(continueWins, "Authorized"), "faster continuation blocks reset");
-        Assert((int)Field(continueWins, "PreferredRouteEtaSeconds") == 900,
-            "hold publishes actionable continuation ETA");
+        Assert((bool)Field(continueWins, "Authorized"),
+            "unmodeled record-recovery routes do not replace the finite ordinary checkpoint");
+        Assert((int)Field(continueWins, "PreferredRouteEtaSeconds") == 0,
+            "a due positive checkpoint is actionable now");
 
         var resetWins = Call("NGUInjector.Autopilot.RebirthOptimizer", "EvaluateMutationPolicy",
             0.5, true, 0.9, true, 600, 1200);
-        Assert((bool)Field(resetWins, "Authorized"), "faster finite reset route is authorized");
-        Assert((int)Field(resetWins, "PreferredRouteEtaSeconds") == 600,
-            "authorization publishes reset recovery ETA");
+        Assert((bool)Field(resetWins, "Authorized"), "positive reset remains authorized");
+        Assert((int)Field(resetWins, "PreferredRouteEtaSeconds") == 0,
+            "ordinary execution follows its own countdown rather than a challenge/replay ETA");
 
         var staleBlood = Call("NGUInjector.Autopilot.RebirthOptimizer", "EvaluateMutationPolicy",
             0.5, false, 1.1, false, -1, -1);
         Assert(!(bool)Field(staleBlood, "Authorized"),
             "unreflected Blood-adjusted preview blocks mutation");
-    }
-
-    private static void TestBossProjectionBoundaries()
-    {
-        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "BossEtaFitsBeforeModelChange", 99074, 5646),
-            "a long frozen-allocation Boss estimate cannot cross an earlier training unlock");
-        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "BossEtaFitsBeforeModelChange", 300, 5646),
-            "a Boss outcome before the next model change remains a finite forecast");
     }
 
     private static void TestDueProfileSignatureIsStable()
@@ -278,7 +256,6 @@ internal static class RebirthPolicyGoldenTests
             TestObservedAllNegativeMutationCase();
             TestLowerNumberPositivePersistentCase();
             TestRecoveryCounterfactuals();
-            TestBossProjectionBoundaries();
             TestTask29AuthorityCeilingAndBridge();
             Console.WriteLine("Rebirth policy golden tests passed: " + _assertions + " assertions");
             return 0;

@@ -1729,17 +1729,6 @@ namespace NGUInjector.Autopilot
             // from being mistaken for an action the current run will actually take.
             var bossViabilityEta = bossFitEta >= 0 ? bossFitEta
                 : RawSelectedBossDefeatEta(c, bossRawProjectionHorizon);
-            var bossProjectionCrossesTrainingUnlock = trainingEtaSeconds > 0
-                && trainingGoal.StartsWith("Unlock ", StringComparison.Ordinal)
-                && bossViabilityEta > trainingEtaSeconds;
-            if (bossProjectionCrossesTrainingUnlock)
-            {
-                // The frozen allocation projection cannot cross a controller-topology change.
-                // A newly unlocked Basic Training changes both allocation and stat growth, so the
-                // smaller live event is the only honest forecast boundary.
-                bossFitEta = -1;
-                bossViabilityEta = -1;
-            }
             var bossSelectedId = c.bossID + 1;
             var bossRecordTargetId = activeHighestBoss + 1;
             var bossTargetMatchesSelected = c.bossID == activeHighestBoss;
@@ -1751,14 +1740,13 @@ namespace NGUInjector.Autopilot
             var bossReady = IsNextBossReady(c);
             var bossFighting = c.bossController != null && (c.bossController.isFighting || c.bossController.nukeBoss);
             var bossKillEta = CurrentBossKillEta(c);
-            var bossViabilityReason = bossProjectionCrossesTrainingUnlock
-                ? "recalculate after " + trainingGoal + " in "
-                  + trainingEtaSeconds.ToString("N0") + "s; the current allocation model ends there"
-                : BossViabilityReason(c, bossReady, bossFighting, bossKillEta);
+            // This is deliberately a rolling estimate. Future training, allocation and drops will
+            // move it, but hiding the ETA at every model-changing event makes the control loop
+            // unreadable. Recompute from the fresh live state each second instead.
+            var bossViabilityReason = BossViabilityReason(c, bossReady, bossFighting, bossKillEta);
             var bossEtaState = c.bossController == null ? "controller-unavailable"
                 : bossFighting && bossKillEta >= 0 ? "active-fight"
                 : bossViabilityEta >= 0 ? "finite"
-                : bossProjectionCrossesTrainingUnlock ? "model-changes-at-training-unlock"
                 : "outside-seven-day-current-allocation-model";
             var energyIncome = Math.Max(0.0, c.energyPerSecond());
             var magicIncome = Math.Max(0.0, c.magicPerSecond());
@@ -1785,9 +1773,8 @@ namespace NGUInjector.Autopilot
                                     && !double.IsInfinity(projectedDefenseMultiplier);
             var recoveryResetEta = Plan.RebirthRecoveryEtaSeconds;
             var recoveryContinueEta = -1;
-            var recoveryMode = Plan.ChallengeActive
-                ? Plan.RebirthRecoveryMode
-                : c.settings.rebirthDifficulty == difficulty.normal && c.bossID < c.highestBoss;
+            var recoveryMode = c.settings.rebirthDifficulty == difficulty.normal
+                               && c.bossID < c.highestBoss;
             // Mirror the irreversible admission kernel in telemetry. Aggregate one-run score is
             // necessary but not sufficient below the Boss record; unknown exact replay ETA must be
             // published as a hold instead of claiming that reset is recovery-efficient.
@@ -1913,8 +1900,8 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthRunnerUpSeconds\": " + Plan.RebirthRunnerUpSeconds + ",\n"
                        + "  \"rebirthRunnerUpDeltaSeconds\": " + Plan.RebirthRunnerUpDeltaSeconds + ",\n"
                        + "  \"rebirthRunnerUpReason\": \"" + EscapeJson(Plan.RebirthRunnerUpReason) + "\",\n"
-                       + "  \"rebirthOptimizerModel\": \"event-queue-number-dominance-and-model-boundaries-v8\",\n"
-                       + "  \"rebirthObjective\": \"maximize persistent cycle value across legal events; challenge presence does not alter ordinary rebirth timing unless native rules forbid it, weaker Number previews remain held, and forecasts stop at earlier model-changing unlocks\",\n"
+                       + "  \"rebirthOptimizerModel\": \"rolling-finite-checkpoint-v9\",\n"
+                       + "  \"rebirthObjective\": \"maintain a finite ordinary-rebirth countdown from total persistent cycle value; only the native No-Rebirth challenge can suppress execution\",\n"
                        + "  \"rebirthSelectedScorePerHour\": " + Plan.RebirthSelectedScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthRunnerUpScorePerHour\": " + Plan.RebirthRunnerUpScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthOptimizerProjectedMultiplier\": " + Plan.RebirthProjectedMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
