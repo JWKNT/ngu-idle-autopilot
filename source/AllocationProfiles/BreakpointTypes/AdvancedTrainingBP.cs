@@ -92,49 +92,60 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
         /*
         RESET-HORIZON ADMISSION
 
-        Adventure Power and Toughness use separate AT rows but a zone opens only
-        when both thresholds pass. Evaluate the pair together with the same capped
-        share used by this profile. The completion estimate reproduces native
-        progressPerTick and its one-level-per-0.02-second ceiling; the reserved farm
-        window is twelve native respawns (minimum 90 seconds), enough for the new
-        route to produce more than a transient stat screenshot before the reset.
+        Adventure Power and Toughness use separate AT rows but a route gate opens only when both
+        sides pass.  Ordinary zones use their installed thresholds. A due Titan is projected
+        through the same side-effect-free readiness oracle used by Titan execution. After three
+        confirmed deaths block an ITOPOD floor, the next target is the exact AT level that raises
+        effective offense/durability by five percent and therefore reopens the empirical trial.
+        Evaluate the pair with the same capped share used by this profile. The completion estimate
+        reproduces native progressPerTick and its one-level-per-0.02-second ceiling; the reserved
+        farm window is twelve native respawns (minimum 90 seconds), enough to use the opened route.
         */
         private bool TryGetProgressionTarget(out long target)
         {
             target = 0;
             if (Index != 0 && Index != 1 || Character == null || Main.Autopilot == null
-                || Main.Autopilot.Plan == null || Main.Autopilot.Plan.RebirthSeconds <= 0
-                || ZoneStatHelper.UserOverrides == null)
+                || Main.Autopilot.Plan == null || Main.Autopilot.Plan.RebirthSeconds <= 0)
             {
-                LastHorizonDecision = "Blocked: no finite next-zone/rebirth model is available";
+                LastHorizonDecision = "Blocked: no finite Adventure-event/rebirth model is available";
                 return false;
             }
 
-            var front = ZoneStatHelper.GetBestZone();
-            var frontZone = front == null ? -1 : front.Zone;
-            var maxReachable = ZoneHelpers.GetMaxReachableZone(false);
-            var next = ZoneStatHelper.UserOverrides
-                .Where(x => x.Key > frontZone && x.Key <= maxReachable)
-                .OrderBy(x => x.Key)
-                .FirstOrDefault();
-            if (next.Value == null)
+            var objective = NGUInjector.AllocationProfiles.CustomAllocation
+                .CurrentEnergyPortfolioObjective(Character, null);
+            if (objective != EnergyPortfolioObjective.Adventure)
             {
-                LastHorizonDecision = "Blocked: no higher ordinary Adventure zone is unlocked";
+                LastHorizonDecision = "Held: " + objective
+                    + " is the live Energy objective, so reset-local Adventure Training is not funded";
                 LastTargetZone = -1;
                 return false;
             }
 
             var attackLevel = Character.advancedTraining.level[1];
             var defenseLevel = Character.advancedTraining.level[0];
-            var attackTarget = RequiredLevel(Character.totalAdvAttack(), attackLevel, next.Value.MPower);
-            var defenseTarget = RequiredLevel(Character.totalAdvDefense(), defenseLevel, next.Value.MToughness);
-            LastTargetZone = next.Key;
+            long attackTarget;
+            long defenseTarget;
+            int targetZone;
+            string targetName;
+            if (!TryGetTitanProgressionTarget(attackLevel, defenseLevel, out attackTarget,
+                    out defenseTarget, out targetZone, out targetName)
+                && !TryGetItopodRetryTarget(attackLevel, defenseLevel, out attackTarget,
+                    out defenseTarget, out targetZone, out targetName)
+                && !TryGetOrdinaryZoneTarget(attackLevel, defenseLevel, out attackTarget,
+                    out defenseTarget, out targetZone, out targetName))
+            {
+                LastHorizonDecision = "Blocked: no finite Titan, ITOPOD retry, or higher ordinary Adventure event is available";
+                LastTargetZone = -1;
+                return false;
+            }
+
+            LastTargetZone = targetZone;
             LastAttackTarget = attackTarget;
             LastDefenseTarget = defenseTarget;
 
             if (attackTarget <= attackLevel && defenseTarget <= defenseLevel)
             {
-                LastHorizonDecision = "Met: current Adventure stats already satisfy " + next.Value.Name;
+                LastHorizonDecision = "Met: current Adventure stats already satisfy " + targetName;
                 return false;
             }
 
@@ -166,7 +177,7 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             var farmWindow = Math.Max(90.0, Math.Min(300.0, 12.0 * Math.Max(1.0, respawn)));
             if (double.IsInfinity(completionEta) || completionEta + farmWindow > remaining)
             {
-                LastHorizonDecision = "Blocked: " + next.Value.Name + " needs AT "
+                LastHorizonDecision = "Blocked: " + targetName + " needs AT "
                     + attackTarget + " Power / " + defenseTarget + " Toughness in about "
                     + (LastCompletionEtaSeconds < 0 ? "an unbounded time" : LastCompletionEtaSeconds + "s")
                     + ", leaving less than the " + Math.Ceiling(farmWindow)
@@ -178,10 +189,106 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             if (target <= Character.advancedTraining.level[Index])
                 return false;
             LastHorizonDecision = "Funded: minimum AT " + attackTarget + " Power / "
-                + defenseTarget + " Toughness opens " + next.Value.Name + " in about "
+                + defenseTarget + " Toughness opens " + targetName + " in about "
                 + LastCompletionEtaSeconds + "s with " + Math.Floor(remaining - completionEta)
                 + "s left to exploit it";
             return true;
+        }
+
+        private bool TryGetOrdinaryZoneTarget(long attackLevel, long defenseLevel,
+            out long attackTarget, out long defenseTarget, out int targetZone,
+            out string targetName)
+        {
+            attackTarget = defenseTarget = 0L;
+            targetZone = -1;
+            targetName = string.Empty;
+            if (ZoneStatHelper.UserOverrides == null) return false;
+            var front = ZoneStatHelper.GetBestZone();
+            var frontZone = front == null ? -1 : front.Zone;
+            var maxReachable = ZoneHelpers.GetMaxReachableZone(false);
+            var next = ZoneStatHelper.UserOverrides
+                .Where(x => x.Key > frontZone && x.Key <= maxReachable)
+                .OrderBy(x => x.Key)
+                .FirstOrDefault();
+            if (next.Value == null) return false;
+            attackTarget = RequiredLevel(Character.totalAdvAttack(), attackLevel,
+                next.Value.MPower);
+            defenseTarget = RequiredLevel(Character.totalAdvDefense(), defenseLevel,
+                next.Value.MToughness);
+            targetZone = next.Key;
+            targetName = next.Value.Name;
+            return attackTarget > attackLevel || defenseTarget > defenseLevel;
+        }
+
+        private bool TryGetItopodRetryTarget(long attackLevel, long defenseLevel,
+            out long attackTarget, out long defenseTarget, out int targetZone,
+            out string targetName)
+        {
+            attackTarget = defenseTarget = 0L;
+            targetZone = -1;
+            targetName = string.Empty;
+            var route = ZoneHelpers.LastItopodRoute;
+            if (route == null || route.BlockedFloor < 0
+                || route.ConsecutiveFailures < ItopodClimbTrialController.FailureStreakLimit)
+                return false;
+            attackTarget = EnergyPortfolioOptimizer.AdvancedTrainingLevelForRelativeGain(
+                attackLevel, ItopodClimbTrialController.ReadmissionImprovement);
+            defenseTarget = EnergyPortfolioOptimizer.AdvancedTrainingLevelForRelativeGain(
+                defenseLevel, ItopodClimbTrialController.ReadmissionImprovement);
+            targetZone = 1000 + route.BlockedFloor;
+            targetName = "ITOPOD floor " + route.BlockedFloor
+                         + " retry (5% capability readmission event)";
+            return attackTarget > attackLevel || defenseTarget > defenseLevel;
+        }
+
+        private bool TryGetTitanProgressionTarget(long attackLevel, long defenseLevel,
+            out long attackTarget, out long defenseTarget, out int targetZone,
+            out string targetName)
+        {
+            attackTarget = defenseTarget = 0L;
+            targetZone = -1;
+            targetName = string.Empty;
+            var titanIndex = ZoneHelpers.HighestTitanLoadoutCandidate();
+            if (titanIndex < 0 || ZoneHelpers.TitanCombatReady(titanIndex)) return false;
+
+            var intendedBeast = Character.adventureController.hasBeastMode();
+            var hasApathy = Character.inventoryController != null
+                            && Character.inventoryController.apathyCheck() >= 100;
+            // Search exact five-percent AT multiplier events. This is bounded, side-effect-free,
+            // and rejects Titans whose missing capacity, item, HP-regen, or bespoke-AI condition
+            // cannot be repaired by Adventure Power/Toughness.
+            for (var step = 1; step <= 100; step++)
+            {
+                var relativeGain = Math.Pow(1.05, step) - 1.0;
+                var nextAttack = EnergyPortfolioOptimizer.AdvancedTrainingLevelForRelativeGain(
+                    attackLevel, relativeGain);
+                var nextDefense = EnergyPortfolioOptimizer.AdvancedTrainingLevelForRelativeGain(
+                    defenseLevel, relativeGain);
+                if (nextAttack == long.MaxValue || nextDefense == long.MaxValue) break;
+                var projectedAttack = ProjectAdvancedTrainingTotal(Character.totalAdvAttack(),
+                    attackLevel, nextAttack);
+                var projectedDefense = ProjectAdvancedTrainingTotal(Character.totalAdvDefense(),
+                    defenseLevel, nextDefense);
+                var readiness = ZoneHelpers.EvaluateTitanCandidate(titanIndex,
+                    projectedAttack, projectedDefense, Character.totalAdvHP(),
+                    Character.totalAdvHPRegen(), intendedBeast, hasApathy, true);
+                if (!readiness.Ready) continue;
+                attackTarget = nextAttack;
+                defenseTarget = nextDefense;
+                targetZone = ZoneHelpers.TitanZones[titanIndex];
+                targetName = TitanMechanics.Describe(titanIndex + 1).Name
+                             + " finite combat gate";
+                return true;
+            }
+            return false;
+        }
+
+        private static double ProjectAdvancedTrainingTotal(double currentTotal,
+            long currentLevel, long targetLevel)
+        {
+            return currentTotal / Math.Max(1.0,
+                       EnergyPortfolioOptimizer.AdvancedTrainingBonus(currentLevel))
+                   * EnergyPortfolioOptimizer.AdvancedTrainingBonus(targetLevel);
         }
 
         private static long RequiredLevel(double currentTotal, long currentLevel, double threshold)

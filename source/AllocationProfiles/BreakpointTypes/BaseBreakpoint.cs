@@ -44,6 +44,16 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return IsCap;
         }
 
+        internal int PortfolioIndex
+        {
+            get { return Index; }
+        }
+
+        internal string PortfolioKey
+        {
+            get { return GetType().Name + ":" + Type + ":" + Index; }
+        }
+
         internal bool IsValid()
         {
             return CorrectResourceType() && Unlocked() && !TargetMet();

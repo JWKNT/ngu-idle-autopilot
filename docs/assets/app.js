@@ -540,8 +540,9 @@ exposes no mutation endpoint.
 
     setText("energy-value", `${shortNumber(energyAllocated)} / ${shortNumber(energyCurrent)}`);
     setText("energy-rate", `+${shortNumber(s.energyIncomePerSecond)}/s`);
-    setText("energy-decision", energyCurrent > 0 && number(s.energyIdle) <= 0
-      ? "All Energy is assigned to productive systems." : sentence(s.energyIdleReason));
+    setText("energy-decision", sentence(s.energyPortfolioDecision
+      || (energyCurrent > 0 && number(s.energyIdle) <= 0
+        ? "All Energy is assigned to productive systems." : s.energyIdleReason)));
     byId("energy-meter").style.width = `${percent(energyAllocated, energyCurrent)}%`;
     setText("energy-bt", shortNumber(s.energyBasicTrainingAllocated));
     setText("energy-other", shortNumber(s.energyNonBasicTrainingAllocated));

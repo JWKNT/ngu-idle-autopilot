@@ -59,6 +59,8 @@ namespace NGUInjector.AllocationProfiles
             = "Magic allocation has not completed a verified sweep yet";
         internal static string LastR3AllocationDecision { get; private set; }
             = "Resource 3 allocation has not completed a verified sweep yet";
+        internal static string LastEnergyPortfolioDecision { get; private set; }
+            = "Energy event portfolio has not been evaluated yet";
 
         internal bool IsAllocationRunning;
         internal long InstalledPlanVersion => _planSlot.Current == null
@@ -560,7 +562,29 @@ namespace NGUInjector.AllocationProfiles
                     .Cast<BaseBreakpoint>();
                 temp = optimizedTraining.Concat(temp.Where(x => !(x is BasicTrainingBP))).ToList();
             }
-            var prioCount = temp.Count(x => !x.IsCapPrio());
+
+            // A serialized CAP+uncapped fallback pair names one logical sink, not two economic
+            // opportunities. Prefer the uncapped representative; its native controller still
+            // enforces the productive speed cap and the shared event auction decides precedence.
+            temp = temp.GroupBy(x => x.PortfolioKey)
+                .Select(x => x.FirstOrDefault(y => !y.IsCapPrio()) ?? x.First())
+                .ToList();
+
+            var energyObjective = CurrentEnergyPortfolioObjective(_character, temp);
+            // AT admission is computed before the full candidate set exists. A newly discovered
+            // exact Gold event can legitimately preempt that preliminary Adventure decision; do
+            // not let the separately executed AT reservation bypass the final portfolio objective.
+            if (energyObjective != EnergyPortfolioObjective.Adventure)
+                temp = temp.Where(x => !(x is AdvancedTrainingBP)).ToList();
+            var rankedEnergy = RankEnergyPortfolio(temp, energyObjective);
+            temp = rankedEnergy.Select(x => x.Breakpoint).ToList();
+            LastEnergyPortfolioDecision = "Optimizing " + EnergyObjectiveName(energyObjective)
+                + ". Current event order: " + string.Join(" > ", rankedEnergy
+                    .GroupBy(x => x.Ranked.Tier)
+                    .Select(x => string.Join(" + ", x
+                        .Select(y => EnergySinkName(y.Ranked.Candidate.Sink))
+                        .Distinct().ToArray()))
+                    .ToArray());
             
 
             // This allocator owns the complete profile. removeMostEnergy leaves
@@ -646,28 +670,36 @@ namespace NGUInjector.AllocationProfiles
                 }
             }
 
-            var toAdd = prioCount > 0
-                ? (long)Math.Ceiling((double)_character.idleEnergy / prioCount)
-                : 0L;
-            SetInput(toAdd);
+            /*
+            OBJECTIVE-AWARE EVENT AUCTION
 
-            foreach (var prio in temp)
+            Process one value tier at a time. Uncapped targets in the same tier share the live
+            remainder; capped targets take only their native/profile headroom. Lower tiers see only
+            what better events declined. This removes the old global equal split and list-order
+            starvation while retaining the exact native allocation and outer vector proof.
+            */
+            foreach (var tier in rankedEnergy
+                         .Where(x => !(optimizeCappedTraining && x.Breakpoint is BasicTrainingBP)
+                                     && !cappedAdvancedTraining.Contains(
+                                         x.Breakpoint as AdvancedTrainingBP))
+                         .GroupBy(x => x.Ranked.Tier)
+                         .OrderBy(x => x.Key))
             {
-                if (optimizeCappedTraining && prio is BasicTrainingBP)
-                    continue;
-                if (cappedAdvancedTraining.Contains(prio as AdvancedTrainingBP))
-                    continue;
-                if (!prio.IsCapPrio())
+                var uncappedRemaining = tier.Count(x => !x.Breakpoint.IsCapPrio());
+                foreach (var entry in tier.OrderBy(x => x.Ranked.Candidate.OriginalOrder))
                 {
-                    prioCount--;
-                }
+                    if (_character.idleEnergy <= 0L) break;
+                    var prio = entry.Breakpoint;
+                    if (!prio.IsCapPrio())
+                    {
+                        var share = uncappedRemaining > 0
+                            ? (long)Math.Ceiling((double)_character.idleEnergy / uncappedRemaining)
+                            : 0L;
+                        SetInput(share);
+                        uncappedRemaining--;
+                    }
 
-                if (prio.Allocate())
-                {
-                    toAdd = prioCount > 0
-                        ? (long)Math.Ceiling((double)_character.idleEnergy / prioCount)
-                        : 0L;
-                    SetInput(toAdd);
+                    prio.Allocate();
                 }
             }
 
@@ -726,6 +758,7 @@ namespace NGUInjector.AllocationProfiles
                 ? ((BasicTrainingBP)x).Label
                 : x.GetType().Name).Distinct().ToArray());
             var actionShape = temp.Count + ":" + priorityKinds
+                              + ":portfolio=" + energyObjective
                               + ":no-currency=" + universalFallbackDecision;
             // Allocation still executes at 5 Hz. Coalesce identical telemetry so
             // synchronous AutoFlush I/O does not become part of the optimizer cost;
@@ -733,7 +766,8 @@ namespace NGUInjector.AllocationProfiles
             if (actionShape != _lastEnergyActionShape
                 || (DateTime.UtcNow - _lastEnergyActionLog).TotalSeconds >= 2.0)
             {
-                Main.LogAction("ALLOC", "Rebalanced Energy across " + temp.Count + " targets: " + priorityKinds
+                Main.LogAction("ALLOC", "Rebalanced Energy for " + energyObjective
+                                        + " across " + temp.Count + " event targets: " + priorityKinds
                                         + "; idle=" + _character.idleEnergy
                                         + (optimizedTrainingSpent > 0 ? ", optimizedBT=" + optimizedTrainingSpent : string.Empty)
                                         + (unlockFrontierSpent > 0 ? ", ability-frontier=" + unlockFrontierSpent : string.Empty)
@@ -750,6 +784,90 @@ namespace NGUInjector.AllocationProfiles
                                             : string.Empty));
                 _lastEnergyActionShape = actionShape;
                 _lastEnergyActionLog = DateTime.UtcNow;
+            }
+        }
+
+        private sealed class RankedEnergyBreakpoint
+        {
+            internal BaseBreakpoint Breakpoint;
+            internal EnergyPortfolioRankedCandidate Ranked;
+        }
+
+        internal static EnergyPortfolioObjective CurrentEnergyPortfolioObjective(Character character,
+            IList<BaseBreakpoint> candidates)
+        {
+            var plan = Main.Autopilot == null ? null : Main.Autopilot.Plan;
+            var activeChallengeBossGate = plan != null && plan.ChallengeActive;
+            double killSeconds;
+            var selectedBossBlocked = character != null
+                                      && !CombatHelpers.CanNukeCurrentBoss(character)
+                                      && !CombatHelpers.CanWinCurrentBoss(character, out killSeconds);
+            var route = ZoneHelpers.LastItopodRoute;
+            var dueTitanOrItopodPush = ZoneHelpers.HighestTitanLoadoutCandidate() >= 0
+                                       || route != null && (route.Climbing
+                                           || route.BlockedFloor >= 0);
+            var exactGoldGate = candidates != null && candidates.Any(x => x is TimeMachineBP);
+            var objectiveText = plan == null ? string.Empty : plan.Objective ?? string.Empty;
+            var adventurePlan = objectiveText.IndexOf("adventure", StringComparison.OrdinalIgnoreCase) >= 0
+                                || objectiveText.IndexOf("gear", StringComparison.OrdinalIgnoreCase) >= 0
+                                || objectiveText.IndexOf("titan", StringComparison.OrdinalIgnoreCase) >= 0
+                                || objectiveText.IndexOf("itopod", StringComparison.OrdinalIgnoreCase) >= 0;
+            return EnergyPortfolioOptimizer.ChooseObjective(activeChallengeBossGate,
+                selectedBossBlocked, dueTitanOrItopodPush, exactGoldGate, adventurePlan);
+        }
+
+        private static IList<RankedEnergyBreakpoint> RankEnergyPortfolio(
+            IList<BaseBreakpoint> breakpoints, EnergyPortfolioObjective objective)
+        {
+            var pairs = breakpoints.Select((bp, order) => new RankedEnergyBreakpoint
+            {
+                Breakpoint = bp,
+                Ranked = EnergyPortfolioOptimizer.RankOne(objective,
+                    new EnergyPortfolioCandidate(bp.PortfolioKey, EnergySink(bp),
+                        bp.PortfolioIndex, bp is AdvancedTrainingBP || bp is TimeMachineBP,
+                        bp is NGUBP || bp is WishBP, order))
+            }).OrderBy(x => x.Ranked.Tier)
+              .ThenBy(x => x.Ranked.Candidate.OriginalOrder)
+              .ToList();
+            return pairs;
+        }
+
+        private static EnergyPortfolioSink EnergySink(BaseBreakpoint breakpoint)
+        {
+            if (breakpoint is BasicTrainingBP) return EnergyPortfolioSink.BasicTraining;
+            if (breakpoint is AdvancedTrainingBP) return EnergyPortfolioSink.AdvancedTraining;
+            if (breakpoint is BestAug || breakpoint is AugmentBP)
+                return EnergyPortfolioSink.Augment;
+            if (breakpoint is TimeMachineBP) return EnergyPortfolioSink.TimeMachine;
+            if (breakpoint is WandoosBP) return EnergyPortfolioSink.Wandoos;
+            if (breakpoint is NGUBP) return EnergyPortfolioSink.Ngu;
+            if (breakpoint is WishBP) return EnergyPortfolioSink.Wish;
+            return EnergyPortfolioSink.Unknown;
+        }
+
+        private static string EnergyObjectiveName(EnergyPortfolioObjective objective)
+        {
+            switch (objective)
+            {
+                case EnergyPortfolioObjective.FightBoss: return "the next Fight Boss clear";
+                case EnergyPortfolioObjective.Adventure: return "Adventure and ITOPOD progress";
+                case EnergyPortfolioObjective.Gold: return "the current Gold working-capital gate";
+                default: return "permanent growth";
+            }
+        }
+
+        private static string EnergySinkName(EnergyPortfolioSink sink)
+        {
+            switch (sink)
+            {
+                case EnergyPortfolioSink.BasicTraining: return "Basic Training";
+                case EnergyPortfolioSink.AdvancedTraining: return "Advanced Training";
+                case EnergyPortfolioSink.Augment: return "Augments";
+                case EnergyPortfolioSink.TimeMachine: return "Time Machine";
+                case EnergyPortfolioSink.Wandoos: return "Wandoos";
+                case EnergyPortfolioSink.Ngu: return "NGUs";
+                case EnergyPortfolioSink.Wish: return "Wishes";
+                default: return "other productive sinks";
             }
         }
 

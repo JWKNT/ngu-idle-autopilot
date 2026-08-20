@@ -108,6 +108,7 @@ compile_run AdventureCombatStateTests
 compile_run TitanOracleTests source/Autopilot/TitanMechanics.cs
 compile_run LoadoutSolverTests source/Managers/ParetoLoadoutSolver.cs
 compile_run ExactAllocationTests source/Autopilot/ExactResourceAllocator.cs
+compile_run EnergyPortfolioTests source/Autopilot/EnergyPortfolioOptimizer.cs
 compile_run ExpPurchasePolicyTests source/Autopilot/ExpPurchasePolicy.cs
 compile_run PermanentMarginalTests source/Autopilot/PermanentMarginalOracle.cs
 compile_run StochasticKernelTests source/Autopilot/MechanicsStochastic.cs
@@ -157,4 +158,4 @@ compile_reflection_run ResetExecutionTests "$temporary_relative/NGUIdleAutopilot
 ./test-rebirth-policy.command
 ./tests/test_deployment_lifecycle.command
 
-print "PASS: aggregate regression runner completed 37 focused suites"
+print "PASS: aggregate regression runner completed 38 focused suites"

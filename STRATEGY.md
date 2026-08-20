@@ -141,27 +141,43 @@ The allocator handles Energy, Magic, and Resource 3 as complete physical vectors
 place the resource was allocated before and after a pass, proves that the totals are conserved, and
 rejects a layout that puts the right total in the wrong systems.
 
-Priorities are ceilings and opportunities, not promises that every named system receives an equal
-share. The allocator repeatedly funds the best useful breakpoint, then moves to the next one.
+Priorities are candidate events, not promises that every named system receives a fixed percentage.
+The Energy allocator first asks what is blocking progress now: a challenge or Fight Boss clear, an
+Adventure/Titan/ITOPOD push, a Gold working-capital gate, or permanent growth. It then groups
+finishable events by usefulness for that goal. Equal events share the remaining Energy; a lower
+group sees only what the better events could not productively accept. The old serialized list order
+and global equal split no longer decide the winner.
 
 ### Energy
 
-Energy normally competes among these jobs:
+Energy can work in all of these jobs:
 
 1. **Basic Training:** fund exact native speed breakpoints and useful cap reductions. The bot does
    not split Energy equally and does not blindly overfill a capped row. While abilities are still
    locked, it speed-caps the currently reachable Attack/Defense frontier when that frontier can
    finish with at least two minutes left in the run. This quickly reaches Heal, Charge, the final
    abilities, and the Advanced Training unlock instead of starving them behind weak local stats.
-2. **Advanced Training:** buy only the minimum levels that open a named Adventure gate and leave
-   enough time to use the new zone before rebirth.
+2. **Advanced Training:** buy only the minimum levels for a named, finite Adventure event. That can
+   be an ordinary-zone threshold, a due Titan that the side-effect-free combat model proves AT can
+   make ready, or an ITOPOD retry after three confirmed failures. For the ITOPOD case, the bot solves
+   the exact AT level that improves capability by five percent—the same improvement required to
+   reopen the empirical floor trial. It must still finish with enough time to use the gain before
+   rebirth.
 3. **Time Machine:** fund it only when the resulting Gold can pay a named expense in this run.
 4. **Augments:** choose an Augment/Upgrade completion whose combat improvement and useful time after
    completion repay its Energy and Gold.
 5. **Wandoos:** build a run-local multiplier only when the proposed allocation can finish the next
    native level and leave it active for at least its own build time (and at least one minute).
    A partial level that would disappear at rebirth receives nothing.
-6. **NGUs and Wishes:** build permanent progress when unlocked and selected by the current stage.
+6. **NGUs and Wishes:** build permanent progress when unlocked. Adventure, Drop Chance, and PP NGUs
+   move ahead of unrelated run-local work during an Adventure/ITOPOD push; permanent NGUs and Wishes
+   move ahead when no immediate gate is active.
+
+The resulting order changes with the live goal. For example, a Boss-clear challenge normally puts a
+finishable Augment event ahead of a long Wandoos bar. A blocked ITOPOD push puts its AT retry and the
+Adventure/Drop/PP NGUs ahead of Augments, because Augments do not improve Adventure combat. A proven
+Gold shortfall can put one repayable Time Machine level first. Exact gates beat heuristic growth,
+but the bot does not pretend that every unlike multiplier has a universal exact exchange rate.
 
 Basic Training also has a long-term cap-compression budget. The bot may spend Energy now when a
 lower permanent cap is expected to repay its cost within roughly the next two runs.

@@ -75,6 +75,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Autopilot\DifficultyTransitionExecutor.cs" />
     <Compile Include="Autopilot\EndgameDependencyModel.cs" />
     <Compile Include="Autopilot\EndgameTransactionManager.cs" />
+    <Compile Include="Autopilot\EnergyPortfolioOptimizer.cs" />
     <Compile Include="Autopilot\ExactResourceAllocator.cs" />
     <Compile Include="Autopilot\ExpPurchasePolicy.cs" />
     <Compile Include="Autopilot\GoldBootstrapPlanner.cs" />
