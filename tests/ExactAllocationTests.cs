@@ -88,6 +88,57 @@ internal static class ExactAllocationTests
             "a challenge-disabled Wandoos bar is not a fallback sink");
     }
 
+    private static void TestResetLocalCompletionAdmission()
+    {
+        double completion;
+        Assert(ExactResourceAllocator.ResetLocalLevelHasUseWindow(
+                   0.0, 1L, 1.0, 100.0, 62.0, out completion)
+               && Math.Abs(completion - 2.0) < 1e-12,
+            "a Wandoos level with a full minute of post-completion use is admissible");
+        Assert(!ExactResourceAllocator.ResetLocalLevelHasUseWindow(
+                   0.0, 1L, 1.0, 100.0, 3.9, out completion),
+            "a reset-local level that finishes near rebirth must not consume resources");
+        Assert(!ExactResourceAllocator.ResetLocalLevelHasUseWindow(
+                   0.03, 78000L, 0.0136, 1e9, 9000.0, out completion)
+               && completion > 9000.0,
+            "the observed early-game Wandoos shape must reject a level beyond the run horizon");
+        Assert(ExactResourceAllocator.ResetLocalLevelHasUseWindow(
+                   0.90, 100L, 1.0, 100.0, 61.0, out completion),
+            "nearly completed reset-local work may finish and retain a useful window");
+    }
+
+    private static void TestTrainingAndChallengeSourceContract()
+    {
+        var allocation = File.ReadAllText("source/AllocationProfiles/CustomAllocation.cs");
+        var frontier = allocation.IndexOf("AllocateUnlockFrontier(", StringComparison.Ordinal);
+        var advanced = allocation.IndexOf("var cappedAdvancedTraining", StringComparison.Ordinal);
+        Assert(frontier >= 0 && advanced > frontier,
+            "Basic Training's finite ability frontier must be funded before Advanced Training");
+
+        var basic = File.ReadAllText(
+            "source/AllocationProfiles/BreakpointTypes/BasicTrainingBP.cs");
+        Assert(basic.Contains("BTIndex >= 5")
+               && basic.Contains("seconds + 120.0 > remainingSeconds")
+               && basic.Contains("Energy = cap"),
+            "ability unlock reservation must stop after row four, speed-cap natively, and leave a use window");
+
+        var wandoos = File.ReadAllText(
+            "source/AllocationProfiles/BreakpointTypes/WandoosBP.cs");
+        var admission = wandoos.IndexOf("ResetLocalLevelHasUseWindow(",
+            StringComparison.Ordinal);
+        var nativeAdd = wandoos.IndexOf("addEnergy()", StringComparison.Ordinal);
+        Assert(admission >= 0 && nativeAdd > admission,
+            "Wandoos must prove next-level completion/payback before its native allocation");
+
+        var planner = File.ReadAllText("source/Autopilot/AutopilotPlanner.cs");
+        var basicChallenge = planner.IndexOf("active.Type == ChallengeType.Basic",
+            StringComparison.Ordinal);
+        var clearAllocations = planner.IndexOf("plan.Energy.Clear()", basicChallenge,
+            StringComparison.Ordinal);
+        Assert(basicChallenge >= 0 && clearAllocations > basicChallenge,
+            "Basic Challenge must preserve the ordinary allocation plan because it disables nothing");
+    }
+
     private static void TestResource3FallbackSourceContract()
     {
         var source = File.ReadAllText("source/AllocationProfiles/CustomAllocation.cs");
@@ -217,6 +268,8 @@ internal static class ExactAllocationTests
 
         TestSealedFullTargetSettlement();
         TestNoCurrencyIdleFallback();
+        TestResetLocalCompletionAdmission();
+        TestTrainingAndChallengeSourceContract();
 
         Console.WriteLine("Exact allocation assertions passed: " + _assertions);
         return 0;

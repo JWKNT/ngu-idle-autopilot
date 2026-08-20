@@ -149,13 +149,18 @@ share. The allocator repeatedly funds the best useful breakpoint, then moves to 
 Energy normally competes among these jobs:
 
 1. **Basic Training:** fund exact native speed breakpoints and useful cap reductions. The bot does
-   not split Energy equally and does not blindly overfill a capped row.
+   not split Energy equally and does not blindly overfill a capped row. While abilities are still
+   locked, it speed-caps the currently reachable Attack/Defense frontier when that frontier can
+   finish with at least two minutes left in the run. This quickly reaches Heal, Charge, the final
+   abilities, and the Advanced Training unlock instead of starving them behind weak local stats.
 2. **Advanced Training:** buy only the minimum levels that open a named Adventure gate and leave
    enough time to use the new zone before rebirth.
 3. **Time Machine:** fund it only when the resulting Gold can pay a named expense in this run.
 4. **Augments:** choose an Augment/Upgrade completion whose combat improvement and useful time after
    completion repay its Energy and Gold.
-5. **Wandoos:** build a run-local multiplier when enough time remains for it to matter.
+5. **Wandoos:** build a run-local multiplier only when the proposed allocation can finish the next
+   native level and leave it active for at least its own build time (and at least one minute).
+   A partial level that would disappear at rebirth receives nothing.
 6. **NGUs and Wishes:** build permanent progress when unlocked and selected by the current stage.
 
 Basic Training also has a long-term cap-compression budget. The bot may spend Energy now when a
@@ -569,7 +574,10 @@ rule.
 Wandoos levels reset at rebirth. Changing the operating system also erases both current Wandoos
 level bars immediately. The bot projects the final multiplier under every installed OS and switches
 only when the winner is at least about 10% better after repaying the lost progress. It never switches
-in the final minute of a run. Installation disks are handled separately as permanent consumables.
+in the final minute of a run. Allocation has a second, independent gate: the exact next level must
+complete early enough to have a useful post-completion window. Otherwise the resources remain with
+Basic/Advanced Training, Augments, permanent systems, or an honest idle-topology remainder.
+Installation disks are handled separately as permanent consumables.
 
 ### Augments and Time Machine
 

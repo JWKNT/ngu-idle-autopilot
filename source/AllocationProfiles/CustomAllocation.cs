@@ -568,14 +568,41 @@ namespace NGUInjector.AllocationProfiles
             // one that intentionally contains no BT target.
             _character.removeAllEnergy();
 
+            var cappedTraining = temp.OfType<BasicTrainingBP>().ToList();
+            var optimizeCappedTraining = cappedTraining.Count > 0
+                                         && cappedTraining.All(x => x.IsCapPrio());
+            var optimizedTrainingSpent = 0L;
+            var unlockFrontierSpent = 0L;
+            var longHorizonTrainingSpent = 0L;
+            var remainingTrainingBudget = 0L;
+            if (optimizeCappedTraining)
+            {
+                // CAPALLBT is one portfolio ceiling.  The first claim on it is the currently
+                // reachable ability frontier: speed-cap that row only when the exact native
+                // completion leaves at least two minutes to use the new ability/AT unlock.
+                var fraction = Math.Min(1.0, cappedTraining.Sum(x => x.ConfiguredFraction));
+                remainingTrainingBudget = (long)Math.Ceiling(_character.curEnergy * fraction);
+                foreach (var training in cappedTraining
+                             .Where(x => x.UnlockFrontierReservation > 0L)
+                             .OrderBy(x => x.UnlockFrontierSeconds))
+                {
+                    if (remainingTrainingBudget <= 0L || _character.idleEnergy <= 0L) break;
+                    var reservation = training.UnlockFrontierReservation;
+                    if (reservation > remainingTrainingBudget || reservation > _character.idleEnergy)
+                        continue;
+                    var spent = training.AllocateUnlockFrontier(remainingTrainingBudget);
+                    optimizedTrainingSpent += spent;
+                    unlockFrontierSpent += spent;
+                    remainingTrainingBudget -= spent;
+                }
+            }
+
             /*
             FINITE ADVENTURE-GATE RESERVATION
 
-            A valid AdvancedTrainingBP has already proven that its exact finite
-            Power/Toughness target opens the next zone and repays before rebirth.
-            Reserve that small, reset-local gate allocation before the broad BT
-            water-fill; otherwise the aggregate BT budget can consume the Energy
-            first and make an admitted two-stat gate impossible to complete.
+            Once the current Basic Training ability frontier is funded, a valid
+            AdvancedTrainingBP may reserve the exact Power/Toughness allocation that opens the
+            next zone and still leaves a productive farm window before rebirth.
             */
             var cappedAdvancedTraining = temp.OfType<AdvancedTrainingBP>()
                 .Where(x => x.IsCapPrio()).ToList();
@@ -588,18 +615,10 @@ namespace NGUInjector.AllocationProfiles
                 advancedTrainingSpent += Math.Max(0L, before - _character.idleEnergy);
             }
 
-            var cappedTraining = temp.OfType<BasicTrainingBP>().ToList();
-            var optimizeCappedTraining = cappedTraining.Count > 0
-                                         && cappedTraining.All(x => x.IsCapPrio());
-            var optimizedTrainingSpent = 0L;
-            var longHorizonTrainingSpent = 0L;
             if (optimizeCappedTraining)
             {
                 // Preserve the planner's aggregate BT budget, but solve its internal
-                // distribution by exact current marginal value. A 4x15% declaration
-                // now means "60% to the best BT margins", not four equal 15% slices.
-                var fraction = Math.Min(1.0, cappedTraining.Sum(x => x.ConfiguredFraction));
-                var remainingTrainingBudget = (long)Math.Ceiling(_character.curEnergy * fraction);
+                // distribution by exact current marginal value after the ability frontier.
 
                 // Fund persistent cap-compression investments before the immediate
                 // boss derivative.  This prevents a high-cap newly unlocked row from
@@ -717,6 +736,7 @@ namespace NGUInjector.AllocationProfiles
                 Main.LogAction("ALLOC", "Rebalanced Energy across " + temp.Count + " targets: " + priorityKinds
                                         + "; idle=" + _character.idleEnergy
                                         + (optimizedTrainingSpent > 0 ? ", optimizedBT=" + optimizedTrainingSpent : string.Empty)
+                                        + (unlockFrontierSpent > 0 ? ", ability-frontier=" + unlockFrontierSpent : string.Empty)
                                         + (longHorizonTrainingSpent > 0 ? ", persistent-cap-reserve=" + longHorizonTrainingSpent : string.Empty)
                                         + (advancedTrainingSpent > 0 ? ", next-zone-AT=" + advancedTrainingSpent : string.Empty)
                                         + (swept > 0 ? ", event-residual->BT=" + swept : string.Empty)
@@ -1144,14 +1164,10 @@ namespace NGUInjector.AllocationProfiles
                                && _character.NGUController != null
                                && _character.NGUController.NGU != null
                                && _character.NGUController.NGU.Length > 0;
-            var wandoosAvailable = _character.buttons != null
-                                    && _character.buttons.wandoos.interactable
-                                    && _character.settings != null
-                                    && _character.settings.wandoos98On
-                                    && _character.wandoos98 != null
-                                    && _character.wandoos98.installed
-                                    && !_character.wandoos98.disabled
-                                    && _character.wandoos98Controller != null;
+            var wandoosAvailable = WandoosTopologyAvailable()
+                                    && ProductiveWandoosEnergyWith(
+                                        _character.wandoos98.wandoosEnergy
+                                        + _character.idleEnergy);
             var selected = ExactResourceAllocator.SelectNoCurrencyFallback(nguAvailable,
                 nguAvailable, wandoosAvailable, wandoosAvailable,
                 wandoosAvailable, _character.wandoos98 != null && _character.wandoos98.disabled);
@@ -1185,14 +1201,10 @@ namespace NGUInjector.AllocationProfiles
                                && _character.NGUController != null
                                && _character.NGUController.NGUMagic != null
                                && _character.NGUController.NGUMagic.Length > 0;
-            var wandoosAvailable = _character.buttons != null
-                                    && _character.buttons.wandoos.interactable
-                                    && _character.settings != null
-                                    && _character.settings.wandoos98On
-                                    && _character.wandoos98 != null
-                                    && _character.wandoos98.installed
-                                    && !_character.wandoos98.disabled
-                                    && _character.wandoos98Controller != null;
+            var wandoosAvailable = WandoosTopologyAvailable()
+                                    && ProductiveWandoosMagicWith(
+                                        _character.wandoos98.wandoosMagic
+                                        + _character.magic.idleMagic);
             var selected = ExactResourceAllocator.SelectNoCurrencyFallback(nguAvailable,
                 nguAvailable, wandoosAvailable, wandoosAvailable,
                 wandoosAvailable, _character.wandoos98 != null && _character.wandoos98.disabled);
@@ -1420,6 +1432,53 @@ namespace NGUInjector.AllocationProfiles
             long accepted;
             return ExactResourceAllocator.TryObservedAcceptance(before,
                 _character.magic.idleMagic, before, out accepted) ? accepted : 0L;
+        }
+
+        private bool WandoosTopologyAvailable()
+        {
+            return _character.buttons != null && _character.buttons.wandoos.interactable
+                   && _character.settings != null && _character.settings.wandoos98On
+                   && _character.wandoos98 != null && _character.wandoos98.installed
+                   && !_character.wandoos98.disabled
+                   && _character.wandoos98Controller != null;
+        }
+
+        private bool ProductiveWandoosEnergyWith(long totalAllocation)
+        {
+            if (!WandoosTopologyAvailable()) return false;
+            double completion;
+            return ExactResourceAllocator.ResetLocalLevelHasUseWindow(
+                _character.wandoos98.energyProgress, totalAllocation,
+                _character.totalWandoosEnergySpeed(), CurrentWandoosBaseTime(),
+                RemainingAllocationHorizon(), out completion);
+        }
+
+        private bool ProductiveWandoosMagicWith(long totalAllocation)
+        {
+            if (!WandoosTopologyAvailable()) return false;
+            double completion;
+            return ExactResourceAllocator.ResetLocalLevelHasUseWindow(
+                _character.wandoos98.magicProgress, totalAllocation,
+                _character.totalWandoosMagicSpeed(), CurrentWandoosBaseTime(),
+                RemainingAllocationHorizon(), out completion);
+        }
+
+        private double RemainingAllocationHorizon()
+        {
+            if (Main.Autopilot == null || Main.Autopilot.Plan == null)
+                return 0.0;
+            var target = Main.Autopilot.Plan.EffectiveAllocationTarget(_character);
+            return target > 0.0
+                ? Math.Max(0.0, target - _character.rebirthTime.totalseconds)
+                : 0.0;
+        }
+
+        private double CurrentWandoosBaseTime()
+        {
+            var os = (int)_character.wandoos98.os;
+            if (_character.settings.rebirthDifficulty == difficulty.normal)
+                return os == 2 ? 1e15 : os == 1 ? 1e12 : 1e9;
+            return os == 2 ? 1e33 : os == 1 ? 1e27 : 1e21;
         }
 
         private static string DescribeNoCurrencyFallback(string resource,

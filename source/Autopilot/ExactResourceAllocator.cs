@@ -369,6 +369,35 @@ namespace NGUInjector.Autopilot
             return ticks == long.MaxValue ? double.PositiveInfinity : ticks * NativeTickSeconds;
         }
 
+        /*
+        RESET-LOCAL COMPLETION ADMISSION
+
+        A partially filled reset-local bar has no terminal value.  Wandoos is therefore useful
+        only if the proposed allocation completes the next native level early enough to use the
+        resulting multiplier.  Requiring the completed level to remain active for at least its
+        own build time is the conservative break-even boundary when no stronger downstream quote
+        exists; the absolute minute floor rejects last-second completions dominated by scheduler
+        and allocation uncertainty.
+        */
+        internal static bool ResetLocalLevelHasUseWindow(double progress, long allocation,
+            double speed, double baseTime, double remainingSeconds,
+            out double completionSeconds)
+        {
+            completionSeconds = double.PositiveInfinity;
+            if (allocation <= 0L || speed <= 0.0 || baseTime <= 0.0
+                || remainingSeconds <= 0.0 || double.IsNaN(speed)
+                || double.IsInfinity(speed) || double.IsNaN(baseTime)
+                || double.IsInfinity(baseTime) || double.IsNaN(remainingSeconds)
+                || double.IsInfinity(remainingSeconds))
+                return false;
+            var progressPerTick = Math.Min(1.0, allocation * speed / baseTime);
+            completionSeconds = NativeCompletionSeconds(progress, progressPerTick);
+            if (double.IsInfinity(completionSeconds) || completionSeconds > remainingSeconds)
+                return false;
+            var usefulSeconds = remainingSeconds - completionSeconds;
+            return usefulSeconds >= Math.Max(60.0, completionSeconds);
+        }
+
         internal static double HackMilestoneSeconds(long currentLevel, long levels,
             double currentProgress, double progressScalePerTick)
         {

@@ -14,9 +14,12 @@ Training's two-Energy cost, native discrete rates, boss marginal value, and perm
 compression payoff. It allocates through explicit side overloads and verifies idle/side deltas.
 CAPALLBT is one aggregate group ceiling while productive systems compete. Ordinary marginal
 funding ends at the next ten-native-tick completion event so the 5 Hz recovery heartbeat can
-rerank. After every other admitted sink declines, a separate idle fallback may exceed that
-portfolio ceiling and speed-cap unlocked training; it can never overfill a native cap. Never
-replace this with equal shares, unconditional over-cap allocation, or a strongest-skill shortcut.
+rerank. A separate finite-horizon reservation speed-caps the currently unlocked ability frontier
+when it can finish with time left to use the new ability; this prevents a low local boss derivative
+from starving Heal, Charge, Ultimate Attack, or the Advanced Training unlock. After every other
+admitted sink declines, an idle fallback may exceed the portfolio ceiling and speed-cap unlocked
+training; it can never overfill a native cap. Never replace this with equal shares, unconditional
+over-cap allocation, or a strongest-skill shortcut.
 */
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -73,6 +76,115 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 // distribution candidates within that same share, not independent caps.
                 return IsAggregateGroupCap ? (Index == 0 ? CapPercent : 0.0) : CapPercent;
             }
+        }
+
+        internal long UnlockFrontierReservation
+        {
+            get
+            {
+                if (Main.Autopilot == null || Main.Autopilot.Plan == null)
+                    return 0L;
+                var remaining = Main.Autopilot.Plan.EffectiveAllocationTarget(Character)
+                                - Character.rebirthTime.totalseconds;
+                if (remaining <= 0.0)
+                    return 0L;
+                var attack = Index <= 5 && AttackUnlocked
+                    ? SideUnlockReservation(true, remaining) : new UnlockReservation();
+                var defense = ((Index > 5 && DefenseUnlocked)
+                               || (Character.settings.syncTraining && Index <= 5 && DefenseUnlocked))
+                    ? SideUnlockReservation(false, remaining) : new UnlockReservation();
+                return attack.Energy + defense.Energy;
+            }
+        }
+
+        internal double UnlockFrontierSeconds
+        {
+            get
+            {
+                if (Main.Autopilot == null || Main.Autopilot.Plan == null)
+                    return double.PositiveInfinity;
+                var remaining = Main.Autopilot.Plan.EffectiveAllocationTarget(Character)
+                                - Character.rebirthTime.totalseconds;
+                if (remaining <= 0.0)
+                    return double.PositiveInfinity;
+                var attack = Index <= 5 && AttackUnlocked
+                    ? SideUnlockReservation(true, remaining) : new UnlockReservation();
+                var defense = ((Index > 5 && DefenseUnlocked)
+                               || (Character.settings.syncTraining && Index <= 5 && DefenseUnlocked))
+                    ? SideUnlockReservation(false, remaining) : new UnlockReservation();
+                return Math.Max(attack.Seconds, defense.Seconds);
+            }
+        }
+
+        internal long AllocateUnlockFrontier(long availableBudget)
+        {
+            if (availableBudget <= 0L || Main.Autopilot == null || Main.Autopilot.Plan == null)
+                return 0L;
+            var remaining = Main.Autopilot.Plan.EffectiveAllocationTarget(Character)
+                            - Character.rebirthTime.totalseconds;
+            if (remaining <= 0.0)
+                return 0L;
+            var attack = Index <= 5 && AttackUnlocked
+                ? SideUnlockReservation(true, remaining) : new UnlockReservation();
+            var defense = ((Index > 5 && DefenseUnlocked)
+                           || (Character.settings.syncTraining && Index <= 5 && DefenseUnlocked))
+                ? SideUnlockReservation(false, remaining) : new UnlockReservation();
+            var required = attack.Energy + defense.Energy;
+            if (required <= 0L || required > availableBudget || required > Character.idleEnergy)
+                return 0L;
+
+            var idleBefore = Character.idleEnergy;
+            if (Character.settings.syncTraining && Index <= 5)
+            {
+                if (attack.Energy > 0L)
+                    Character.allOffenseController.trains[BTIndex].addEnergy(attack.Energy);
+                if (defense.Energy > 0L)
+                    Character.allDefenseController.trains[BTIndex].addEnergy(defense.Energy);
+            }
+            else if (Index <= 5 && attack.Energy > 0L)
+            {
+                Character.allOffenseController.trains[BTIndex].addEnergy(attack.Energy);
+            }
+            else if (Index > 5 && defense.Energy > 0L)
+            {
+                Character.allDefenseController.trains[BTIndex].addEnergy(defense.Energy);
+            }
+            return Math.Max(0L, idleBefore - Character.idleEnergy);
+        }
+
+        private UnlockReservation SideUnlockReservation(bool attackSide, double remainingSeconds)
+        {
+            // Row five has no successor ability. Row four's 25,001 boundary unlocks both the
+            // final Basic Training ability and Advanced Training, so it remains a frontier.
+            if (BTIndex < 0 || BTIndex >= 5)
+                return new UnlockReservation();
+            var level = attackSide ? Character.training.attackTraining[BTIndex]
+                : Character.training.defenseTraining[BTIndex];
+            var cap = attackSide ? Character.training.attackCaps[BTIndex]
+                : Character.training.defenseCaps[BTIndex];
+            var target = 5000L * (BTIndex + 1L) + 1L;
+            if (cap <= 0L || level >= target)
+                return new UnlockReservation();
+            var levelMultiplier = 1L;
+            if (Character.adventure.itopod.perkLevel.Count > 15
+                && Character.adventure.itopod.perkLevel[15] >= 1) levelMultiplier++;
+            if (Character.beastQuest.quirkLevel.Count > 17
+                && Character.beastQuest.quirkLevel[17] >= 1) levelMultiplier++;
+            if (Character.wishes.wishes.Count > 23
+                && Character.wishes.wishes[23].level >= 1) levelMultiplier++;
+            var completions = (long)Math.Ceiling((target - level) / (double)levelMultiplier);
+            var seconds = completions * ExactResourceAllocator.NativeTickSeconds;
+            // The speed-capped frontier is reset-local. Require two minutes after completion to
+            // use the new combat ability or begin Advanced Training before the rebirth boundary.
+            if (seconds + 120.0 > remainingSeconds)
+                return new UnlockReservation();
+            return new UnlockReservation {Energy = cap, Seconds = seconds};
+        }
+
+        private struct UnlockReservation
+        {
+            internal long Energy;
+            internal double Seconds;
         }
 
         // A locally greedy boss derivative can permanently starve a newly unlocked,

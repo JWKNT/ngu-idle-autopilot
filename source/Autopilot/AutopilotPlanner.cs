@@ -449,10 +449,6 @@ namespace NGUInjector.Autopilot
             plan.ChallengeEvidenceSummary = active.Code + " active. " + active.RulesSummary
                                             + " " + active.RebirthPolicySummary
                                             + " Clear estimate: " + active.EtaReason;
-            plan.Energy.Clear();
-            plan.Magic.Clear();
-            plan.R3.Clear();
-
             // Challenge restrictions still alter the resources which are legal to allocate, but
             // they do not own ordinary rebirth timing. Only NGU Idle's actual No-Rebirth challenge
             // may suppress the finite checkpoint selected by the normal optimizer.
@@ -479,6 +475,20 @@ namespace NGUInjector.Autopilot
                                                 + " Ordinary rebirth timing is independent of this challenge."
                                                 + " Clear estimate: " + active.EtaReason;
             }
+
+            // Basic disables no system. Replacing the stage plan here used to inflate Wandoos to
+            // 20/25 percent and silently discard its exact Advanced Training gates. Preserve the
+            // ordinary plan byte-for-byte; challenge metadata and its Boss objective are the only
+            // changes needed.
+            if (active.Type == ChallengeType.Basic)
+            {
+                plan.WandoosOS = ChooseWandoos(c, c.settings.rebirthDifficulty, plan);
+                return;
+            }
+
+            plan.Energy.Clear();
+            plan.Magic.Clear();
+            plan.R3.Clear();
 
             var energy = new List<string> {"CAPALLBT:20"};
             if (!noTM) energy.Add("CAPTM:25");
