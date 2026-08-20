@@ -426,9 +426,16 @@ namespace NGUInjector.Autopilot
             // The base stage has already selected an exact ordinary-rebirth checkpoint.  Passing
             // it into the active challenge policy is essential: omitting it made every challenge,
             // including unrestricted Basic, look like a native no-reset mode.
-            var active = ChallengeStrategyPlanner.ActivePolicy(c, null, plan.RebirthSeconds);
-            if (active == null) return;
             var ordinaryRebirthSeconds = plan.RebirthSeconds;
+            var ordinaryRebirthHold = plan.RebirthExecutionHold;
+            var ordinaryRebirthReason = plan.RebirthReason;
+            var ordinaryRebirthEtaReason = plan.RebirthEtaReason;
+            var ordinaryNextEvaluationEta = plan.RebirthNextEvaluationEtaSeconds;
+            // A mechanical permission to rebirth cannot promote an optimizer HOLD into an exact
+            // checkpoint. Supply no event until the ordinary planner has admitted one.
+            var active = ChallengeStrategyPlanner.ActivePolicy(c, null,
+                ordinaryRebirthHold ? -1 : ordinaryRebirthSeconds);
+            if (active == null) return;
             plan.Challenges.Clear();
             plan.Stage += " / active challenge";
             plan.Objective = active.Objective;
@@ -455,11 +462,15 @@ namespace NGUInjector.Autopilot
             if (noRebirth)
             {
                 plan.RebirthSeconds = -1;
-                plan.RebirthReason = active.Objective;
+                plan.RebirthReason = active.MechanicallyAllowsRebirth && ordinaryRebirthHold
+                    ? ordinaryRebirthReason : active.Objective;
                 plan.RebirthExecutionHold = true;
                 plan.RebirthNextPositiveEtaSeconds = -1;
-                plan.RebirthNextEvaluationEtaSeconds = 1;
-                plan.RebirthEtaReason = active.EtaReason;
+                plan.RebirthNextEvaluationEtaSeconds = active.MechanicallyAllowsRebirth
+                                                       && ordinaryRebirthHold
+                    ? ordinaryNextEvaluationEta : 1;
+                plan.RebirthEtaReason = active.MechanicallyAllowsRebirth && ordinaryRebirthHold
+                    ? ordinaryRebirthEtaReason : active.EtaReason;
                 plan.RebirthRunnerUpSeconds = -1;
                 plan.RebirthRunnerUpDeltaSeconds = -1;
             }

@@ -1770,7 +1770,9 @@ namespace NGUInjector.Autopilot
                                     && !double.IsInfinity(projectedDefenseMultiplier);
             var recoveryResetEta = Plan.RebirthRecoveryEtaSeconds;
             var recoveryContinueEta = -1;
-            var recoveryMode = c.settings.rebirthDifficulty == difficulty.normal && c.bossID < c.highestBoss;
+            var recoveryMode = Plan.ChallengeActive
+                ? Plan.RebirthRecoveryMode
+                : c.settings.rebirthDifficulty == difficulty.normal && c.bossID < c.highestBoss;
             // Mirror the irreversible admission kernel in telemetry. Aggregate one-run score is
             // necessary but not sufficient below the Boss record; unknown exact replay ETA must be
             // published as a hold instead of claiming that reset is recovery-efficient.
@@ -1896,8 +1898,8 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthRunnerUpSeconds\": " + Plan.RebirthRunnerUpSeconds + ",\n"
                        + "  \"rebirthRunnerUpDeltaSeconds\": " + Plan.RebirthRunnerUpDeltaSeconds + ",\n"
                        + "  \"rebirthRunnerUpReason\": \"" + EscapeJson(Plan.RebirthRunnerUpReason) + "\",\n"
-                       + "  \"rebirthOptimizerModel\": \"event-queue-number-cost-and-recovery-proof-v6\",\n"
-                       + "  \"rebirthObjective\": \"maximize persistent cycle value across legal events; lower Number during record recovery requires a finite Boss-0 replay proof, otherwise wait for native Number non-regression\",\n"
+                       + "  \"rebirthOptimizerModel\": \"event-queue-challenge-continuation-and-bounded-recovery-v7\",\n"
+                       + "  \"rebirthObjective\": \"maximize persistent cycle value across legal events; an active standard challenge with a finite Boss edge continues first, and record-recovery forecasts stay inside their source-bounded rolling event horizon\",\n"
                        + "  \"rebirthSelectedScorePerHour\": " + Plan.RebirthSelectedScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthRunnerUpScorePerHour\": " + Plan.RebirthRunnerUpScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthOptimizerProjectedMultiplier\": " + Plan.RebirthProjectedMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"

@@ -727,6 +727,52 @@ namespace NGUInjector.Autopilot
                         "finish the projected Fight Boss kill and bank its EXP, unlocks, and boss multiplier");
             }
 
+            // A standard Boss-target challenge completes automatically when its target Boss is
+            // passed.  If continuing has a finite next-Boss edge, that edge owns the decision:
+            // publishing a multi-day ordinary-reset estimate from the pre-challenge Boss record
+            // confuses two unrelated clocks and may throw away the stronger challenge run.  Hold
+            // the ordinary reset, take the native Boss event, and re-estimate from the resulting
+            // state.  Troll, Laser Sword, 24-hour and 100-Level challenges have special reset
+            // tradeoffs and deliberately stay outside this simple continuation rule.
+            var challengeBossEta = bossEta;
+            if (IsStandardBossChallenge(c) && challengeBossEta < 0)
+                challengeBossEta = AutopilotManager.SelectedBossDefeatEta(c, 604800);
+            if (StandardChallengeContinuationOwnsNextBoss(c, challengeBossEta))
+            {
+                _stickyTarget = -1;
+                _stickyKind = string.Empty;
+                var eventAge = elapsed > int.MaxValue - challengeBossEta - 2
+                    ? int.MaxValue : elapsed + challengeBossEta + 2;
+                return new RebirthRecommendation
+                {
+                    TargetSeconds = -1,
+                    Reason = "hold ordinary rebirth while the active challenge has a finite next-Boss continuation",
+                    RunnerUpSeconds = eventAge,
+                    RunnerUpDeltaSeconds = challengeBossEta + 2,
+                    RunnerUpReason = "defeat the selected challenge Boss, then rebuild the reset estimate from the new native state",
+                    SelectedScorePerHour = 0.0,
+                    RunnerUpScorePerHour = 0.0,
+                    ProjectedMultiplier = c.nextAttackMulti,
+                    ProjectedAP = eventAge < 4100 ? 0 : 1 + (eventAge - 4100) / 500,
+                    CandidateSummary = "HOLD challenge continuation | next selected Boss event in "
+                                       + challengeBossEta.ToString("N0") + "s",
+                    CandidateCount = candidates.Count,
+                    RecoveryMode = false,
+                    RecoveryEtaSeconds = -1,
+                    RecoveryRemainingBosses = 0,
+                    RecoveryReason = "the active challenge objective, not the saved pre-challenge Boss record, owns this interval",
+                    MinimumNumberRatio = Math.Min(
+                        c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
+                        c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0),
+                    ExecutionHold = true,
+                    NextPositiveEtaSeconds = -1,
+                    NextEvaluationEtaSeconds = 1,
+                    EtaReason = "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is projected in "
+                                + challengeBossEta.ToString("N0")
+                                + "s and every Boss outcome triggers a fresh estimate"
+                };
+            }
+
             var recoveryMode = c.bossID < c.highestBoss;
             if (recoveryMode)
             {
@@ -736,7 +782,7 @@ namespace NGUInjector.Autopilot
                 // preview which is non-regressive instead of selecting an earlier checkpoint
                 // which the irreversible gate can never execute.
                 var nonRegressiveAt = FindFirstNonRegressiveCheckpoint(c, minimum,
-                    elapsed, bossEta);
+                    elapsed, bossEta, horizon);
                 if (nonRegressiveAt >= 0)
                     AddCandidate(candidates, nonRegressiveAt, "number-non-regression",
                         "wait for the first projected native Number preview that cannot weaken boss-record replay");
@@ -833,7 +879,7 @@ namespace NGUInjector.Autopilot
                         c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0),
                     ExecutionHold = true,
                     NextPositiveEtaSeconds = FindNextPositiveResetEta(c, elapsed, bossEta,
-                        recoveryMode),
+                        recoveryMode, horizon),
                     NextEvaluationEtaSeconds = 1,
                     EtaReason = "waiting for a positive checkpoint which the final recovery gate can execute"
                 };
@@ -855,7 +901,7 @@ namespace NGUInjector.Autopilot
             {
                 var bestRejected = ordered[0];
                 var positiveEta = FindNextPositiveResetEta(c, elapsed, bossEta,
-                    recoveryMode);
+                    recoveryMode, horizon);
                 _stickyTarget = -1;
                 _stickyKind = string.Empty;
                 return new RebirthRecommendation
@@ -966,6 +1012,31 @@ namespace NGUInjector.Autopilot
                    && selectedScorePerHour > 1e-12;
         }
 
+        internal static bool ShouldDeferOrdinaryResetForChallengeBoss(bool challengeActive,
+            bool ordinaryRebirthAllowed, bool specialResetMechanics, int nextBossEtaSeconds)
+        {
+            return challengeActive && ordinaryRebirthAllowed && !specialResetMechanics
+                   && nextBossEtaSeconds >= 0;
+        }
+
+        private static bool StandardChallengeContinuationOwnsNextBoss(Character c, int bossEta)
+        {
+            var standardBossChallenge = IsStandardBossChallenge(c);
+            return ShouldDeferOrdinaryResetForChallengeBoss(true, true,
+                !standardBossChallenge, bossEta);
+        }
+
+        private static bool IsStandardBossChallenge(Character c)
+        {
+            return c != null && c.challenges != null && c.challenges.inChallenge
+                   && (c.challenges.basicChallenge.inChallenge
+                       || c.challenges.noAugsChallenge.inChallenge
+                       || c.challenges.noEquipmentChallenge.inChallenge
+                       || c.challenges.blindChallenge.inChallenge
+                       || c.challenges.nguChallenge.inChallenge
+                       || c.challenges.timeMachineChallenge.inChallenge);
+        }
+
         internal static bool ShouldKeepAdmittedCheckpoint(int admittedTargetSeconds,
             int elapsedSeconds, double resetNowScorePerHour, bool firstGrbWindowRequired)
         {
@@ -1055,9 +1126,11 @@ namespace NGUInjector.Autopilot
         }
 
         private static int FindNextPositiveResetEta(Character c, int elapsed, int bossEta,
-            bool recoveryMode)
+            bool recoveryMode, int projectionHorizon)
         {
-            var horizon = elapsed > int.MaxValue - 172800 ? int.MaxValue : elapsed + 172800;
+            var horizon = recoveryMode
+                ? Math.Max(elapsed, projectionHorizon)
+                : elapsed > int.MaxValue - 172800 ? int.MaxValue : elapsed + 172800;
             var previous = elapsed;
             for (var target = elapsed + 60; target > elapsed && target <= horizon; target += 60)
             {
@@ -1085,7 +1158,7 @@ namespace NGUInjector.Autopilot
         }
 
         private static int FindFirstNonRegressiveCheckpoint(Character c, int minimum,
-            int elapsed, int bossEta)
+            int elapsed, int bossEta, int horizon)
         {
             var lower = Math.Max(minimum, elapsed);
             var first = new Candidate {Time = lower, Kind = "number-proof-probe"};
@@ -1093,11 +1166,11 @@ namespace NGUInjector.Autopilot
             if (RecoveryCandidateHasProof(true, first.ProjectedGainRatio, -1))
                 return lower;
 
-            // Seven days matches the bounded raw Fight Boss forecast. Exponential bracketing
-            // keeps this cheap on a one-second planning loop, then an integer binary search finds
-            // the first exact run age whose projected native preview passes the final >= 1 gate.
-            var horizon = elapsed > int.MaxValue - 604800
-                ? int.MaxValue : elapsed + 604800;
+            // This projection freezes every event after the one selected Boss outcome. Searching
+            // it for days produces precise-looking nonsense because later Boss wins, allocation
+            // changes and purchases are omitted. Stay inside the rolling event horizon used by
+            // the rest of EarlyNormal; a fresh native snapshot extends that horizon every second.
+            horizon = Math.Max(lower, horizon);
             var previous = lower;
             var step = 60;
             var upper = -1;

@@ -540,9 +540,18 @@ While the current run is still replaying toward the saved Boss record, the plann
 reset gate use the same rule. A lower post-reset Number needs a finite, bounded Boss-0 replay proof
 that beats continuing. The early-game live planner does not yet have that complete replay model, so
 it waits for the first positive-value checkpoint whose native Attack and Defense Number previews
-are both at least as strong as the current run. This avoids announcing “reset now” for a checkpoint
-the safety gate cannot execute. Fresh training, Blood, boss, and time changes are reevaluated every
-second and can move that safe checkpoint earlier.
+are both at least as strong as the current run. That projection is limited to the rolling event
+horizon in which its one-Boss and current-allocation assumptions are valid. It reports an unknown
+ETA instead of extending a frozen snapshot into a precise-looking multi-day forecast. Fresh
+training, Blood, boss, and time changes are reevaluated every second and can move the safe checkpoint
+earlier.
+
+Inside a normal Boss-target challenge such as Basic, the saved pre-challenge Boss record is not a
+reset clock. When the selected challenge Boss has a finite continuation estimate, the bot keeps the
+stronger current run, takes that Boss result, and recalculates. The dashboard therefore says that an
+ordinary reset is deferred and shows the next Boss event, rather than claiming it will take days to
+rebuild a Number that the challenge does not require. Challenges with special reset mechanics keep
+their own dedicated policy.
 
 ### MacGuffins, Beards, and long runs
 

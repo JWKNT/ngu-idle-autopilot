@@ -140,6 +140,31 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIsNone(view["challenge"]["targetLevel"])
         self.assertFalse(view["identity"]["verifiedEnvelope"])
 
+    def test_finite_challenge_boss_continuation_is_human_readable(self) -> None:
+        view = build_observability(
+            {
+                "challengeActive": True,
+                "challengeAllowsRebirth": True,
+                "rebirthExecutionHold": True,
+                "rebirthSeconds": -1,
+                "rebirthSafetyBlockReason": "the event-driven planner has not admitted a boundary",
+                "rebirthEtaReason": "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is projected in 2,379s and every Boss outcome triggers a fresh estimate",
+                "bossSelectedId": 53,
+                "bossDefeatEtaSeconds": 2004,
+            }
+        )
+        self.assertEqual(view["rebirth"]["action"], "hold")
+        self.assertEqual(
+            view["rebirth"]["actionLabel"],
+            "DEFERRED — continue to the next challenge Boss",
+        )
+        self.assertEqual(
+            view["rebirth"]["reason"],
+            "Continue to Boss #53; the latest live combat estimate is 2,004s. "
+            "The bot recalculates after every Boss outcome.",
+        )
+        self.assertIsNone(view["rebirth"]["resetEtaSeconds"])
+
     def test_due_final_boundary_hold_never_displays_reset_now(self) -> None:
         view = build_observability(
             {

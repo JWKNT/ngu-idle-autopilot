@@ -136,6 +136,22 @@ internal static class RebirthPolicyGoldenTests
             "unreflected Blood-adjusted preview blocks mutation");
     }
 
+    private static void TestChallengeLocalResetEstimate()
+    {
+        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, 1819),
+            "a standard active challenge continues along a finite next-Boss edge");
+        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, -1),
+            "an unknown Boss route does not masquerade as a finite continuation proof");
+        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, true, 10),
+            "special challenge reset mechanics retain their dedicated policy");
+        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, false, false, 10),
+            "a native no-rebirth rule is not relabeled as a strategic continuation choice");
+    }
+
     private static void TestDueProfileSignatureIsStable()
     {
         Assert((string)Call("NGUInjector.Autopilot.AutopilotPlan", "RebirthSignatureFor",
@@ -268,6 +284,7 @@ internal static class RebirthPolicyGoldenTests
             TestObservedAllNegativeMutationCase();
             TestLowerNumberPositivePersistentCase();
             TestRecoveryCounterfactuals();
+            TestChallengeLocalResetEstimate();
             TestTask29AuthorityCeilingAndBridge();
             Console.WriteLine("Rebirth policy golden tests passed: " + _assertions + " assertions");
             return 0;

@@ -125,9 +125,15 @@ internal static class OrdinaryRebirthTransactionTests
             "AutopilotManager bridges the live plan to the typed transaction");
         Assert(planner.IndexOf("var ordinaryRebirthSeconds = plan.RebirthSeconds;",
                    StringComparison.Ordinal) >= 0
+               && planner.IndexOf("var ordinaryRebirthHold = plan.RebirthExecutionHold;",
+                   StringComparison.Ordinal) >= 0
+               && planner.IndexOf("ordinaryRebirthHold ? -1 : ordinaryRebirthSeconds",
+                   StringComparison.Ordinal) >= 0
+               && planner.IndexOf("ordinaryRebirthHold",
+                   StringComparison.Ordinal) >= 0
                && planner.IndexOf("if (active.RebirthSeconds != ordinaryRebirthSeconds)",
                    StringComparison.Ordinal) >= 0,
-            "an unrestricted active challenge preserves the ordinary checkpoint's ETA evidence");
+            "an unrestricted active challenge preserves both ordinary checkpoint and hold evidence");
         Assert(manager.IndexOf("var recoveryPolicy = RebirthOptimizer.EvaluateMutationPolicy(",
                    StringComparison.Ordinal) >= 0
                && manager.IndexOf("recoveryMode && !recoveryPolicy.Authorized",

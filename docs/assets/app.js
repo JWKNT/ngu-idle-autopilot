@@ -251,6 +251,14 @@ exposes no mutation endpoint.
     const noResetChallenge = challengeActive && challengeAllowsRebirth === false;
     const boundaryHold = Boolean(s.rebirthBoundaryHold);
     const hold = Boolean(s.rebirthExecutionHold) || boundaryHold || noResetChallenge;
+    const etaReason = text(s.rebirthEtaReason, "");
+    const challengeContinuation = Boolean(s.rebirthExecutionHold) && challengeActive
+      && challengeAllowsRebirth === true && etaReason.includes("selected challenge Boss outcome");
+    const challengeBossEta = optionalNumber(s.bossDefeatEtaSeconds);
+    const challengeBossId = optionalNumber(s.bossSelectedId);
+    const challengeContinuationReason = challengeContinuation && challengeBossEta !== null
+      ? `Continue to ${challengeBossId !== null ? `Boss #${Math.round(challengeBossId)}` : "the selected challenge Boss"}; the latest live combat estimate is ${optionalDuration(challengeBossEta)}. The bot recalculates after every Boss outcome.`
+      : etaReason;
     const resetEta = !hold && target !== null && target >= 0 && elapsed !== null ? Math.max(0, target - elapsed) : null;
     const executionEnabled = typeof s.rebirthExecutionEnabled === "boolean" ? s.rebirthExecutionEnabled : null;
     const action = noResetChallenge ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) || boundaryHold ? "hold"
@@ -311,15 +319,16 @@ exposes no mutation endpoint.
     return {
       rebirth: {
         action,
-        actionLabel: labels[action],
-        reason: s.rebirthSafetyBlockReason || s.rebirthBoundaryReason || s.rebirthReason || "No decision reason was emitted.",
+        actionLabel: challengeContinuation ? "DEFERRED — continue to the next challenge Boss" : labels[action],
+        reason: challengeContinuation ? challengeContinuationReason
+          : s.rebirthSafetyBlockReason || s.rebirthBoundaryReason || s.rebirthReason || "No decision reason was emitted.",
         noResetHold: hold || executionEnabled === false,
         targetRunAgeSeconds: target !== null && target >= 0 ? target : null,
         currentRunAgeSeconds: elapsed !== null && elapsed >= 0 ? elapsed : null,
         resetEtaSeconds: resetEta,
         nextPositiveEtaSeconds: optionalNumber(s.rebirthNextPositiveEtaSeconds),
         nextEvaluationEtaSeconds: optionalNumber(s.rebirthNextEvaluationEtaSeconds),
-        etaReason: s.rebirthEtaReason || null,
+        etaReason: etaReason || null,
         resetRecoveryEtaSeconds: optionalNumber(s.rebirthRecoveryResetRouteEtaSeconds),
         continueRecoveryEtaSeconds: optionalNumber(s.rebirthRecoveryContinueRouteEtaSeconds),
         selectedCycleRecoveryEtaSeconds: optionalNumber(s.rebirthOptimizerRecordRecoveryEtaSeconds),
@@ -433,9 +442,12 @@ exposes no mutation endpoint.
   function renderHeadline(s, observability) {
     const rebirth = observability.rebirth;
     const challenge = observability.challenge;
+    const challengeContinuation = rebirth.action === "hold" && challenge.active
+      && String(rebirth.etaReason || "").includes("selected challenge Boss outcome");
     const headline = rebirth.action === "reset-at-checkpoint" ? optionalDuration(rebirth.resetEtaSeconds)
       : rebirth.action === "reset-due" ? "Reset due"
         : rebirth.action === "no-reset-challenge" ? "No reset"
+          : challengeContinuation ? "Boss first"
           : rebirth.action === "hold" ? "Planner hold"
             : rebirth.action === "disabled" ? "Disabled" : "Unavailable";
     setText("metric-rebirth", headline);
@@ -723,9 +735,12 @@ exposes no mutation endpoint.
     setText("rebirth-state", rebirth.actionLabel);
     setText("rebirth-reason", sentence(rebirth.reason));
     setText("rebirth-policy", rebirth.actionLabel);
+    const challengeContinuation = rebirth.action === "hold" && observability.challenge.active
+      && String(rebirth.etaReason || "").includes("selected challenge Boss outcome");
     setText("rebirth-next-action", rebirth.action === "reset-at-checkpoint" ? "Execute verified native rebirth"
       : rebirth.action === "reset-due" ? "Verify and execute now"
         : rebirth.action === "no-reset-challenge" ? "Continue the active challenge"
+          : challengeContinuation ? "Defeat the selected challenge Boss, then recalculate"
           : rebirth.action === "hold" ? "Wait for a finite admitted checkpoint"
             : rebirth.action === "disabled" ? "Observe only" : "Await complete telemetry");
     setText("rebirth-reset-eta", optionalDuration(rebirth.resetEtaSeconds, rebirth.noResetHold ? "No reset scheduled" : "Unavailable"));
