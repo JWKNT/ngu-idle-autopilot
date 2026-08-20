@@ -7,9 +7,10 @@ live-enabled, source-proven early progression atoms, invokes only NativeMutation
 re-captures the same vector for MutationCoordinator settlement.  The policy selector remains in
 AutopilotManager; this file does not rank purchases or grant authority.
 
-The adapter intentionally supports only state keys with an exact integral representation.  Energy
-Power +0.1 is represented in tenths; Energy/Magic Speed use exact hundredths; Energy Bars and Cap
-are integral. Unsupported descriptors return no snapshot and therefore fail closed before a debit. Custom-input purchases use the
+The adapter intentionally supports only state keys with an exact integral representation. Energy
+Power +0.1 is represented in tenths; Energy/Magic Speed use exact hundredths; resource Power custom
+atoms are whole units; and resource Bars/Caps are integral. Unsupported descriptors return no
+snapshot and therefore fail closed before a debit. Custom-input purchases use the
 build-pinned field/parser transaction in NativeMutationAdapters, which restores the user's prior
 input synchronously.  A normal native return is never success: the manager still requires the
 exact EXP debit and declared permanent-stat delta.
@@ -139,13 +140,44 @@ namespace NGUInjector.Autopilot
                     return true;
                 case "permanent.energyBars": value = _character.energyBars; return true;
                 case "permanent.energyCap": value = _character.capEnergy; return true;
+                case "permanent.energyPower":
+                    value = (long)Math.Round(_character.energyPower,
+                        MidpointRounding.AwayFromZero);
+                    return true;
                 case "permanent.energySpeed":
                     value = (long)Math.Round(_character.energySpeed * 100.0,
                         MidpointRounding.AwayFromZero);
                     return true;
+                case "permanent.magicPower":
+                    if (_character.magic == null) return false;
+                    value = (long)Math.Round(_character.magic.magicPower,
+                        MidpointRounding.AwayFromZero);
+                    return true;
+                case "permanent.magicCap":
+                    if (_character.magic == null) return false;
+                    value = _character.magic.capMagic;
+                    return true;
+                case "permanent.magicBars":
+                    if (_character.magic == null) return false;
+                    value = _character.magic.magicPerBar;
+                    return true;
                 case "permanent.magicSpeed":
+                    if (_character.magic == null) return false;
                     value = (long)Math.Round(_character.magic.magicBarSpeed * 100.0,
                         MidpointRounding.AwayFromZero);
+                    return true;
+                case "permanent.res3Power":
+                    if (_character.res3 == null) return false;
+                    value = (long)Math.Round(_character.res3.res3Power,
+                        MidpointRounding.AwayFromZero);
+                    return true;
+                case "permanent.res3Cap":
+                    if (_character.res3 == null) return false;
+                    value = _character.res3.capRes3;
+                    return true;
+                case "permanent.res3Bars":
+                    if (_character.res3 == null) return false;
+                    value = _character.res3.res3PerBar;
                     return true;
                 case "permanent.fightBossAttackTenths":
                     value = (long)Math.Round(_character.attackBoost * 10.0,

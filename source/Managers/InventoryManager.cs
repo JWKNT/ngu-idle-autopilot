@@ -2057,7 +2057,7 @@ namespace NGUInjector.Managers
                 if (!CanProveTrashSafe(candidate, slot)) continue;
                 var keeper = owned.FirstOrDefault(x => x != null
                     && !ReferenceEquals(x, candidate) && x.id == candidate.id
-                    && DominatesForAllUses(x, candidate));
+                    && SameIdDominatesForAllUses(x, candidate));
                 var sameIdProof = keeper != null;
                 if (sameIdProof
                     && OwnedCopyCount(candidate.id, owned) <= RequiredPhysicalCopyCount(candidate.id))
@@ -2075,7 +2075,12 @@ namespace NGUInjector.Managers
                     sameIdProof = keeper != null;
                     equalitySafeProof = keeper != null;
                 }
-                if (keeper == null && !IsConfiguredLoadoutItem(candidate.id))
+                var hasSpecial = candidate.spec1Type != specType.None
+                                 || candidate.spec2Type != specType.None
+                                 || candidate.spec3Type != specType.None
+                                 || candidate.spec1Cap > 0f || candidate.spec2Cap > 0f
+                                 || candidate.spec3Cap > 0f;
+                if (keeper == null && !hasSpecial && !IsConfiguredLoadoutItem(candidate.id))
                     keeper = owned.FirstOrDefault(x => x != null
                         && !ReferenceEquals(x, candidate)
                         && DominatesFixedSlotForAllFuture(x, candidate));
@@ -2120,10 +2125,9 @@ namespace NGUInjector.Managers
                 || !_character.inventory.itemList.itemMaxxed[id])
                 return false;
             // MAXX is permanent Item List progress, not permission to erase a unique utility
-            // profile. Retain every gear object with a native special cap; loadout optimization
-            // may need its Drop/respawn/resource effect long after its raw combat slot is obsolete.
-            if (item.spec1Cap > 0f || item.spec2Cap > 0f || item.spec3Cap > 0f)
-                return false;
+            // profile. Specials remain protected from cross-ID domination above. A same-ID copy
+            // may still be redundant when another physical copy dominates its complete current
+            // and future stat/special vector and simultaneous-copy demand is already satisfied.
             // A set-completion flag is the authoritative collection checkpoint. Even
             // if one piece's individual Item List entry is already MAXXED, retain all
             // drops from that source while another piece keeps the set incomplete.
@@ -2182,8 +2186,9 @@ namespace NGUInjector.Managers
                    || Settings.QuickLoadout.Contains(id);
         }
 
-        private static bool DominatesForAllUses(Equipment keeper, Equipment candidate)
+        internal static bool SameIdDominatesForAllUses(Equipment keeper, Equipment candidate)
         {
+            if (keeper == null || candidate == null || keeper.id != candidate.id) return false;
             const double epsilon = 1e-6;
             var noWorse = keeper.level >= candidate.level
                           && keeper.curAttack + epsilon >= candidate.curAttack

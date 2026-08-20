@@ -314,23 +314,72 @@ namespace NGUInjector.Autopilot
             var marginal = BestMarginalExpCandidate(c);
             if (marginal == null || marginal.Cost > c.realExp - Config.ExpReserve)
                 return false;
-            var key = marginal.Method == "buyEnergyPower01" ? "exp.energy.power01"
-                : marginal.Method == "buyEnergyBar1" ? "exp.energy.bar1"
-                : marginal.Method == "buyCustomCap"
-                  && marginal.Controller is EnergyPurchases ? "exp.energy.custom-cap"
-                : string.Empty;
+            var key = MarginalExpDescriptorKey(marginal.Controller.GetType().Name,
+                marginal.Method);
             if (string.IsNullOrEmpty(key) || !PurchaseDescriptorCatalog.TryGet(key, out descriptor))
+            {
+                reason = "the selected " + marginal.Label
+                         + " has no exact live descriptor mapping";
                 return false;
+            }
             controller = marginal.Controller;
-            costState = descriptor.Cost.Kind == PurchaseCostKind.EnergyCap
-                ? PurchaseCostState.WithAmount(marginal.Cap)
-                : PurchaseCostState.Fixed();
+            if (descriptor.Cost.Kind == PurchaseCostKind.Fixed)
+                costState = PurchaseCostState.Fixed();
+            else
+            {
+                var amount = MarginalExpAmount(marginal.Power, marginal.Cap, marginal.Bars);
+                if (amount <= 0L)
+                {
+                    reason = "the selected " + marginal.Label
+                             + " does not have one exact custom-input amount";
+                    return false;
+                }
+                costState = PurchaseCostState.WithAmount(amount);
+            }
             long sealedCost;
             try { sealedCost = descriptor.Cost.Evaluate(costState); }
             catch { return false; }
-            if (sealedCost != marginal.Cost) return false;
+            if (sealedCost != marginal.Cost)
+            {
+                reason = "the selected " + marginal.Label + " cost changed from "
+                         + marginal.Cost + " to " + sealedCost + " EXP before execution";
+                return false;
+            }
             reason = marginal.Reason;
             return true;
+        }
+
+        internal static string MarginalExpDescriptorKey(string controllerTypeName,
+            string method)
+        {
+            if (string.Equals(controllerTypeName, "EnergyPurchases", StringComparison.Ordinal))
+            {
+                if (method == "buyEnergyPower01") return "exp.energy.power01";
+                if (method == "buyEnergyBar1") return "exp.energy.bar1";
+                if (method == "buyCustomPower") return "exp.energy.custom-power";
+                if (method == "buyCustomCap") return "exp.energy.custom-cap";
+                if (method == "buyCustomBar") return "exp.energy.custom-bar";
+            }
+            if (string.Equals(controllerTypeName, "MagicPurchases", StringComparison.Ordinal))
+            {
+                if (method == "buyCustomPower") return "exp.magic.custom-power";
+                if (method == "buyCustomCap") return "exp.magic.custom-cap";
+                if (method == "buyCustomBar") return "exp.magic.custom-bar";
+            }
+            if (string.Equals(controllerTypeName, "Resource3Purchases", StringComparison.Ordinal))
+            {
+                if (method == "buyCustomPower") return "exp.resource3.custom-power";
+                if (method == "buyCustomCap") return "exp.resource3.custom-cap";
+                if (method == "buyCustomBar") return "exp.resource3.custom-bar";
+            }
+            return string.Empty;
+        }
+
+        internal static long MarginalExpAmount(int power, int cap, int bars)
+        {
+            var positive = (power > 0 ? 1 : 0) + (cap > 0 ? 1 : 0) + (bars > 0 ? 1 : 0);
+            if (positive != 1) return 0L;
+            return power > 0 ? power : cap > 0 ? cap : bars;
         }
 
         private bool TryGetEnergySpeedPurchase(Character c, out PurchaseDescriptor descriptor,

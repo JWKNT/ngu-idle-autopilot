@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using NGUInjector.Autopilot;
 using NGUInjector.Managers;
 
 /*
@@ -70,6 +71,58 @@ internal static class InventoryTopologyTests
             "MacGuffin levels do not cap at 100");
         Assert(InventoryTopologyPolicy.MergedLevel(int.MaxValue, 10, true) == int.MaxValue,
             "native integer overflow guard saturates MacGuffin level");
+    }
+
+    private static void TestExpMarginalBridgeAndSpecialDuplicateTrash()
+    {
+        Assert(AutopilotManager.MarginalExpDescriptorKey("MagicPurchases", "buyCustomPower")
+               == "exp.magic.custom-power"
+               && AutopilotManager.MarginalExpDescriptorKey("MagicPurchases", "buyCustomCap")
+               == "exp.magic.custom-cap"
+               && AutopilotManager.MarginalExpDescriptorKey("MagicPurchases", "buyCustomBar")
+               == "exp.magic.custom-bar",
+            "every marginal Magic P/C/B winner maps to its sealed live descriptor");
+        Assert(AutopilotManager.MarginalExpDescriptorKey("Resource3Purchases", "buyCustomPower")
+               == "exp.resource3.custom-power"
+               && AutopilotManager.MarginalExpAmount(1, 0, 0) == 1
+               && AutopilotManager.MarginalExpAmount(0, 10000, 0) == 10000
+               && AutopilotManager.MarginalExpAmount(1, 10000, 0) == 0,
+            "later Resource 3 mapping and one-dimensional custom input fail closed exactly");
+
+        PurchaseDescriptor magicPower;
+        Assert(PurchaseDescriptorCatalog.TryGet("exp.magic.custom-power", out magicPower),
+            "sealed Magic Power descriptor exists");
+        var before = new PurchaseBoundarySnapshot(
+            PurchaseDescriptorCatalog.AuditedGameSha256,
+            PurchaseDescriptorCatalog.AuditedGameMvid, magicPower.NativeId,
+            magicPower.NativeMethodName, 450, PurchaseCostState.WithAmount(1),
+            new PurchaseStateVector(485, new Dictionary<string, long>
+            {
+                {"permanent.magicPower", 7}
+            }), false, null, false, false);
+        var expected = LivePermanentPurchaseRuntime.ExpectedAfter(magicPower, before);
+        long powerAfter;
+        Assert(expected != null && expected.CurrencyBalance == 35
+               && expected.TryGet("permanent.magicPower", out powerAfter) && powerAfter == 8,
+            "funded Magic Power seals the exact 450 EXP debit and +1 permanent effect");
+
+        var keeper = new Equipment
+        {
+            id = 61, level = 100, curAttack = 60, capAttack = 30,
+            curDefense = 60, capDefense = 30, spec1Type = specType.GoldDropAmount,
+            spec1Cur = 20, spec1Cap = 10
+        };
+        var duplicate = new Equipment
+        {
+            id = 61, level = 0, curAttack = 0, capAttack = 30,
+            curDefense = 0, capDefense = 30, spec1Type = specType.GoldDropAmount,
+            spec1Cur = 0, spec1Cap = 10
+        };
+        Assert(InventoryManager.SameIdDominatesForAllUses(keeper, duplicate),
+            "a retained MAXXED same-ID item makes its weaker special-bearing copy redundant");
+        duplicate.id = 62;
+        Assert(!InventoryManager.SameIdDominatesForAllUses(keeper, duplicate),
+            "different-ID utility profiles never use the same-ID surplus proof");
     }
 
     private static void TestReferenceRetargetPolicy()
@@ -292,10 +345,10 @@ internal static class InventoryTopologyTests
                && inventory.Contains("CurrentOwnedCopyCount(id)")
                && inventory.Contains("_character.adventure.clue2Complete"),
             "live filter/trash paths retain the exact Tree clue demand but reclaim surplus copies");
-        Assert(inventory.Contains("item.spec1Cap > 0f")
-               && inventory.Contains("item.spec2Cap > 0f")
-               && inventory.Contains("item.spec3Cap > 0f"),
-            "MAXX gear with any native special profile remains physically retained");
+        Assert(inventory.Contains("SameIdDominatesForAllUses")
+               && inventory.Contains("var hasSpecial = candidate.spec1Type != specType.None")
+               && inventory.Contains("keeper == null && !hasSpecial"),
+            "unique special profiles remain protected while dominated same-ID surplus can be trashed");
         Assert(daycare.Contains("CaptureOrdinaryTopology")
                && daycare.Contains("LootCapacity.ProveOrdinary")
                && daycare.Contains("completed-daycare-retrieval"),
@@ -314,6 +367,7 @@ internal static class InventoryTopologyTests
         {
             TestBoostCompletionGate();
             TestMergeArithmetic();
+            TestExpMarginalBridgeAndSpecialDuplicateTrash();
             TestReferenceRetargetPolicy();
             TestUnlockPostconditions();
             TestTransformAndCollectionRetention();

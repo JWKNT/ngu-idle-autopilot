@@ -212,7 +212,9 @@ usually has the best next purchase.
 Important rules:
 
 - Reach useful Energy and Magic Speed breakpoints first when their payback wins.
-- Compare exact Power/Cap/Bar atoms; there is no bulk-purchase discount to exploit.
+- Compare exact Energy, Magic, and later Resource 3 Power/Cap/Bar atoms; there is no bulk-purchase
+  discount to exploit. A funded winner is mapped to its matching native controller and custom input,
+  then both the exact EXP debit and permanent stat increase are verified.
 - Respect the configured EXP reserve.
 - Direct Fight Boss Attack or Defense is allowed only when a finite new-record boss rollout saves
   more downstream time per EXP than the best permanent resource purchase. It is not a general
@@ -486,7 +488,9 @@ Inventory mistakes can permanently destroy progress, so the rules are strict.
   point. During a Boss push, ITOPOD climb, Titan, or major unlock, production-only bonuses cannot
   make weaker combat gear win this development score. Route boosts with no useful gear target to
   the Infinity Cube according to its native softcaps.
-- Keep MAXXED lower-tier gear when its special bonuses are still useful for production loadouts.
+- Keep one MAXXED lower-tier gear object when its special bonuses are still useful for production
+  loadouts. A weaker same-ID surplus copy may be trashed only after the retained copy dominates its
+  full current/future stat and special vector and every simultaneous loadout/daycare use is covered.
 - Replace or remove dominated ordinary combat gear only when future set and reference obligations
   are satisfied.
 - Keep exactly the number of Sticks required by active loadouts and the unfinished clue (normally
