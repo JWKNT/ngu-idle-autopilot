@@ -546,15 +546,15 @@ ETA instead of extending a frozen snapshot into a precise-looking multi-day fore
 training, Blood, boss, and time changes are reevaluated every second and can move the safe checkpoint
 earlier.
 
-Inside a normal Boss-target challenge such as Basic, the saved pre-challenge Boss record is not a
-reset clock. When the selected challenge Boss has a finite continuation estimate, the bot keeps the
-stronger current run, takes that Boss result, and recalculates. The dashboard therefore says that an
-ordinary reset is deferred and shows the next Boss event, rather than claiming it will take days to
-rebuild a Number that the challenge does not require. Challenges with special reset mechanics keep
-their own dedicated policy. If the next Boss is outside the current frozen-allocation model, the bot
-also keeps the challenge run while the native reset preview would reduce Number. It reports the exact
-retained percentage and waits for fresh training, allocation, or Boss evidence; it may reconsider a
-reset once the preview becomes non-regressive instead of calling this deliberate hold “calculating.”
+Ordinary rebirth timing is not changed merely because Basic or another ordinary-rebirth-compatible
+challenge is active. Those challenges still use the same Number, event, and permanent-growth
+comparison as any other run. Only a challenge whose native rules explicitly forbid ordinary rebirths
+overrides the rebirth planner. When a reset is deferred because its native Number preview is weaker,
+the monitor reports the exact retained percentage; it does not attribute that decision to the active
+challenge or call it “calculating.”
+A Boss estimate is discarded when it crosses an earlier Basic Training unlock, because that unlock
+changes the resource-allocation topology. The monitor shows the unlock ETA as the next trustworthy
+recalculation boundary instead of publishing the stale, longer Boss extrapolation.
 
 ### MacGuffins, Beards, and long runs
 

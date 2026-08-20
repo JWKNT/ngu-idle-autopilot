@@ -140,7 +140,7 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIsNone(view["challenge"]["targetLevel"])
         self.assertFalse(view["identity"]["verifiedEnvelope"])
 
-    def test_finite_challenge_boss_continuation_is_human_readable(self) -> None:
+    def test_weaker_number_reset_hold_is_human_readable(self) -> None:
         view = build_observability(
             {
                 "challengeActive": True,
@@ -148,20 +148,18 @@ class ObservabilityTests(unittest.TestCase):
                 "rebirthExecutionHold": True,
                 "rebirthSeconds": -1,
                 "rebirthSafetyBlockReason": "the event-driven planner has not admitted a boundary",
-                "rebirthEtaReason": "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is projected in 2,379s and every Boss outcome triggers a fresh estimate",
-                "bossSelectedId": 53,
-                "bossDefeatEtaSeconds": 2004,
+                "rebirthEtaReason": "ordinary reset is deferred because its native preview retains only 0.36% of current Number. Recalculate after Unlock Piercing Attack in 2,004s.",
             }
         )
         self.assertEqual(view["rebirth"]["action"], "hold")
         self.assertEqual(
             view["rebirth"]["actionLabel"],
-            "DEFERRED — continue to the next challenge Boss",
+            "DEFERRED — the current reset would weaken Number",
         )
         self.assertEqual(
             view["rebirth"]["reason"],
-            "Continue to Boss #53; the latest live combat estimate is 2,004s. "
-            "The bot recalculates after every Boss outcome.",
+            "ordinary reset is deferred because its native preview retains only 0.36% "
+            "of current Number. Recalculate after Unlock Piercing Attack in 2,004s.",
         )
         self.assertIsNone(view["rebirth"]["resetEtaSeconds"])
 

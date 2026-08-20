@@ -252,13 +252,8 @@ exposes no mutation endpoint.
     const boundaryHold = Boolean(s.rebirthBoundaryHold);
     const hold = Boolean(s.rebirthExecutionHold) || boundaryHold || noResetChallenge;
     const etaReason = text(s.rebirthEtaReason, "");
-    const challengeContinuation = Boolean(s.rebirthExecutionHold) && challengeActive
-      && challengeAllowsRebirth === true && etaReason.includes("selected challenge Boss outcome");
-    const challengeBossEta = optionalNumber(s.bossDefeatEtaSeconds);
-    const challengeBossId = optionalNumber(s.bossSelectedId);
-    const challengeContinuationReason = challengeContinuation && challengeBossEta !== null
-      ? `Continue to ${challengeBossId !== null ? `Boss #${Math.round(challengeBossId)}` : "the selected challenge Boss"}; the latest live combat estimate is ${optionalDuration(challengeBossEta)}. The bot recalculates after every Boss outcome.`
-      : etaReason;
+    const weakerResetHold = Boolean(s.rebirthExecutionHold)
+      && etaReason.includes("native preview retains only");
     const resetEta = !hold && target !== null && target >= 0 && elapsed !== null ? Math.max(0, target - elapsed) : null;
     const executionEnabled = typeof s.rebirthExecutionEnabled === "boolean" ? s.rebirthExecutionEnabled : null;
     const action = noResetChallenge ? "no-reset-challenge" : Boolean(s.rebirthExecutionHold) || boundaryHold ? "hold"
@@ -319,8 +314,8 @@ exposes no mutation endpoint.
     return {
       rebirth: {
         action,
-        actionLabel: challengeContinuation ? "DEFERRED — continue to the next challenge Boss" : labels[action],
-        reason: challengeContinuation ? challengeContinuationReason
+        actionLabel: weakerResetHold ? "DEFERRED — the current reset would weaken Number" : labels[action],
+        reason: weakerResetHold ? etaReason
           : s.rebirthSafetyBlockReason || s.rebirthBoundaryReason || s.rebirthReason || "No decision reason was emitted.",
         noResetHold: hold || executionEnabled === false,
         targetRunAgeSeconds: target !== null && target >= 0 ? target : null,
@@ -442,12 +437,12 @@ exposes no mutation endpoint.
   function renderHeadline(s, observability) {
     const rebirth = observability.rebirth;
     const challenge = observability.challenge;
-    const challengeContinuation = rebirth.action === "hold" && challenge.active
-      && String(rebirth.etaReason || "").includes("selected challenge Boss outcome");
+    const weakerResetHold = rebirth.action === "hold"
+      && String(rebirth.etaReason || "").includes("native preview retains only");
     const headline = rebirth.action === "reset-at-checkpoint" ? optionalDuration(rebirth.resetEtaSeconds)
       : rebirth.action === "reset-due" ? "Reset due"
         : rebirth.action === "no-reset-challenge" ? "No reset"
-          : challengeContinuation ? "Boss first"
+          : weakerResetHold ? "Keep growing"
           : rebirth.action === "hold" ? "Planner hold"
             : rebirth.action === "disabled" ? "Disabled" : "Unavailable";
     setText("metric-rebirth", headline);
@@ -464,7 +459,10 @@ exposes no mutation endpoint.
     setText("metric-boss", selectedBoss === null ? "Unavailable" : `#${selectedBoss.toLocaleString()}`);
     setText("metric-boss-record", highestBoss === null ? "Unavailable" : `#${highestBoss.toLocaleString()}`);
     const bossNote = recordBoss === null ? "next record unavailable" : `next record #${recordBoss.toLocaleString()}`;
-    setText("metric-boss-note", `${bossNote} · target ETA ${optionalDuration(s.bossDefeatEtaSeconds, "unavailable")}`);
+    const bossEtaNote = s.bossEtaState === "model-changes-at-training-unlock"
+      ? `recalculate after ${text(s.trainingGoal, "the next training unlock")} · ${optionalDuration(s.trainingEtaSeconds)}`
+      : `target ETA ${optionalDuration(s.bossDefeatEtaSeconds, "unavailable")}`;
+    setText("metric-boss-note", `${bossNote} · ${bossEtaNote}`);
 
     setText("metric-adventure", s.adventureTargetName, "Selecting route");
     const routeMode = s.goldBootstrapActive ? `Gold bootstrap · ${text(s.goldBootstrapMode, "ordinary Adventure")}`
@@ -695,7 +693,9 @@ exposes no mutation endpoint.
 
   function renderCombatInventory(s) {
     setText("combat-boss", `Boss #${number(s.bossSelectedId)}${s.bossTargetMatchesSelected ? " · record target" : ` · catching up to #${number(s.bossRecordTargetId)}`}`);
-    setText("combat-eta", `${duration(s.bossDefeatEtaSeconds, true)} · ${text(s.bossEtaConfidence, "model pending")}`);
+    setText("combat-eta", s.bossEtaState === "model-changes-at-training-unlock"
+      ? `Recalculate after ${text(s.trainingGoal, "the next training unlock")} · ${duration(s.trainingEtaSeconds, true)}`
+      : `${duration(s.bossDefeatEtaSeconds, true)} · ${text(s.bossEtaConfidence, "model pending")}`);
     setText("combat-zone", `${text(s.adventureTargetName, "—")} · ${text(s.adventureControlReason, "route pending")}`);
     setText("combat-stats", `${shortNumber(s.adventurePower)} / ${shortNumber(s.adventureToughness)}`);
     setText("combat-hp", `${shortNumber(s.adventureHP)} / ${shortNumber(s.adventureMaxHP)}`);
@@ -735,12 +735,12 @@ exposes no mutation endpoint.
     setText("rebirth-state", rebirth.actionLabel);
     setText("rebirth-reason", sentence(rebirth.reason));
     setText("rebirth-policy", rebirth.actionLabel);
-    const challengeContinuation = rebirth.action === "hold" && observability.challenge.active
-      && String(rebirth.etaReason || "").includes("selected challenge Boss outcome");
+    const weakerResetHold = rebirth.action === "hold"
+      && String(rebirth.etaReason || "").includes("native preview retains only");
     setText("rebirth-next-action", rebirth.action === "reset-at-checkpoint" ? "Execute verified native rebirth"
       : rebirth.action === "reset-due" ? "Verify and execute now"
         : rebirth.action === "no-reset-challenge" ? "Continue the active challenge"
-          : challengeContinuation ? "Defeat the selected challenge Boss, then recalculate"
+          : weakerResetHold ? "Continue growing until the reset preview is competitive"
           : rebirth.action === "hold" ? "Wait for a finite admitted checkpoint"
             : rebirth.action === "disabled" ? "Observe only" : "Await complete telemetry");
     setText("rebirth-reset-eta", optionalDuration(rebirth.resetEtaSeconds, rebirth.noResetHold ? "No reset scheduled" : "Unavailable"));
@@ -1029,11 +1029,9 @@ exposes no mutation endpoint.
       scheduler: { ...fallback.scheduler, ...(incoming.scheduler || {}) },
       bindings: { ...fallback.bindings, ...(incoming.bindings || {}) },
     };
-    // The raw state and server-normalized view arrive in the same envelope, but a dashboard
-    // server left running across a frontend update can still contain the previous formatter.
-    // For challenge continuation, the raw post-transaction Boss ETA is also newer than the
-    // planner's pre-transaction prose, so keep the client-derived countdown authoritative.
-    if (fallback.rebirth.actionLabel === "DEFERRED — continue to the next challenge Boss") {
+    // A dashboard server can remain alive across a frontend update. Keep the raw decision's
+    // exact Number-dominance explanation authoritative over an older generic formatter.
+    if (fallback.rebirth.actionLabel === "DEFERRED — the current reset would weaken Number") {
       observability.rebirth.actionLabel = fallback.rebirth.actionLabel;
       observability.rebirth.reason = fallback.rebirth.reason;
     }

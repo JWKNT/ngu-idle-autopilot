@@ -136,23 +136,14 @@ internal static class RebirthPolicyGoldenTests
             "unreflected Blood-adjusted preview blocks mutation");
     }
 
-    private static void TestChallengeLocalResetEstimate()
+    private static void TestBossProjectionBoundaries()
     {
+        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "BossEtaFitsBeforeModelChange", 99074, 5646),
+            "a long frozen-allocation Boss estimate cannot cross an earlier training unlock");
         Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, 1819, 1.2),
-            "a standard active challenge continues along a finite next-Boss edge");
-        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, -1, 0.0036),
-            "an unknown Boss route keeps a challenge run when reset would destroy almost all Number");
-        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, -1, 1.0),
-            "an unknown Boss route does not block a non-regressive reset");
-        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, true, 10, 0.5),
-            "special challenge reset mechanics retain their dedicated policy");
-        Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, false, false, 10, 0.5),
-            "a native no-rebirth rule is not relabeled as a strategic continuation choice");
+                "BossEtaFitsBeforeModelChange", 300, 5646),
+            "a Boss outcome before the next model change remains a finite forecast");
     }
 
     private static void TestDueProfileSignatureIsStable()
@@ -287,7 +278,7 @@ internal static class RebirthPolicyGoldenTests
             TestObservedAllNegativeMutationCase();
             TestLowerNumberPositivePersistentCase();
             TestRecoveryCounterfactuals();
-            TestChallengeLocalResetEstimate();
+            TestBossProjectionBoundaries();
             TestTask29AuthorityCeilingAndBridge();
             Console.WriteLine("Rebirth policy golden tests passed: " + _assertions + " assertions");
             return 0;

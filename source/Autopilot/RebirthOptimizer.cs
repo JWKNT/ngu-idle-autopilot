@@ -727,72 +727,6 @@ namespace NGUInjector.Autopilot
                         "finish the projected Fight Boss kill and bank its EXP, unlocks, and boss multiplier");
             }
 
-            // A standard Boss-target challenge completes automatically when its target Boss is
-            // passed.  A finite next-Boss edge owns the decision.  An unforecastable edge also
-            // owns it while an ordinary reset would replace Number with a strictly weaker native
-            // preview: resetting to Boss 0 cannot be sold as progress merely because the frozen
-            // current-allocation Boss forecast ran out.  In that case publish the actual dominance
-            // evidence and keep reevaluating rather than falling through to a generic "calculating"
-            // hold.  Troll, Laser Sword, 24-hour and 100-Level challenges have special reset
-            // tradeoffs and deliberately stay outside this simple continuation rule.
-            var challengeBossEta = bossEta;
-            if (IsStandardBossChallenge(c) && challengeBossEta < 0)
-                challengeBossEta = AutopilotManager.SelectedBossDefeatEta(c, 604800);
-            var challengeNumberRatio = Math.Min(
-                c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
-                c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0);
-            if (StandardChallengeContinuationOwnsNextBoss(c, challengeBossEta,
-                    challengeNumberRatio))
-            {
-                _stickyTarget = -1;
-                _stickyKind = string.Empty;
-                var finiteBossEdge = challengeBossEta >= 0;
-                var eventAge = !finiteBossEdge ? -1
-                    : elapsed > int.MaxValue - challengeBossEta - 2
-                        ? int.MaxValue : elapsed + challengeBossEta + 2;
-                var numberPercent = (100.0 * challengeNumberRatio).ToString("0.###",
-                    System.Globalization.CultureInfo.InvariantCulture);
-                return new RebirthRecommendation
-                {
-                    TargetSeconds = -1,
-                    Reason = finiteBossEdge
-                        ? "hold ordinary rebirth while the active challenge has a finite next-Boss continuation"
-                        : "hold ordinary rebirth because continuing the active challenge dominates a weaker reset",
-                    RunnerUpSeconds = eventAge,
-                    RunnerUpDeltaSeconds = finiteBossEdge ? challengeBossEta + 2 : -1,
-                    RunnerUpReason = finiteBossEdge
-                        ? "defeat the selected challenge Boss, then rebuild the reset estimate from the new native state"
-                        : "wait for training, allocation, or Boss evidence; an ordinary reset would retain only "
-                          + numberPercent + "% of current Number",
-                    SelectedScorePerHour = 0.0,
-                    RunnerUpScorePerHour = 0.0,
-                    ProjectedMultiplier = c.nextAttackMulti,
-                    ProjectedAP = (finiteBossEdge ? eventAge : elapsed) < 4100
-                        ? 0 : 1 + ((finiteBossEdge ? eventAge : elapsed) - 4100) / 500,
-                    CandidateSummary = finiteBossEdge
-                        ? "HOLD challenge continuation | next selected Boss event in "
-                          + challengeBossEta.ToString("N0") + "s"
-                        : "HOLD challenge continuation | Boss ETA outside current model | reset retains "
-                          + numberPercent + "% Number",
-                    CandidateCount = candidates.Count,
-                    RecoveryMode = false,
-                    RecoveryEtaSeconds = -1,
-                    RecoveryRemainingBosses = 0,
-                    RecoveryReason = "the active challenge objective, not the saved pre-challenge Boss record, owns this interval",
-                    MinimumNumberRatio = challengeNumberRatio,
-                    ExecutionHold = true,
-                    NextPositiveEtaSeconds = -1,
-                    NextEvaluationEtaSeconds = 1,
-                    EtaReason = finiteBossEdge
-                        ? "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is projected in "
-                          + challengeBossEta.ToString("N0")
-                          + "s and every Boss outcome triggers a fresh estimate"
-                        : "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is not yet forecastable, while resetting would retain only "
-                          + numberPercent
-                          + "% of current Number; training, allocation, and Boss events trigger fresh estimates"
-                };
-            }
-
             var recoveryMode = c.bossID < c.highestBoss;
             if (recoveryMode)
             {
@@ -876,11 +810,26 @@ namespace NGUInjector.Autopilot
             {
                 _stickyTarget = -1;
                 _stickyKind = string.Empty;
+                var nativeNumberRatio = Math.Min(
+                    c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
+                    c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0);
+                var numberPercent = (100.0 * nativeNumberRatio).ToString("0.###",
+                    System.Globalization.CultureInfo.InvariantCulture);
+                string nextTrainingGoal;
+                int nextTrainingEta;
+                AutopilotManager.GetNextTrainingGoal(c, out nextTrainingGoal,
+                    out nextTrainingEta);
+                var nextEvidence = nextTrainingEta > 0
+                    && nextTrainingGoal.StartsWith("Unlock ", StringComparison.Ordinal)
+                    ? " Recalculate after " + nextTrainingGoal + " in "
+                      + nextTrainingEta.ToString("N0") + "s."
+                    : " Recalculate from each fresh training, allocation, and Boss state.";
                 return new RebirthRecommendation
                 {
                     TargetSeconds = minimum,
                     Reason = recoveryMode
-                        ? "hold: no positive reset has non-regressive native Number or a finite Boss-0 replay proof"
+                        ? "hold: the native reset preview retains only " + numberPercent
+                          + "% of current Number and no faster Boss-0 replay is proven"
                         : "hold: no counterfactual reset is executable",
                     RunnerUpSeconds = minimum,
                     RunnerUpReason = "reevaluate from the next fresh native preview",
@@ -888,20 +837,24 @@ namespace NGUInjector.Autopilot
                     RunnerUpScorePerHour = 0.0,
                     ProjectedMultiplier = c.nextAttackMulti,
                     ProjectedAP = minimum < 4100 ? 0 : 1 + (minimum - 4100) / 500,
-                    CandidateSummary = "all positive candidates failed the final record-recovery proof",
+                    CandidateSummary = recoveryMode
+                        ? "HOLD weaker reset | native preview retains " + numberPercent
+                          + "% Number"
+                        : "all positive candidates failed the final execution proof",
                     CandidateCount = candidates.Count + 1,
                     RecoveryMode = recoveryMode,
                     RecoveryEtaSeconds = -1,
                     RecoveryRemainingBosses = Math.Max(0, c.highestBoss - c.bossID),
                     RecoveryReason = "bounded Boss-0 replay is unavailable; lower native Number remains fail-closed",
-                    MinimumNumberRatio = Math.Min(
-                        c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
-                        c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0),
+                    MinimumNumberRatio = nativeNumberRatio,
                     ExecutionHold = true,
                     NextPositiveEtaSeconds = FindNextPositiveResetEta(c, elapsed, bossEta,
                         recoveryMode, horizon),
                     NextEvaluationEtaSeconds = 1,
-                    EtaReason = "waiting for a positive checkpoint which the final recovery gate can execute"
+                    EtaReason = recoveryMode
+                        ? "ordinary reset is deferred because its native preview retains only "
+                          + numberPercent + "% of current Number." + nextEvidence
+                        : "waiting for a positive checkpoint which the final execution gate can execute"
                 };
             }
 
@@ -1032,32 +985,11 @@ namespace NGUInjector.Autopilot
                    && selectedScorePerHour > 1e-12;
         }
 
-        internal static bool ShouldDeferOrdinaryResetForChallengeBoss(bool challengeActive,
-            bool ordinaryRebirthAllowed, bool specialResetMechanics, int nextBossEtaSeconds,
-            double resetNumberRatio)
+        internal static bool BossEtaFitsBeforeModelChange(int bossEtaSeconds,
+            int modelChangeEtaSeconds)
         {
-            return challengeActive && ordinaryRebirthAllowed && !specialResetMechanics
-                   && (nextBossEtaSeconds >= 0
-                       || resetNumberRatio > 0.0 && resetNumberRatio < 1.0);
-        }
-
-        private static bool StandardChallengeContinuationOwnsNextBoss(Character c, int bossEta,
-            double resetNumberRatio)
-        {
-            var standardBossChallenge = IsStandardBossChallenge(c);
-            return ShouldDeferOrdinaryResetForChallengeBoss(true, true,
-                !standardBossChallenge, bossEta, resetNumberRatio);
-        }
-
-        private static bool IsStandardBossChallenge(Character c)
-        {
-            return c != null && c.challenges != null && c.challenges.inChallenge
-                   && (c.challenges.basicChallenge.inChallenge
-                       || c.challenges.noAugsChallenge.inChallenge
-                       || c.challenges.noEquipmentChallenge.inChallenge
-                       || c.challenges.blindChallenge.inChallenge
-                       || c.challenges.nguChallenge.inChallenge
-                       || c.challenges.timeMachineChallenge.inChallenge);
+            return bossEtaSeconds >= 0
+                   && (modelChangeEtaSeconds < 0 || bossEtaSeconds <= modelChangeEtaSeconds);
         }
 
         internal static bool ShouldKeepAdmittedCheckpoint(int admittedTargetSeconds,

@@ -455,20 +455,22 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
         let rebirthBoundaryHold = state["rebirthBoundaryHold"] as? Bool ?? false
         let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold || rebirthBoundaryHold
-        let rebirthReason = state["rebirthReason"] as? String ?? ""
-        let challengeContinuation = challengeActive
-            && state["challengeAllowsRebirth"] as? Bool == true
-            && rebirthExecutionHold
-            && rebirthReason.contains("active challenge")
+        let bossEtaState = state["bossEtaState"] as? String ?? ""
+        let trainingGoal = state["trainingGoal"] as? String ?? "training topology change"
+        let trainingETA = number(state, "trainingEtaSeconds")
+        let weakerResetHold = rebirthExecutionHold
+            && (state["rebirthEtaReason"] as? String ?? "").contains("native preview retains only")
         // A final live boundary hold is distinct from the optimizer's continuation hold.
         // Both suppress a countdown: neither may be displayed as an executable reset.
         let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
         let rebirthText = noResetPolicy ? "no reset — challenge rule"
-            : challengeContinuation ? "deferred — challenge first"
+            : weakerResetHold ? "deferred — weaker Number"
             : rebirthUnscheduled ? "hold — no reset scheduled"
             : rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
             : rebirthBlocked ? "route hold" : "now"
-        let bossText = bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
+        let bossText = bossEtaState == "model-changes-at-training-unlock"
+            ? "recheck after \(trainingGoal) in \(formatEstimate(trainingETA))"
+            : bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
             : "in " + formatEstimate(bossEta)
         statusLabel.stringValue = "REBIRTH \(rebirthText)   •   BOSS \(selectedBoss) \(bossText)"
         statusLabel.textColor = rebirthUnscheduled
@@ -879,9 +881,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let nextEvaluationText = state["rebirthNextEvaluationEtaSeconds"] != nil
             && rebirthNextEvaluationETA >= 0 ? formatEstimate(rebirthNextEvaluationETA) : "next live control tick"
         let rebirthPolicy = noResetPolicy ? "NO RESET — this challenge forbids ordinary rebirths"
-            : challengeActive && (state["challengeAllowsRebirth"] as? Bool == true)
-                && rebirthExecutionHold && rebirthReason.contains("active challenge")
-                ? "DEFERRED — continue the active challenge"
+            : rebirthExecutionHold && rebirthETAReason.contains("native preview retains only")
+                ? "DEFERRED — the current reset would weaken Number"
             : rebirthUnscheduled ? "HOLD — no executable reset is scheduled"
             : !rebirthExecutionEnabled ? "DISABLED — rebirth execution is off"
             : rebirthRemaining <= 0 ? "RESET DUE — verify the native boundary"
@@ -904,6 +905,8 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ? "WHY THE ROUND NUMBER: this second is a discontinuity in NGU Idle's native Number time-multiplier formula; it was evaluated, not assumed."
             : "WHY THIS SECOND: it is the highest-scoring live event or integer-second candidate in the current finite-horizon model."
         let bossGlance = bossReady ? "READY NOW"
+            : (state["bossEtaState"] as? String ?? "") == "model-changes-at-training-unlock"
+                ? "RECALCULATE AFTER \(trainingGoal.uppercased()) — \(formatEstimate(trainingETA))"
             : bossViabilityETA < 0 ? "NO FINITE ETA ≤ " + formatEstimate(bossEtaHorizon)
             : "ETA " + formatEstimate(bossViabilityETA)
 

@@ -1729,6 +1729,17 @@ namespace NGUInjector.Autopilot
             // from being mistaken for an action the current run will actually take.
             var bossViabilityEta = bossFitEta >= 0 ? bossFitEta
                 : RawSelectedBossDefeatEta(c, bossRawProjectionHorizon);
+            var bossProjectionCrossesTrainingUnlock = trainingEtaSeconds > 0
+                && trainingGoal.StartsWith("Unlock ", StringComparison.Ordinal)
+                && bossViabilityEta > trainingEtaSeconds;
+            if (bossProjectionCrossesTrainingUnlock)
+            {
+                // The frozen allocation projection cannot cross a controller-topology change.
+                // A newly unlocked Basic Training changes both allocation and stat growth, so the
+                // smaller live event is the only honest forecast boundary.
+                bossFitEta = -1;
+                bossViabilityEta = -1;
+            }
             var bossSelectedId = c.bossID + 1;
             var bossRecordTargetId = activeHighestBoss + 1;
             var bossTargetMatchesSelected = c.bossID == activeHighestBoss;
@@ -1740,10 +1751,14 @@ namespace NGUInjector.Autopilot
             var bossReady = IsNextBossReady(c);
             var bossFighting = c.bossController != null && (c.bossController.isFighting || c.bossController.nukeBoss);
             var bossKillEta = CurrentBossKillEta(c);
-            var bossViabilityReason = BossViabilityReason(c, bossReady, bossFighting, bossKillEta);
+            var bossViabilityReason = bossProjectionCrossesTrainingUnlock
+                ? "recalculate after " + trainingGoal + " in "
+                  + trainingEtaSeconds.ToString("N0") + "s; the current allocation model ends there"
+                : BossViabilityReason(c, bossReady, bossFighting, bossKillEta);
             var bossEtaState = c.bossController == null ? "controller-unavailable"
                 : bossFighting && bossKillEta >= 0 ? "active-fight"
                 : bossViabilityEta >= 0 ? "finite"
+                : bossProjectionCrossesTrainingUnlock ? "model-changes-at-training-unlock"
                 : "outside-seven-day-current-allocation-model";
             var energyIncome = Math.Max(0.0, c.energyPerSecond());
             var magicIncome = Math.Max(0.0, c.magicPerSecond());
@@ -1898,8 +1913,8 @@ namespace NGUInjector.Autopilot
                        + "  \"rebirthRunnerUpSeconds\": " + Plan.RebirthRunnerUpSeconds + ",\n"
                        + "  \"rebirthRunnerUpDeltaSeconds\": " + Plan.RebirthRunnerUpDeltaSeconds + ",\n"
                        + "  \"rebirthRunnerUpReason\": \"" + EscapeJson(Plan.RebirthRunnerUpReason) + "\",\n"
-                       + "  \"rebirthOptimizerModel\": \"event-queue-challenge-continuation-and-bounded-recovery-v7\",\n"
-                       + "  \"rebirthObjective\": \"maximize persistent cycle value across legal events; an active standard challenge with a finite Boss edge continues first, and record-recovery forecasts stay inside their source-bounded rolling event horizon\",\n"
+                       + "  \"rebirthOptimizerModel\": \"event-queue-number-dominance-and-model-boundaries-v8\",\n"
+                       + "  \"rebirthObjective\": \"maximize persistent cycle value across legal events; challenge presence does not alter ordinary rebirth timing unless native rules forbid it, weaker Number previews remain held, and forecasts stop at earlier model-changing unlocks\",\n"
                        + "  \"rebirthSelectedScorePerHour\": " + Plan.RebirthSelectedScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthRunnerUpScorePerHour\": " + Plan.RebirthRunnerUpScorePerHour.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"rebirthOptimizerProjectedMultiplier\": " + Plan.RebirthProjectedMultiplier.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
@@ -3465,7 +3480,7 @@ namespace NGUInjector.Autopilot
             return (long)total;
         }
 
-        private static void GetNextTrainingGoal(Character c, out string goal, out int etaSeconds)
+        internal static void GetNextTrainingGoal(Character c, out string goal, out int etaSeconds)
         {
             goal = "Keep all unlocked Basic Trainings speed-capped";
             etaSeconds = 0;

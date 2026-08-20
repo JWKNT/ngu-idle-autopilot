@@ -319,33 +319,17 @@ def build_observability(
     boundary_reason = first_text(state, "rebirthBoundaryReason")
     selection_reason = first_text(state, "rebirthReason", "rebirthObjective")
     eta_reason = first_text(state, "rebirthEtaReason")
-    challenge_continuation = bool(
-        execution_hold
-        and challenge_active
-        and challenge_allows_rebirth is True
-        and "selected challenge Boss outcome" in eta_reason
+    weaker_reset_hold = bool(
+        execution_hold and "native preview retains only" in eta_reason
     )
-    challenge_boss_eta = first_seconds(state, "bossDefeatEtaSeconds")
-    challenge_boss_id = optional_count(state.get("bossSelectedId"))
-    challenge_continuation_reason = eta_reason
-    if challenge_continuation and challenge_boss_eta is not None:
-        boss_label = (
-            f"Boss #{challenge_boss_id}"
-            if challenge_boss_id is not None
-            else "the selected challenge Boss"
-        )
-        challenge_continuation_reason = (
-            f"Continue to {boss_label}; the latest live combat estimate is "
-            f"{challenge_boss_eta:,}s. The bot recalculates after every Boss outcome."
-        )
     if no_reset_challenge:
         action = "no-reset-challenge"
         action_label = "NO RESET — this challenge forbids ordinary rebirths"
     elif execution_hold or boundary_hold:
         action = "hold"
         action_label = (
-            "DEFERRED — continue to the next challenge Boss"
-            if challenge_continuation
+            "DEFERRED — the current reset would weaken Number"
+            if weaker_reset_hold
             else "HOLD — no executable reset is scheduled"
         )
     elif execution_enabled is False:
@@ -518,7 +502,7 @@ def build_observability(
         "rebirth": {
             "action": action,
             "actionLabel": action_label,
-            "reason": challenge_continuation_reason if challenge_continuation else (
+            "reason": eta_reason if weaker_reset_hold else (
                 safety_reason or boundary_reason or selection_reason
                 or "No decision reason was emitted."
             ),
