@@ -736,7 +736,8 @@ namespace NGUInjector.Autopilot
 
             if (result.Risk == MutationRisk.Irreversible || !intent.CanCompensate)
             {
-                QuarantineClass(intent.Class, "Partial/unrecognized state after " + intent.Id);
+                QuarantineClass(intent.Class, "Partial/unrecognized state after " + intent.Id
+                    + ": " + failure);
                 return Finish(root, token, result, MutationResultKind.Quarantined,
                     MutationPhase.Recapture,
                     failure + "; state changed and no valid compensation exists",

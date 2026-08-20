@@ -592,7 +592,9 @@ boundary so the pool cannot block reset forever. The live permanent-spell manage
 source-ready Iron Pill, MacGuffin alpha, or MacGuffin beta. It spends the complete pool only when
 the permanent effect, cooldown reset, and physical MacGuffin identity/level changes can all be
 proved. It waits to grow a stronger one-cast pool unless the cooldown can repay before rebirth or
-the run is at its final boundary.
+the run is at its final boundary. The native cooldown clocks keep moving during a spell call, so
+settlement permits only a small forward clock tick while the Blood debit and permanent effect stay
+exact. A failed proof reports the specific mismatch before Blood actions are quarantined.
 
 In Sadistic, a missing END Blood item reserves every drop of Blood ahead of repeatable spells. Once
 the exact 5e22 cost and an ordinary inventory slot are available, a separate typed delivery casts

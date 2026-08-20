@@ -88,6 +88,11 @@ namespace NGUInjector.Autopilot
 
     internal static class PermanentBloodSpellMechanics
     {
+        // PlayerTime values continue to advance on Unity's clock while a synchronous native spell
+        // call is dispatched and its post-state is captured. The debit and permanent effect vector
+        // remain exact; only these clocks may move forward by this small settlement window.
+        private const double TimerSettlementSeconds = 1.0;
+
         internal static PermanentBloodSpellDecision Select(PermanentBloodSpellState state)
         {
             if (state == null)
@@ -206,12 +211,14 @@ namespace NGUInjector.Autopilot
                 || a.EndBloodItemOwned != b.EndBloodItemOwned
                 || a.AlphaUnlocked != b.AlphaUnlocked || a.BetaUnlocked != b.BetaUnlocked
                 || a.AlphaFirstOnly != b.AlphaFirstOnly
-                || a.RemainingSeconds != b.RemainingSeconds
+                || !SameRemainingWindow(a.RemainingSeconds, b.RemainingSeconds)
                 || a.MinimumIron != b.MinimumIron || a.MinimumAlpha != b.MinimumAlpha
                 || a.MinimumBeta != b.MinimumBeta || a.IronCooldown != b.IronCooldown
                 || a.AlphaCooldown != b.AlphaCooldown || a.BetaCooldown != b.BetaCooldown
-                || a.IronElapsed != b.IronElapsed || a.AlphaElapsed != b.AlphaElapsed
-                || a.BetaElapsed != b.BetaElapsed || a.IronPillBonus != b.IronPillBonus
+                || !TimerAdvancedWithinSettlement(a.IronElapsed, b.IronElapsed)
+                || !TimerAdvancedWithinSettlement(a.AlphaElapsed, b.AlphaElapsed)
+                || !TimerAdvancedWithinSettlement(a.BetaElapsed, b.BetaElapsed)
+                || a.IronPillBonus != b.IronPillBonus
                 || a.BloodGuffBonus != b.BloodGuffBonus
                 || a.AdventureAttack != b.AdventureAttack
                 || a.AdventureDefense != b.AdventureDefense
@@ -228,9 +235,9 @@ namespace NGUInjector.Autopilot
         {
             var gain = IronPillGain(before.Blood,
                 before.Difficulty >= (int)difficulty.evil, before.IronPillBonus);
-            if (gain <= 0f || after.IronElapsed != 0.0
-                || after.AlphaElapsed != before.AlphaElapsed
-                || after.BetaElapsed != before.BetaElapsed
+            if (gain <= 0f || !ResetTimerObserved(after.IronElapsed)
+                || !TimerAdvancedWithinSettlement(before.AlphaElapsed, after.AlphaElapsed)
+                || !TimerAdvancedWithinSettlement(before.BetaElapsed, after.BetaElapsed)
                 || after.AdventureAttack != before.AdventureAttack + gain
                 || after.AdventureDefense != before.AdventureDefense + gain
                 || after.AdventureMaxHp != before.AdventureMaxHp + gain * 3f
@@ -250,8 +257,10 @@ namespace NGUInjector.Autopilot
             int gain;
             if (!TryMacGuffinGain(before.Blood, before.MinimumAlpha, 10.0,
                     before.BloodGuffBonus, out gain)
-                || after.AlphaElapsed != 0.0 || after.IronElapsed != before.IronElapsed
-                || after.BetaElapsed != before.BetaElapsed || !SameAdventure(before, after))
+                || !ResetTimerObserved(after.AlphaElapsed)
+                || !TimerAdvancedWithinSettlement(before.IronElapsed, after.IronElapsed)
+                || !TimerAdvancedWithinSettlement(before.BetaElapsed, after.BetaElapsed)
+                || !SameAdventure(before, after))
             {
                 reason = "MacGuffin alpha lacked its exact gain inputs, cooldown reset, or state isolation.";
                 return false;
@@ -291,9 +300,10 @@ namespace NGUInjector.Autopilot
         {
             int gain;
             if (!TryMacGuffinGain(before.Blood, before.MinimumBeta, 20.0, 1.0,
-                    out gain) || after.BetaElapsed != 0.0
-                || after.IronElapsed != before.IronElapsed
-                || after.AlphaElapsed != before.AlphaElapsed || !SameAdventure(before, after))
+                    out gain) || !ResetTimerObserved(after.BetaElapsed)
+                || !TimerAdvancedWithinSettlement(before.IronElapsed, after.IronElapsed)
+                || !TimerAdvancedWithinSettlement(before.AlphaElapsed, after.AlphaElapsed)
+                || !SameAdventure(before, after))
             {
                 reason = "MacGuffin beta lacked its exact gain inputs, cooldown reset, or state isolation.";
                 return false;
@@ -382,6 +392,25 @@ namespace NGUInjector.Autopilot
         {
             return !double.IsNaN(elapsed) && !double.IsInfinity(elapsed)
                    && cooldown >= 0 && elapsed >= cooldown;
+        }
+
+        internal static bool ResetTimerObserved(double elapsed)
+        {
+            return !double.IsNaN(elapsed) && !double.IsInfinity(elapsed)
+                   && elapsed >= 0.0 && elapsed <= TimerSettlementSeconds;
+        }
+
+        internal static bool TimerAdvancedWithinSettlement(double before, double after)
+        {
+            return !double.IsNaN(before) && !double.IsInfinity(before)
+                   && !double.IsNaN(after) && !double.IsInfinity(after)
+                   && after >= before && after - before <= TimerSettlementSeconds;
+        }
+
+        private static bool SameRemainingWindow(int before, int after)
+        {
+            if (before == int.MaxValue || after == int.MaxValue) return before == after;
+            return after <= before && (long)before - after <= 1L;
         }
 
         private static bool FinitePositive(double value)
@@ -501,9 +530,16 @@ namespace NGUInjector.Autopilot
                 var reason = string.Empty;
                 if (!apply.ReturnedNormally || !apply.Value
                     || !PermanentBloodSpellMechanics.Verify(_kind, before, after, out reason))
+                {
+                    var failure = string.IsNullOrEmpty(reason)
+                        ? "Native permanent Blood spell did not return normally." : reason;
+                    Main.LogAction("REJECTED", "Permanent Blood " + Label(_kind)
+                        + " verification failed: " + failure
+                        + " [before " + Fingerprint(before) + "; after "
+                        + Fingerprint(after) + "]");
                     return VerificationResult<PermanentBloodSpellState>.Failed(
-                        string.IsNullOrEmpty(reason)
-                            ? "Native permanent Blood spell did not return normally." : reason);
+                        failure);
+                }
                 Main.LogAction("BLOOD", "Cast " + Label(_kind) + " using the exact full Blood pool"
                     + (_kind == PermanentBloodSpellKind.IronPill ? string.Empty
                         : "; exact MacGuffin gain="

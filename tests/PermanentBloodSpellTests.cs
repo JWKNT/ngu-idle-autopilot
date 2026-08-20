@@ -166,10 +166,13 @@ internal static class PermanentBloodSpellTests
         after.AdventureDefense += gain;
         after.AdventureMaxHp += gain * 3f;
         after.AdventureRegen += gain * 0.03f;
+        after.IronElapsed = 0.02;
+        after.AlphaElapsed += 0.02;
+        after.BetaElapsed += 0.02;
         string reason;
         Assert(PermanentBloodSpellMechanics.Verify(PermanentBloodSpellKind.IronPill,
                    before, after, out reason),
-            "exact Iron Pill full-pool/stat/cooldown vector must settle");
+            "exact Iron Pill vector must settle across one bounded native clock tick");
         after.Blood = 1.0;
         Assert(!PermanentBloodSpellMechanics.Verify(PermanentBloodSpellKind.IronPill,
                    before, after, out reason) && reason.Contains("full pool"),
@@ -179,6 +182,23 @@ internal static class PermanentBloodSpellTests
         Assert(!PermanentBloodSpellMechanics.Verify(PermanentBloodSpellKind.IronPill,
                    before, after, out reason),
             "one wrong Iron Pill permanent stat must fail the full vector");
+
+        var stable = Clone(before);
+        stable.RemainingSeconds = 100;
+        var unchanged = Clone(stable);
+        unchanged.IronElapsed += 0.02;
+        unchanged.AlphaElapsed += 0.02;
+        unchanged.BetaElapsed += 0.02;
+        unchanged.RemainingSeconds--;
+        Assert(PermanentBloodSpellMechanics.Same(stable, unchanged),
+            "unchanged-state proof must ignore only bounded forward clock drift");
+        unchanged.BetaElapsed = stable.BetaElapsed - 0.01;
+        Assert(!PermanentBloodSpellMechanics.Same(stable, unchanged),
+            "unchanged-state proof must reject a cooldown clock moving backward");
+        unchanged = Clone(stable);
+        unchanged.IronElapsed += 1.01;
+        Assert(!PermanentBloodSpellMechanics.Same(stable, unchanged),
+            "unchanged-state proof must reject clock drift outside settlement");
     }
 
     private static void TestMacGuffinSettlement()
@@ -187,7 +207,9 @@ internal static class PermanentBloodSpellTests
         var betaBefore = Ready();
         var betaAfter = Clone(betaBefore);
         betaAfter.Blood = 0.0;
-        betaAfter.BetaElapsed = 0.0;
+        betaAfter.BetaElapsed = 0.02;
+        betaAfter.IronElapsed += 0.02;
+        betaAfter.AlphaElapsed += 0.02;
         betaAfter.MacGuffinLevels[0] += 2;
         betaAfter.MacGuffinLevels[1] += 2;
         Assert(PermanentBloodSpellMechanics.Verify(
@@ -203,7 +225,9 @@ internal static class PermanentBloodSpellTests
         alphaBefore.BetaUnlocked = false;
         var alphaAfter = Clone(alphaBefore);
         alphaAfter.Blood = 0.0;
-        alphaAfter.AlphaElapsed = 0.0;
+        alphaAfter.AlphaElapsed = 0.02;
+        alphaAfter.IronElapsed += 0.02;
+        alphaAfter.BetaElapsed += 0.02;
         alphaAfter.MacGuffinLevels[1] += 3;
         Assert(PermanentBloodSpellMechanics.Verify(
                    PermanentBloodSpellKind.MacGuffinAlpha, alphaBefore, alphaAfter, out reason),
@@ -263,8 +287,13 @@ internal static class PermanentBloodSpellTests
         var coordinator = File.ReadAllText("source/Autopilot/MutationCoordinator.cs");
         Assert(coordinator.Contains("result.Risk == MutationRisk.Irreversible || !intent.CanCompensate")
                && coordinator.Contains("QuarantineClass(intent.Class")
+               && coordinator.Contains("\" + failure")
                && coordinator.Contains("MutationResultKind.Quarantined"),
             "a changed failed postcondition with no compensation must quarantine BloodMagic even at FiniteResource risk");
+        Assert(source.Contains("Permanent Blood \" + Label(_kind)")
+               && source.Contains("verification failed: \" + failure")
+               && source.Contains("Fingerprint(before)") && source.Contains("Fingerprint(after)"),
+            "a rejected permanent Blood settlement must preserve its exact diagnostic evidence");
     }
 
     public static int Main()
