@@ -139,16 +139,19 @@ internal static class RebirthPolicyGoldenTests
     private static void TestChallengeLocalResetEstimate()
     {
         Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, 1819),
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, 1819, 1.2),
             "a standard active challenge continues along a finite next-Boss edge");
+        Assert((bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, -1, 0.0036),
+            "an unknown Boss route keeps a challenge run when reset would destroy almost all Number");
         Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, -1),
-            "an unknown Boss route does not masquerade as a finite continuation proof");
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, false, -1, 1.0),
+            "an unknown Boss route does not block a non-regressive reset");
         Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, true, 10),
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, true, true, 10, 0.5),
             "special challenge reset mechanics retain their dedicated policy");
         Assert(!(bool)Call("NGUInjector.Autopilot.RebirthOptimizer",
-                "ShouldDeferOrdinaryResetForChallengeBoss", true, false, false, 10),
+                "ShouldDeferOrdinaryResetForChallengeBoss", true, false, false, 10, 0.5),
             "a native no-rebirth rule is not relabeled as a strategic continuation choice");
     }
 

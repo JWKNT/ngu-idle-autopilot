@@ -551,7 +551,10 @@ reset clock. When the selected challenge Boss has a finite continuation estimate
 stronger current run, takes that Boss result, and recalculates. The dashboard therefore says that an
 ordinary reset is deferred and shows the next Boss event, rather than claiming it will take days to
 rebuild a Number that the challenge does not require. Challenges with special reset mechanics keep
-their own dedicated policy.
+their own dedicated policy. If the next Boss is outside the current frozen-allocation model, the bot
+also keeps the challenge run while the native reset preview would reduce Number. It reports the exact
+retained percentage and waits for fresh training, allocation, or Boss evidence; it may reconsider a
+reset once the preview becomes non-regressive instead of calling this deliberate hold “calculating.”
 
 ### MacGuffins, Beards, and long runs
 

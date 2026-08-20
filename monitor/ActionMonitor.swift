@@ -455,11 +455,17 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let rebirthExecutionHold = state["rebirthExecutionHold"] as? Bool ?? false
         let rebirthBoundaryHold = state["rebirthBoundaryHold"] as? Bool ?? false
         let rebirthUnscheduled = rebirthTarget < 0 || rebirthExecutionHold || rebirthBoundaryHold
+        let rebirthReason = state["rebirthReason"] as? String ?? ""
+        let challengeContinuation = challengeActive
+            && state["challengeAllowsRebirth"] as? Bool == true
+            && rebirthExecutionHold
+            && rebirthReason.contains("active challenge")
         // A final live boundary hold is distinct from the optimizer's continuation hold.
         // Both suppress a countdown: neither may be displayed as an executable reset.
         let rebirthBlocked = !(state["rebirthExecutionEnabled"] as? Bool ?? true)
         let rebirthText = noResetPolicy ? "no reset — challenge rule"
-            : rebirthUnscheduled ? "hold — recalculating"
+            : challengeContinuation ? "deferred — challenge first"
+            : rebirthUnscheduled ? "hold — no reset scheduled"
             : rebirthRemaining > 0 ? formatExactDuration(rebirthRemaining)
             : rebirthBlocked ? "route hold" : "now"
         let bossText = bossEta < 0 ? "beyond " + formatEstimate(bossEtaHorizon) + " model"
@@ -873,6 +879,9 @@ final class ActionMonitor: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let nextEvaluationText = state["rebirthNextEvaluationEtaSeconds"] != nil
             && rebirthNextEvaluationETA >= 0 ? formatEstimate(rebirthNextEvaluationETA) : "next live control tick"
         let rebirthPolicy = noResetPolicy ? "NO RESET — this challenge forbids ordinary rebirths"
+            : challengeActive && (state["challengeAllowsRebirth"] as? Bool == true)
+                && rebirthExecutionHold && rebirthReason.contains("active challenge")
+                ? "DEFERRED — continue the active challenge"
             : rebirthUnscheduled ? "HOLD — no executable reset is scheduled"
             : !rebirthExecutionEnabled ? "DISABLED — rebirth execution is off"
             : rebirthRemaining <= 0 ? "RESET DUE — verify the native boundary"

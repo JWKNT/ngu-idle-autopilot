@@ -728,48 +728,68 @@ namespace NGUInjector.Autopilot
             }
 
             // A standard Boss-target challenge completes automatically when its target Boss is
-            // passed.  If continuing has a finite next-Boss edge, that edge owns the decision:
-            // publishing a multi-day ordinary-reset estimate from the pre-challenge Boss record
-            // confuses two unrelated clocks and may throw away the stronger challenge run.  Hold
-            // the ordinary reset, take the native Boss event, and re-estimate from the resulting
-            // state.  Troll, Laser Sword, 24-hour and 100-Level challenges have special reset
+            // passed.  A finite next-Boss edge owns the decision.  An unforecastable edge also
+            // owns it while an ordinary reset would replace Number with a strictly weaker native
+            // preview: resetting to Boss 0 cannot be sold as progress merely because the frozen
+            // current-allocation Boss forecast ran out.  In that case publish the actual dominance
+            // evidence and keep reevaluating rather than falling through to a generic "calculating"
+            // hold.  Troll, Laser Sword, 24-hour and 100-Level challenges have special reset
             // tradeoffs and deliberately stay outside this simple continuation rule.
             var challengeBossEta = bossEta;
             if (IsStandardBossChallenge(c) && challengeBossEta < 0)
                 challengeBossEta = AutopilotManager.SelectedBossDefeatEta(c, 604800);
-            if (StandardChallengeContinuationOwnsNextBoss(c, challengeBossEta))
+            var challengeNumberRatio = Math.Min(
+                c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
+                c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0);
+            if (StandardChallengeContinuationOwnsNextBoss(c, challengeBossEta,
+                    challengeNumberRatio))
             {
                 _stickyTarget = -1;
                 _stickyKind = string.Empty;
-                var eventAge = elapsed > int.MaxValue - challengeBossEta - 2
-                    ? int.MaxValue : elapsed + challengeBossEta + 2;
+                var finiteBossEdge = challengeBossEta >= 0;
+                var eventAge = !finiteBossEdge ? -1
+                    : elapsed > int.MaxValue - challengeBossEta - 2
+                        ? int.MaxValue : elapsed + challengeBossEta + 2;
+                var numberPercent = (100.0 * challengeNumberRatio).ToString("0.###",
+                    System.Globalization.CultureInfo.InvariantCulture);
                 return new RebirthRecommendation
                 {
                     TargetSeconds = -1,
-                    Reason = "hold ordinary rebirth while the active challenge has a finite next-Boss continuation",
+                    Reason = finiteBossEdge
+                        ? "hold ordinary rebirth while the active challenge has a finite next-Boss continuation"
+                        : "hold ordinary rebirth because continuing the active challenge dominates a weaker reset",
                     RunnerUpSeconds = eventAge,
-                    RunnerUpDeltaSeconds = challengeBossEta + 2,
-                    RunnerUpReason = "defeat the selected challenge Boss, then rebuild the reset estimate from the new native state",
+                    RunnerUpDeltaSeconds = finiteBossEdge ? challengeBossEta + 2 : -1,
+                    RunnerUpReason = finiteBossEdge
+                        ? "defeat the selected challenge Boss, then rebuild the reset estimate from the new native state"
+                        : "wait for training, allocation, or Boss evidence; an ordinary reset would retain only "
+                          + numberPercent + "% of current Number",
                     SelectedScorePerHour = 0.0,
                     RunnerUpScorePerHour = 0.0,
                     ProjectedMultiplier = c.nextAttackMulti,
-                    ProjectedAP = eventAge < 4100 ? 0 : 1 + (eventAge - 4100) / 500,
-                    CandidateSummary = "HOLD challenge continuation | next selected Boss event in "
-                                       + challengeBossEta.ToString("N0") + "s",
+                    ProjectedAP = (finiteBossEdge ? eventAge : elapsed) < 4100
+                        ? 0 : 1 + ((finiteBossEdge ? eventAge : elapsed) - 4100) / 500,
+                    CandidateSummary = finiteBossEdge
+                        ? "HOLD challenge continuation | next selected Boss event in "
+                          + challengeBossEta.ToString("N0") + "s"
+                        : "HOLD challenge continuation | Boss ETA outside current model | reset retains "
+                          + numberPercent + "% Number",
                     CandidateCount = candidates.Count,
                     RecoveryMode = false,
                     RecoveryEtaSeconds = -1,
                     RecoveryRemainingBosses = 0,
                     RecoveryReason = "the active challenge objective, not the saved pre-challenge Boss record, owns this interval",
-                    MinimumNumberRatio = Math.Min(
-                        c.attackMulti > 0 ? c.nextAttackMulti / c.attackMulti : 0.0,
-                        c.defenseMulti > 0 ? c.nextDefenseMulti / c.defenseMulti : 0.0),
+                    MinimumNumberRatio = challengeNumberRatio,
                     ExecutionHold = true,
                     NextPositiveEtaSeconds = -1,
                     NextEvaluationEtaSeconds = 1,
-                    EtaReason = "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is projected in "
-                                + challengeBossEta.ToString("N0")
-                                + "s and every Boss outcome triggers a fresh estimate"
+                    EtaReason = finiteBossEdge
+                        ? "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is projected in "
+                          + challengeBossEta.ToString("N0")
+                          + "s and every Boss outcome triggers a fresh estimate"
+                        : "ordinary reset ETA intentionally withheld: selected challenge Boss outcome is not yet forecastable, while resetting would retain only "
+                          + numberPercent
+                          + "% of current Number; training, allocation, and Boss events trigger fresh estimates"
                 };
             }
 
@@ -1013,17 +1033,20 @@ namespace NGUInjector.Autopilot
         }
 
         internal static bool ShouldDeferOrdinaryResetForChallengeBoss(bool challengeActive,
-            bool ordinaryRebirthAllowed, bool specialResetMechanics, int nextBossEtaSeconds)
+            bool ordinaryRebirthAllowed, bool specialResetMechanics, int nextBossEtaSeconds,
+            double resetNumberRatio)
         {
             return challengeActive && ordinaryRebirthAllowed && !specialResetMechanics
-                   && nextBossEtaSeconds >= 0;
+                   && (nextBossEtaSeconds >= 0
+                       || resetNumberRatio > 0.0 && resetNumberRatio < 1.0);
         }
 
-        private static bool StandardChallengeContinuationOwnsNextBoss(Character c, int bossEta)
+        private static bool StandardChallengeContinuationOwnsNextBoss(Character c, int bossEta,
+            double resetNumberRatio)
         {
             var standardBossChallenge = IsStandardBossChallenge(c);
             return ShouldDeferOrdinaryResetForChallengeBoss(true, true,
-                !standardBossChallenge, bossEta);
+                !standardBossChallenge, bossEta, resetNumberRatio);
         }
 
         private static bool IsStandardBossChallenge(Character c)
