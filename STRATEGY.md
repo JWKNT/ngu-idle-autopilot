@@ -707,21 +707,39 @@ The challenge objective and clear-time estimate stay separate from that optimize
 reason and countdown, so an unknown challenge-clear ETA cannot turn a valid rebirth ETA into
 “unknown” on the dashboard.
 
-Every challenge entry requires admission-grade timing and same-state opportunity evidence. Merely
-having reached its target boss before proves that the target is possible; it does **not** prove that
-the reset costs zero time. For the first Normal Basic Challenge, the reward model includes the
-source-guaranteed EXP/AP plus the permanent +10% Boost recycling and +10% Adventure-stat rewards.
-The cost model includes a pessimistic challenge clear, recovery to the current boss and both Number
-multipliers, the ordinary rebirth opportunity being given up, and every Titan-clock delay. The
-challenge may start only when that complete upper-bound cost is strictly better than continuing in
-the same captured state. If any time bound is missing, it waits.
+Challenge entry now has two evidence paths. A complete source/copy-state route can still supply exact
+bounds. The first live path is a cautious **historical replay** for a challenge the bot has already
+finished. The next completion must have the same target and the same restrictions as the successful
+one. The bot must also have freshly reached that target in the current run. This means a previous
+Basic clear can support another Basic clear, while a No-NGU clear cannot automatically support its
+next, higher target.
 
-When challenge authority is explicitly enabled, the typed reset controller can enter that Basic
-route and the other audited unrestricted Normal routes only after their own evidence and fresh
+A replay challenge may replace an ordinary rebirth only when that ordinary rebirth's countdown has
+already reached zero. Challenge planning cannot interrupt a useful run in the middle. The bot takes
+the best comparable clear time, adds 50% plus five minutes, and never gives it less than one hour.
+For a restricted challenge, that evidence is the challenge's own native successful time. Basic has
+no restrictions, so the fresh ordinary run that just reached Boss 58 is a better bound than an old
+Basic record from a much weaker save. The bot separately gives ordinary frontier recovery the same
+50% plus five-minute safety margin, with a one-hour minimum, then adds the full value of every Titan
+clock that the challenge reset destroys. This historical path does not pretend it can restore the
+old Number exactly. The hard-reset Number loss is charged inside the replay and recovery allowance;
+exact copied-state routes may still prove literal Number recovery.
+
+The reward side uses a deliberately conservative 180-day payback window. It counts only part of the
+permanent reward that has a clear time value and ignores immediate EXP/AP and most one-time unlocks.
+For Normal Basic, for example, it counts the source-guaranteed +5% Adventure stats but assumes
+Adventure is only 35% of future progress; Boost recycling, EXP, AP, and the final Paralyze unlock are
+extra upside. If replay, recovery, and Titan loss do not repay inside that reduced reward budget, the
+challenge waits. When several challenges pass, the one with the best reward-to-cost ratio wins, not
+simply the shortest challenge.
+
+When challenge authority is explicitly enabled, the typed reset controller can enter a repeat
+Basic route and the other audited Normal routes only after their own evidence and fresh
 Titan, fruit, Blood, native-binding, root, and exact-postcondition checks pass. A selected challenge
 cannot silently turn into an ordinary rebirth if its preparation changes state. Special challenges,
-Normal-to-Evil, Evil-to-Sadistic, and puzzle-heavy transitions remain planning-only or separately
-disabled as described below.
+first attempts without a comparable route, growing-target extrapolation, Normal-to-Evil,
+Evil-to-Sadistic, and puzzle-heavy transitions remain planning-only or separately disabled as
+described below. A missing challenge proof never suppresses the ordinary rebirth.
 
 A Titan clock that merely says “ready” is not an automatic challenge veto. The typed Titan child
 first tries the strongest legal gear. If the Titan is actually killable or already active, the reset
@@ -746,7 +764,7 @@ it, the installed-build bindings must match, and every fresh precondition must p
 | Iron Pill, Blood MacGuffin alpha/beta, END Blood item 494, and rebirth-boundary Blood NUMBER | Live through separate typed full-pool intents when their exact gates pass. Loot/Gold Blood spells remain held. |
 | AP spending and QP quirks | Source-ready, but deployment-disabled until exact downstream quotes exist. |
 | Money Pit | Live when both explicit flags are enabled and the exact Gold/delivery proof passes. |
-| Audited Normal challenge entry | Typed execution is live-capable when explicitly enabled, but every route—including the first Basic—holds until a fresh finite same-state clear/recovery/opportunity proof exists. |
+| Audited Normal challenge entry | Repeat same-target routes are live through the historical replay/payback model at an already-due ordinary rebirth. First or growing-target routes still require stronger source/copy-state evidence. |
 | Normal-to-Evil | Source-ready, but deployment-disabled pending explicit authority and route evidence. |
 | T13/T14, MOVE69, Evil-to-Sadistic, special challenges, final END | Modeled/guarded; live authority disabled. |
 | Global time-to-END scheduler | Shadow-only. It cannot control the game. |

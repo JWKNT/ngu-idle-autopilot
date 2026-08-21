@@ -16,7 +16,8 @@ Mechanism: LiveResetProgressionRuntime adapts Character state, ChallengeStrategy
 one-intent admission, DifficultyTransitionGate, build-pinned NativeMutationAdapters, the live Titan
 reset interlock, harvestable fruit, remaining Blood, and the caller's currently open RootTransaction.
 Challenge admission receives that exact reset/loss snapshot and must prove that pessimistic clear,
-current-run recovery, and Titan opportunity time strictly beat continuing. Positive Blood is a HOLD;
+current-run recovery, and Titan opportunity time strictly beat either a source-modelled continuation
+bound or the audited historical route's conservative permanent-reward payback budget. Positive Blood is a HOLD;
 hard challenge entry sets Number to one, so casting the ordinary-rebirth NUMBER spell here would
 destroy Blood without preserving its effect. ChallengeEntryMutationIntent and
 NormalToEvilMutationIntent revalidate all boundary and opportunity facts immediately
@@ -26,7 +27,8 @@ ResetEpochTransition before MutationCoordinator closes the old root.
 
 Inputs and outputs: Main supplies a synchronized Character, an accessor for its one-second active
 root, and explicit feature authority on each call. Challenge timing samples enter only through
-ChallengeStrategyPlanner. Outputs are ResetProgressionExecutionResult records backed by the typed
+ChallengeStrategyPlanner after the same-root route producer validates them. Outputs are
+ResetProgressionExecutionResult records backed by the typed
 mutation journal; native calls, epoch publication, and HOLD/quarantine evidence are the only effects.
 
 Invariants and safety: No reset crosses an active/source-proven executable Titan, a harvestable

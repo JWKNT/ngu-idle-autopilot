@@ -70,6 +70,7 @@ files must be listed explicitly; generated resources and copied binaries are bui
     <Compile Include="Autopilot\AutopilotPlanner.cs" />
     <Compile Include="Autopilot\CardCookingManager.cs" />
     <Compile Include="Autopilot\ChallengeMechanics.cs" />
+    <Compile Include="Autopilot\ChallengeRouteBoundModel.cs" />
     <Compile Include="Autopilot\ChallengeRouteProofProducer.cs" />
     <Compile Include="Autopilot\ChallengeStrategyPlanner.cs" />
     <Compile Include="Autopilot\DifficultyTransitionExecutor.cs" />

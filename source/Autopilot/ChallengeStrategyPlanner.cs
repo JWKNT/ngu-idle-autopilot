@@ -25,14 +25,19 @@ ExecutionSafety's state version, bot-owned timing samples, an optional Laser rou
 an optional exact rebirth event. Outputs are zero or one ChallengeAdmission plus telemetry, or an
 ActiveChallengePolicy. This file never enters, quits, completes, or rebirths a challenge.
 
-Invariants and safety: Native bestTime is never timing evidence. Live serialized maxima are
-authoritative and native targets must equal the exact installed formula. Every valued Titan clock,
+Invariants and safety: Native bestTime is never timing evidence by itself. The production replay
+model may convert it into admission evidence only for the same source target/restrictions at an
+already-due ordinary checkpoint, with explicit replay/recovery margins and reward payback. Live
+serialized maxima are authoritative and native targets must equal the exact installed formula.
+Every valued Titan clock,
 including a time-ready clock, contributes its exact reset-loss vector; the typed Titan, fruit, and
 Blood boundary is part of admission and is revalidated at mutation time. Reaching a target in the
-current run is never timing evidence and cannot bootstrap entry. Recovery evidence must restore at
-least the captured Boss and both current Number multipliers. A 24-Hour route requires positive
+current run is never timing evidence and cannot bootstrap entry. Deterministic recovery evidence
+must restore the captured Boss and both current Number multipliers; historical replay must instead
+explicitly price hard-reset Number replacement. A 24-Hour route requires positive
 active-time slack. No-Rebirth is continuous, no probability label is emitted without calibrated
-coverage, and missing route or continuation evidence freezes every destructive reset.
+coverage, and missing route or reward-comparison evidence freezes challenge entry without freezing
+an independently valid ordinary rebirth.
 
 Extension points and non-goals: Task 28 records formula-simulation/observed samples and supplies
 exact reset/Laser comparisons; tasks 17/29 validate the intent epoch and own entry/allocation
@@ -113,14 +118,14 @@ namespace NGUInjector.Autopilot
     }
 
     /*
-    EXACT SAME-STATE OPPORTUNITY PROOF
+    SAME-STATE OPPORTUNITY EVIDENCE
 
     Challenge timing alone answers only "how long might the challenge take?" It does not price the
     run destroyed by hard entry. This evidence is produced by a bounded replay/formula model for the
-    exact live reset fingerprint. ContinuationLowerBoundSeconds is deliberately a lower bound while
-    CurrentRunRecoveryUpperSeconds and the foregone ordinary-rebirth opportunity are upper bounds:
-    only upper(challenge+recovery+rebirth-opportunity+Titan) strictly below lower(continue) can
-    authorize an irreversible entry.
+    exact live reset fingerprint. Deterministic models compare an upper challenge cost to a lower
+    continuation bound. The historical replay model instead compares that upper cost to a
+    conservative permanent-reward time-saved budget and marks NumberReplacementPriced; it must not
+    claim to restore a pre-reset Number that it cannot prove. Both paths remain exact-state keyed.
     */
     internal sealed class ChallengeOpportunityEvidence
     {
@@ -139,6 +144,7 @@ namespace NGUInjector.Autopilot
         internal int RecoveredBossId = -1;
         internal double RecoveredAttackNumberLowerBound = -1.0;
         internal double RecoveredDefenseNumberLowerBound = -1.0;
+        internal bool NumberReplacementPriced;
 
         internal ChallengeOpportunityEvidence Clone()
         {
@@ -163,10 +169,10 @@ namespace NGUInjector.Autopilot
     /*
     ATOMIC PRODUCTION EVIDENCE INPUT
 
-    This is intentionally a proof payload, not a guess payload. A copied-state deterministic replay
-    or native-formula simulator supplies a pessimistic clear/recovery upper bound and an optimistic
-    continuation lower bound for one exact live reset snapshot. RecordRouteProof installs the keyed
-    timing and opportunity halves together.
+    This is intentionally an admission payload, not an unkeyed guess. A copied-state deterministic
+    replay, native-formula simulator, or source-audited historical policy supplies pessimistic
+    clear/recovery costs and its matching comparison budget for one exact live reset snapshot.
+    RecordRouteProof installs the keyed timing and opportunity halves together.
     */
     internal sealed class ChallengeRouteProofCapture
     {
@@ -181,6 +187,7 @@ namespace NGUInjector.Autopilot
         internal int RecoveredBossId = -1;
         internal double RecoveredAttackNumberLowerBound = -1.0;
         internal double RecoveredDefenseNumberLowerBound = -1.0;
+        internal bool NumberReplacementPriced;
         internal string ObjectiveSignature = string.Empty;
         internal string StartStateSignature = string.Empty;
         internal string AllocationSignature = string.Empty;
@@ -224,15 +231,16 @@ namespace NGUInjector.Autopilot
         ADMISSION EVIDENCE INGEST
 
         A producer may record a proof only for the exact state version and complete reset snapshot
-        it modelled. This is the production hook for a copied-state replay or exact native-formula
-        simulation; merely observing that the current run has passed a target is not a proof.
+        it modelled. This is the production hook for copied-state replay, exact native-formula
+        simulation, or the separately source-audited historical replay policy; merely observing
+        that the current run has passed a target is not a proof.
         */
         internal static void RecordOpportunityEvidence(ChallengeOpportunityEvidence evidence)
         {
             if (evidence == null || evidence.Key == null)
                 throw new ArgumentNullException("evidence");
             if (!ExactEvidence(evidence.EvidenceKind))
-                throw new ArgumentException("opportunity evidence must be exact deterministic or native-formula simulation");
+                throw new ArgumentException("opportunity evidence must have admission-grade audited provenance");
             if (string.IsNullOrEmpty(evidence.ExpectedStateVersion)
                 || string.IsNullOrEmpty(evidence.CurrentProgressionFingerprint)
                 || string.IsNullOrEmpty(evidence.ObjectiveSignature))
@@ -265,7 +273,7 @@ namespace NGUInjector.Autopilot
                 || resetSnapshot == null || proof == null)
                 throw new ArgumentNullException("proof");
             if (!ExactEvidence(proof.EvidenceKind))
-                throw new ArgumentException("route proof must be deterministic or native-formula evidence");
+                throw new ArgumentException("route proof must have admission-grade audited provenance");
             var liveReset = LiveResetSnapshot.Capture(c);
             if (proof.CompletedBefore < 0 || proof.ExactTarget < 0
                 || resetSnapshot.Number == null || resetSnapshot.BossId != c.bossID
@@ -325,7 +333,8 @@ namespace NGUInjector.Autopilot
                 CurrentDefenseNumber = resetSnapshot.Number.CurrentDefense,
                 RecoveredBossId = proof.RecoveredBossId,
                 RecoveredAttackNumberLowerBound = proof.RecoveredAttackNumberLowerBound,
-                RecoveredDefenseNumberLowerBound = proof.RecoveredDefenseNumberLowerBound
+                RecoveredDefenseNumberLowerBound = proof.RecoveredDefenseNumberLowerBound,
+                NumberReplacementPriced = proof.NumberReplacementPriced
             });
         }
 
@@ -383,16 +392,23 @@ namespace NGUInjector.Autopilot
                 result.Reason = "HOLD: current Boss/Number changed after opportunity modelling";
                 return result;
             }
+            var historical = evidence.EvidenceKind
+                == ChallengeTimingEvidenceKind.SourceAuditedHistoricalReplay;
             if (!Finite(evidence.ContinuationLowerBoundSeconds)
                 || !Finite(evidence.CurrentRunRecoveryUpperSeconds)
                 || !Finite(evidence.ForegoneRebirthOpportunityUpperSeconds)
                 || evidence.RecoveredBossId < currentBossId
                 || !FinitePositive(evidence.RecoveredAttackNumberLowerBound)
                 || !FinitePositive(evidence.RecoveredDefenseNumberLowerBound)
-                || evidence.RecoveredAttackNumberLowerBound + 1e-12 < currentAttackNumber
-                || evidence.RecoveredDefenseNumberLowerBound + 1e-12 < currentDefenseNumber)
+                || (!historical && (evidence.RecoveredAttackNumberLowerBound + 1e-12
+                                        < currentAttackNumber
+                                    || evidence.RecoveredDefenseNumberLowerBound + 1e-12
+                                        < currentDefenseNumber))
+                || (historical && !evidence.NumberReplacementPriced))
             {
-                result.Reason = "HOLD: recovery does not restore the captured Boss and both Number multipliers";
+                result.Reason = historical
+                    ? "HOLD: historical replay does not explicitly price hard-reset Number replacement"
+                    : "HOLD: recovery does not restore the captured Boss and both Number multipliers";
                 return result;
             }
             var recoveryUpper = Math.Max(timing.RecoverySeconds,
@@ -419,7 +435,8 @@ namespace NGUInjector.Autopilot
             if (!Finite(total) || total + 1e-12 >= evidence.ContinuationLowerBoundSeconds)
             {
                 result.Reason = "HOLD: challenge upper " + FormatSeconds(total)
-                                + " does not strictly beat continuation lower "
+                                + " does not strictly beat "
+                                + ComparisonLabel(evidence.EvidenceKind) + " "
                                 + FormatSeconds(evidence.ContinuationLowerBoundSeconds)
                                 + " for " + evidence.ObjectiveSignature;
                 return result;
@@ -431,12 +448,17 @@ namespace NGUInjector.Autopilot
                             + FormatSeconds(evidence.ForegoneRebirthOpportunityUpperSeconds)
                             + ", Titan loss "
                             + FormatSeconds(titanCost.TotalCycleDelaySeconds) + " = "
-                            + FormatSeconds(total) + " < continuation lower "
+                            + FormatSeconds(total) + " < "
+                            + ComparisonLabel(evidence.EvidenceKind) + " "
                             + FormatSeconds(evidence.ContinuationLowerBoundSeconds) + " for "
-                            + evidence.ObjectiveSignature + "; recovers Boss " + currentBossId
-                            + " and Number A/D " + currentAttackNumber.ToString("R",
-                                CultureInfo.InvariantCulture) + "/"
-                            + currentDefenseNumber.ToString("R", CultureInfo.InvariantCulture);
+                            + evidence.ObjectiveSignature + "; "
+                            + (historical
+                                ? "hard-reset Number replacement is priced inside replay/recovery"
+                                : "recovers Boss " + currentBossId + " and Number A/D "
+                                  + currentAttackNumber.ToString("R",
+                                      CultureInfo.InvariantCulture) + "/"
+                                  + currentDefenseNumber.ToString("R",
+                                      CultureInfo.InvariantCulture));
             return result;
         }
 
@@ -550,6 +572,9 @@ namespace NGUInjector.Autopilot
                     ExpectedStateVersion = stateVersion,
                     TimingKey = key,
                     TotalRouteSeconds = opportunity.TotalChallengeUpperSeconds,
+                    BenefitCostRatio = opportunity.TotalChallengeUpperSeconds <= 0.0
+                        ? 0.0 : opportunity.ContinuationLowerBoundSeconds
+                                  / opportunity.TotalChallengeUpperSeconds,
                     Evidence = timing.EvidenceLabel + "; " + opportunity.Reason
                 };
                 var evidence = timing.EvidenceLabel + " key=" + key + ", n="
@@ -568,7 +593,7 @@ namespace NGUInjector.Autopilot
                     RecoverySeconds = opportunity.CurrentRunRecoveryUpperSeconds,
                     TitanOpportunitySeconds = titanCost.TotalCycleDelaySeconds,
                     Constraints = live.Constraints, Reward = live.Reward,
-                    Evidence = evidence, Score = -intent.TotalRouteSeconds,
+                    Evidence = evidence, Score = intent.BenefitCostRatio,
                     Intent = intent, Timing = timing, TitanCost = titanCost,
                     Deadline = deadline, Opportunity = opportunity
                 };
@@ -585,7 +610,9 @@ namespace NGUInjector.Autopilot
             var selected = admissions[selection.Selected.ProfileCode];
             var alternatives = selection.Alternatives.Length == 0 ? "none"
                 : string.Join(", ", selection.Alternatives.Select(x => x.ProfileCode
-                    + "=" + FormatSeconds(x.TotalRouteSeconds)).ToArray());
+                    + "=" + FormatSeconds(x.TotalRouteSeconds) + ", payback x"
+                    + x.BenefitCostRatio.ToString("0.00",
+                        CultureInfo.InvariantCulture)).ToArray());
             evidenceSummary = AdmissionSummary(selected) + " | diagnostic alternatives: "
                               + alternatives + " | " + titanEvidence;
             return new List<ChallengeAdmission> {selected};
@@ -1088,7 +1115,8 @@ namespace NGUInjector.Autopilot
                    + x.MaxCompletions + ", " + target + ", upper " + x.EtaText
                    + ", recovery " + FormatSeconds(x.RecoverySeconds)
                    + ", Titan-vector " + FormatSeconds(x.TitanOpportunitySeconds)
-                   + "]: " + x.Evidence + "; " + x.Reward;
+                   + ", reward/cost x" + x.Score.ToString("0.00",
+                       CultureInfo.InvariantCulture) + "]: " + x.Evidence + "; " + x.Reward;
         }
 
         private static string RejectionSuffix(ICollection<string> rejected)
@@ -1128,7 +1156,15 @@ namespace NGUInjector.Autopilot
         private static bool ExactEvidence(ChallengeTimingEvidenceKind kind)
         {
             return kind == ChallengeTimingEvidenceKind.ExactDeterministic
-                   || kind == ChallengeTimingEvidenceKind.NativeFormulaSimulation;
+                   || kind == ChallengeTimingEvidenceKind.NativeFormulaSimulation
+                   || kind == ChallengeTimingEvidenceKind.SourceAuditedHistoricalReplay;
+        }
+
+        private static string ComparisonLabel(ChallengeTimingEvidenceKind kind)
+        {
+            return kind == ChallengeTimingEvidenceKind.SourceAuditedHistoricalReplay
+                ? "modeled permanent-reward time-saved budget"
+                : "same-objective continuation lower bound";
         }
 
         private static bool Same(double left, double right)

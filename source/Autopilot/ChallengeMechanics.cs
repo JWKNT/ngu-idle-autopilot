@@ -24,7 +24,9 @@ timing estimates, one executable intent, and explicit evidence labels.
 
 Invariants and safety: Ten entries hard-reset all eight Number fields to one; Laser alone banks the
 synchronized preview. Every entry resets all Titan clocks. Basic Evil/Sadistic clears also increment
-raw Normal Basic. Native global bestTime is never an input. The 100-Level cap is one shared budget,
+raw Normal Basic. A native bestTime is not itself a current-state proof; the live route model may
+use it only as a successful historical witness for an identical or source-dominated route, with a
+separate safety margin and reward-payback budget. The 100-Level cap is one shared budget,
 Troll rebirth preserves its counter, No-Rebirth forbids reset, and no output says p90 without an
 exact-key empirical coverage audit.
 
@@ -66,7 +68,8 @@ namespace NGUInjector.Autopilot
         HeuristicUnknown = 0,
         ExactDeterministic = 1,
         NativeFormulaSimulation = 2,
-        EmpiricalObservation = 3
+        EmpiricalObservation = 3,
+        SourceAuditedHistoricalReplay = 4
     }
 
     internal enum HundredLevelTrack
@@ -299,7 +302,9 @@ namespace NGUInjector.Autopilot
             var exact = source.Where(x => x.EvidenceKind ==
                                                 ChallengeTimingEvidenceKind.ExactDeterministic
                                             || x.EvidenceKind ==
-                                                ChallengeTimingEvidenceKind.NativeFormulaSimulation)
+                                                ChallengeTimingEvidenceKind.NativeFormulaSimulation
+                                            || x.EvidenceKind == ChallengeTimingEvidenceKind
+                                                .SourceAuditedHistoricalReplay)
                 .ToArray();
             var empirical = source.Count(x => x.EvidenceKind ==
                                                 ChallengeTimingEvidenceKind.EmpiricalObservation);
@@ -332,7 +337,11 @@ namespace NGUInjector.Autopilot
                 EvidenceLabel = exact.Length > 0
                     ? (exact.Any(x => x.EvidenceKind ==
                                      ChallengeTimingEvidenceKind.ExactDeterministic)
-                        ? "exact deterministic" : "native-formula simulation")
+                        ? "exact deterministic"
+                        : exact.Any(x => x.EvidenceKind == ChallengeTimingEvidenceKind
+                            .NativeFormulaSimulation)
+                            ? "native-formula simulation"
+                            : "source-audited historical replay")
                     : calibrated ? "calibrated empirical interval"
                     : "heuristic/uncalibrated empirical",
                 QuantileLabel = calibrated ? "p90" : string.Empty
@@ -361,6 +370,7 @@ namespace NGUInjector.Autopilot
         internal string ExpectedStateVersion = string.Empty;
         internal ChallengeTimingKey TimingKey;
         internal double TotalRouteSeconds = double.PositiveInfinity;
+        internal double BenefitCostRatio;
         internal string Evidence = string.Empty;
     }
 
@@ -380,7 +390,9 @@ namespace NGUInjector.Autopilot
                             && x.Completion > 0
                             && !string.IsNullOrEmpty(x.ExpectedStateVersion)
                             && FiniteNonNegative(x.TotalRouteSeconds))
-                .OrderBy(x => x.TotalRouteSeconds)
+                .OrderByDescending(x => FiniteNonNegative(x.BenefitCostRatio)
+                    ? x.BenefitCostRatio : 0.0)
+                .ThenBy(x => x.TotalRouteSeconds)
                 .ThenBy(x => x.ProfileCode, StringComparer.Ordinal).ToArray();
             var selected = ordered.FirstOrDefault();
             return new ChallengeIntentSelection

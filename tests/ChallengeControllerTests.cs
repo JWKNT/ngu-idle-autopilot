@@ -5,7 +5,9 @@ ChallengeControllerTests is task 16's isolated reflection suite. It loads only a
 and proves all eleven challenge target/entry/offline/completion transforms, keyed timing evidence,
 one-hot intent selection, the shared 100-Level budget, Troll cadence/reset preservation, Laser's
 build-versus-commit switch, No-Rebirth continuity, 24-Hour slack/race, Titan-vector cost, and the
-single final recovery charge. It also proves that only No-Rebirth mechanically forbids ordinary
+single final recovery charge. It proves the same-target historical replay margin, due-checkpoint
+gate, permanent-reward payback budget, growing-target hold, and reward/cost selection order. It also
+proves that only No-Rebirth mechanically forbids ordinary
 rebirths, that the player-facing rule summaries preserve each native restriction, and that an
 admitted checkpoint remains legal after becoming due instead of rolling forward forever. It never
 loads Unity state or mutates a save.
@@ -47,6 +49,7 @@ internal static class ChallengeControllerTests
         Run("bot-owned keys and calibrated labels", TimingEvidence);
         Run("challenge opportunity proof and Boss-58 incident", ChallengeOpportunityAdmission);
         Run("production route proof boundary fails closed", RouteProofProducer);
+        Run("historical challenge replay and reward payback", HistoricalReplayPolicy);
         Run("exactly one epoch-bound intent", IntentSelection);
         Run("shared 100-Level competing budget", HundredLevelBudget);
         Run("Troll fifth event and rebirth preservation", TrollCadence);
@@ -451,11 +454,93 @@ internal static class ChallengeControllerTests
         Set(bounds, "RecoveredDefenseNumberLowerBound", 987.0);
 
         Set(bounds, "Provenance", EnumValue(
+            "NGUInjector.Autopilot.ChallengeRouteBoundProvenance",
+            "SourceAuditedHistoricalReplay"));
+        Set(bounds, "RecoveredAttackNumberLowerBound", 1.0);
+        Set(bounds, "RecoveredDefenseNumberLowerBound", 1.0);
+        var unpricedReplay = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 1, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
+        True(!(bool)Field(unpricedReplay, "Recorded"),
+            "historical replay cannot pretend that it restores the old Number");
+        Set(bounds, "NumberReplacementPriced", true);
+        var pricedReplay = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
+            type, 1, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
+        True((bool)Field(pricedReplay, "Recorded"),
+            "historical replay may charge hard-reset Number loss inside its replay/recovery budget");
+
+        Set(bounds, "Provenance", EnumValue(
             "NGUInjector.Autopilot.ChallengeRouteBoundProvenance", "Unknown"));
         var unknown = Call("NGUInjector.Autopilot.ChallengeRouteProofProducer", "Evaluate",
             type, 0, 57, 59, 59, 1234.0, 987.0, 50L, bounds);
         True(!(bool)Field(unknown, "Recorded"),
             "unknown/empirical provenance cannot authorize production capture");
+    }
+
+    private static void HistoricalReplayPolicy()
+    {
+        var basic = HistoricalInput("Basic", 1, 57, 57, 58, 59, 1000, 3600.0, 0L, true);
+        var accepted = Call("NGUInjector.Autopilot.ChallengeHistoricalRoutePolicy",
+            "Evaluate", basic);
+        True((bool)Field(accepted, "Admitted"),
+            "repeat Basic is admitted only from its identical successful route at a due reset");
+        Near(5700.0, Number(accepted, "ClearUpperSeconds"),
+            "unrestricted Basic uses the fresh ordinary run with a 50%+5m margin");
+        Near(5700.0, Number(accepted, "RecoveryUpperSeconds"),
+            "frontier recovery independently uses the fresh ordinary run with the same margin");
+        Near(259200.0, Number(accepted, "RewardTimeSavedBudgetSeconds"),
+            "Basic reward budget counts only conservative Adventure-stat use");
+
+        Set(basic, "OrdinaryCheckpointDue", false);
+        True(!(bool)Field(Call("NGUInjector.Autopilot.ChallengeHistoricalRoutePolicy",
+                "Evaluate", basic), "Admitted"),
+            "challenge machinery cannot interrupt a run before its ordinary checkpoint");
+        Set(basic, "OrdinaryCheckpointDue", true);
+        Set(basic, "HistoricalBestSeconds", 200000);
+        True((bool)Field(Call("NGUInjector.Autopilot.ChallengeHistoricalRoutePolicy",
+                "Evaluate", basic), "Admitted"),
+            "a stale Basic best cannot outweigh a fresh unrestricted route to the same target");
+        Set(basic, "CurrentRunSeconds", 200000.0);
+        True(!(bool)Field(Call("NGUInjector.Autopilot.ChallengeHistoricalRoutePolicy",
+                "Evaluate", basic), "Admitted"),
+            "a fresh unrestricted route too slow to repay its permanent reward still holds");
+
+        var growing = HistoricalInput("NoNGU", 1, 67, 57, 68, 80, 1000, 3600.0, 0L, true);
+        var growingDecision = Call("NGUInjector.Autopilot.ChallengeHistoricalRoutePolicy",
+            "Evaluate", growing);
+        True(!(bool)Field(growingDecision, "Admitted"),
+            "a prior clear cannot be extrapolated across a growing target");
+        True(((string)Field(growingDecision, "Reason")).Contains("target grew"),
+            "growing-target hold is human readable");
+
+        var noAug = HistoricalInput("NoAug", 1, 58, 58, 59, 80, 1000, 3600.0, 0L, true);
+        var noAugDecision = Call("NGUInjector.Autopilot.ChallengeHistoricalRoutePolicy",
+            "Evaluate", noAug);
+        True((bool)Field(noAugDecision, "Admitted"),
+            "the same general machinery supports a fixed-target restricted repeat");
+        Near(3600.0, Number(noAugDecision, "ClearUpperSeconds"),
+            "restricted challenge clear still comes from its own native route history");
+        Near(5700.0, Number(noAugDecision, "RecoveryUpperSeconds"),
+            "restricted challenge recovery is independently based on the ordinary run");
+    }
+
+    private static object HistoricalInput(string type, int completed, int target,
+        int previous, int boss, int highest, int best, double run, long titan, bool due)
+    {
+        var input = New("NGUInjector.Autopilot.ChallengeHistoricalRouteInput");
+        Set(input, "Type", EnumValue(
+            "NGUInjector.AllocationProfiles.RebirthStuff.ChallengeType", type));
+        Set(input, "CompletedBefore", completed);
+        Set(input, "ExactTarget", target);
+        Set(input, "PreviousTarget", previous);
+        Set(input, "CurrentBossId", boss);
+        Set(input, "HighestBossId", highest);
+        Set(input, "HistoricalBestSeconds", best);
+        Set(input, "CurrentRunSeconds", run);
+        Set(input, "TitanOpportunitySeconds", titan);
+        Set(input, "OrdinaryCheckpointDue", due);
+        Set(input, "CurrentAttackNumber", 1234.0);
+        Set(input, "CurrentDefenseNumber", 987.0);
+        return input;
     }
 
     private static void IntentSelection()
@@ -473,6 +558,13 @@ internal static class ChallengeControllerTests
             "multiple candidates produce exactly one executable intent");
         Equal(2, ((Array)Field(selection, "Alternatives")).Length,
             "runner-ups stay diagnostic-only");
+        Set(intents[0], "BenefitCostRatio", 3.0);
+        Set(intents[1], "BenefitCostRatio", 1.0);
+        Set(intents[2], "BenefitCostRatio", 2.0);
+        var valued = Call("NGUInjector.Autopilot.ChallengeIntentSelector", "SelectOne",
+            ArrayOf("NGUInjector.Autopilot.ChallengeIntent", intents));
+        Equal("BASIC-1", (string)Field(Field(valued, "Selected"), "ProfileCode"),
+            "proven challenge alternatives rank by permanent reward payback before raw duration");
         Equal("NOAUG-1", (string)Field(Field(selection, "Selected"), "ProfileCode"),
             "shortest exact route is selected");
         True((bool)Call("NGUInjector.Autopilot.ChallengeIntentSelector", "StillValid",

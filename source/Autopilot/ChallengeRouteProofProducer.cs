@@ -6,35 +6,36 @@ using NGUInjector.AllocationProfiles.RebirthStuff;
 /*
 FILE PURPOSE
 
-Purpose: ChallengeRouteProofProducer is the fail-closed production bridge between a trusted
-source/copy-state route model and ChallengeStrategyPlanner.RecordRouteProof. It does not estimate a
-route itself. The installed bot currently has exact one-fight and reset kernels, but no complete
-zero-to-Boss-58 replay builder and no same-objective continuation lower-bound model; treating current
-Boss progress or raw run age as either bound caused the unsafe first-Basic incident.
+Purpose: ChallengeRouteProofProducer is the fail-closed production bridge between a challenge route
+model and ChallengeStrategyPlanner.RecordRouteProof. It does not estimate a route itself. Exact
+source/copy-state models and the source-audited historical replay model share this boundary; raw
+Boss progress or run age alone never authorizes a challenge.
 
 Mechanism: A caller supplies IChallengeRouteBoundModel, which receives a fresh immutable reset
 snapshot under the caller's existing root/epoch/thread lease. The returned bounds must be explicitly
 source-formula or deterministic copied-state evidence, include positive pessimistic clear and
-frontier-recovery times, quantify foregone ordinary-rebirth opportunity, restore the captured Boss
-and both Number multipliers, and strictly beat the same objective's continuation lower bound after
-the complete live Titan-clock vector is charged. State and root are recaptured before the proof is
-recorded. Missing model coverage is a normal HOLD and performs no mutation.
+frontier-recovery times, and quantify foregone ordinary-rebirth opportunity. Deterministic routes
+restore the captured Boss and both Number multipliers; the historical route instead prices hard
+Number replacement inside replay/recovery. Either comparison must beat its declared continuation or
+reward budget after the complete live Titan-clock vector is charged. State and root are recaptured
+before the proof is recorded. Missing model coverage is a normal HOLD and performs no mutation.
 
 Inputs and outputs: TryRecordLive accepts Character, the already-open one-second RootTransaction,
 one safe Normal challenge type, and a read-only bound model. Evaluate is the controller-free proof
 validator used by tests and copied-state tooling. Success records one ChallengeRouteProofCapture in
 ChallengeStrategyPlanner; failure returns evidence and changes no game or planner state.
 
-Invariants and safety: This adapter never starts a challenge, opens a root, reads native bestTime,
-uses boss>=target as elapsed time, converts raw run age into a clear bound, or accepts empirical/
-unknown provenance. It supports only the typed first-wave hard Normal challenges. Every accepted
-proof is exact-build, exact-epoch, exact-state, current-thread, finite, positive where required, and
-stale on any Boss/Number/persistent/state-version change.
+Invariants and safety: This adapter never starts a challenge or opens a root. Unknown and ordinary
+empirical provenance remain rejected. Historical replay is accepted only through the dedicated
+source-audited model, which requires an already completed identical route, a due ordinary reset,
+fresh target reachability, a pessimistic replay/recovery allowance, and a positive permanent-reward
+payback budget. It supports only the typed first-wave hard Normal challenges. Every accepted proof
+is exact-build, exact-epoch, exact-state, current-thread, finite, and stale on any Boss/Number/
+persistent/state-version change.
 
-Extension points and non-goals: A future copied-state runner or complete source replay implements
-IChallengeRouteBoundModel. Until then, pass no model and challenge authority remains dormant even if
-configuration is enabled. This file does not invent a continuation lower bound, persist samples,
-edit configuration, or invoke Unity/native mutation methods.
+Extension points and non-goals: New challenge families implement IChallengeRouteBoundModel and must
+state whether their evidence is deterministic or a bounded historical replay. This file does not
+choose reward weights, persist samples, edit configuration, or invoke Unity/native mutation methods.
 */
 namespace NGUInjector.Autopilot
 {
@@ -42,7 +43,8 @@ namespace NGUInjector.Autopilot
     {
         Unknown = 0,
         SourceFormula = 1,
-        DeterministicCopiedState = 2
+        DeterministicCopiedState = 2,
+        SourceAuditedHistoricalReplay = 3
     }
 
     internal sealed class ChallengeRouteModelInput
@@ -69,6 +71,7 @@ namespace NGUInjector.Autopilot
         internal int RecoveredBossId = -1;
         internal double RecoveredAttackNumberLowerBound = -1.0;
         internal double RecoveredDefenseNumberLowerBound = -1.0;
+        internal bool NumberReplacementPriced;
         internal string ObjectiveSignature = string.Empty;
         internal string StartStateSignature = string.Empty;
         internal string AllocationSignature = string.Empty;
@@ -101,6 +104,31 @@ namespace NGUInjector.Autopilot
 
     internal static class ChallengeRouteProofProducer
     {
+        internal static ChallengeRouteProofProductionResult TryRecordLiveCandidates(Character c,
+            RootTransaction root, IChallengeRouteBoundModel model)
+        {
+            var types = new[]
+            {
+                ChallengeType.Basic, ChallengeType.NoAug, ChallengeType.NoEquip,
+                ChallengeType.Blind, ChallengeType.NoNGU, ChallengeType.NoTimeMachine
+            };
+            ChallengeRouteProofProductionResult best = null;
+            var reasons = new System.Collections.Generic.List<string>();
+            foreach (var type in types)
+            {
+                var result = TryRecordLive(c, root, type, model);
+                if (result != null && result.Recorded
+                    && (best == null || result.TotalChallengeUpperSeconds
+                        < best.TotalChallengeUpperSeconds))
+                    best = result;
+                else if (result != null && !string.IsNullOrEmpty(result.Reason))
+                    reasons.Add(ChallengeMechanics.Code(type) + ": " + result.Reason);
+            }
+            if (best != null) return best;
+            return Hold(reasons.Count == 0 ? "no audited Normal challenge route is available"
+                : string.Join("; ", reasons.ToArray()));
+        }
+
         internal static ChallengeRouteProofProductionResult TryRecordLive(Character c,
             RootTransaction root, ChallengeType type, IChallengeRouteBoundModel model)
         {
@@ -193,8 +221,12 @@ namespace NGUInjector.Autopilot
                 return Hold(bounds == null || string.IsNullOrEmpty(bounds.Evidence)
                     ? "route model is incomplete" : bounds.Evidence);
             if (bounds.Provenance != ChallengeRouteBoundProvenance.SourceFormula
-                && bounds.Provenance != ChallengeRouteBoundProvenance.DeterministicCopiedState)
+                && bounds.Provenance != ChallengeRouteBoundProvenance.DeterministicCopiedState
+                && bounds.Provenance
+                    != ChallengeRouteBoundProvenance.SourceAuditedHistoricalReplay)
                 return Hold("route model provenance is unknown or non-deterministic");
+            var historical = bounds.Provenance
+                == ChallengeRouteBoundProvenance.SourceAuditedHistoricalReplay;
             if (!FinitePositive(bounds.ClearUpperSeconds)
                 || !FinitePositive(bounds.RecoveryUpperSeconds)
                 || !FiniteNonNegative(bounds.ForegoneRebirthOpportunityUpperSeconds)
@@ -206,8 +238,11 @@ namespace NGUInjector.Autopilot
                 || bounds.RecoveredBossId < currentBossId
                 || !FinitePositive(bounds.RecoveredAttackNumberLowerBound)
                 || !FinitePositive(bounds.RecoveredDefenseNumberLowerBound)
-                || bounds.RecoveredAttackNumberLowerBound + 1e-12 < currentAttackNumber
-                || bounds.RecoveredDefenseNumberLowerBound + 1e-12 < currentDefenseNumber
+                || (!historical && (bounds.RecoveredAttackNumberLowerBound + 1e-12
+                                        < currentAttackNumber
+                                    || bounds.RecoveredDefenseNumberLowerBound + 1e-12
+                                        < currentDefenseNumber))
+                || (historical && !bounds.NumberReplacementPriced)
                 || string.IsNullOrEmpty(bounds.ObjectiveSignature)
                 || string.IsNullOrEmpty(bounds.StartStateSignature)
                 || string.IsNullOrEmpty(bounds.AllocationSignature)
@@ -223,7 +258,8 @@ namespace NGUInjector.Autopilot
                     TotalChallengeUpperSeconds = total,
                     ContinuationLowerBoundSeconds = bounds.ContinuationLowerBoundSeconds,
                     Reason = "challenge upper " + Seconds(total)
-                             + " does not strictly beat continuation lower "
+                             + " does not strictly beat "
+                             + ComparatorLabel(bounds.Provenance) + " "
                              + Seconds(bounds.ContinuationLowerBoundSeconds)
                 };
             var proof = new ChallengeRouteProofCapture
@@ -231,7 +267,10 @@ namespace NGUInjector.Autopilot
                 Type = type, CompletedBefore = completedBefore, ExactTarget = exactTarget,
                 EvidenceKind = bounds.Provenance == ChallengeRouteBoundProvenance.SourceFormula
                     ? ChallengeTimingEvidenceKind.NativeFormulaSimulation
-                    : ChallengeTimingEvidenceKind.ExactDeterministic,
+                    : bounds.Provenance
+                        == ChallengeRouteBoundProvenance.SourceAuditedHistoricalReplay
+                        ? ChallengeTimingEvidenceKind.SourceAuditedHistoricalReplay
+                        : ChallengeTimingEvidenceKind.ExactDeterministic,
                 ClearUpperSeconds = bounds.ClearUpperSeconds,
                 RecoveryUpperSeconds = bounds.RecoveryUpperSeconds,
                 ForegoneRebirthOpportunityUpperSeconds =
@@ -240,6 +279,7 @@ namespace NGUInjector.Autopilot
                 RecoveredBossId = bounds.RecoveredBossId,
                 RecoveredAttackNumberLowerBound = bounds.RecoveredAttackNumberLowerBound,
                 RecoveredDefenseNumberLowerBound = bounds.RecoveredDefenseNumberLowerBound,
+                NumberReplacementPriced = bounds.NumberReplacementPriced,
                 ObjectiveSignature = bounds.ObjectiveSignature,
                 StartStateSignature = bounds.StartStateSignature,
                 AllocationSignature = bounds.AllocationSignature,
@@ -250,8 +290,8 @@ namespace NGUInjector.Autopilot
                 Recorded = true, Proof = proof,
                 TotalChallengeUpperSeconds = total,
                 ContinuationLowerBoundSeconds = bounds.ContinuationLowerBoundSeconds,
-                Reason = "finite source/copy-state upper " + Seconds(total)
-                         + " strictly beats same-objective continuation lower "
+                Reason = "finite challenge upper " + Seconds(total)
+                         + " strictly beats " + ComparatorLabel(bounds.Provenance) + " "
                          + Seconds(bounds.ContinuationLowerBoundSeconds)
             };
         }
@@ -300,6 +340,13 @@ namespace NGUInjector.Autopilot
         {
             return double.IsNaN(value) || double.IsInfinity(value) ? "unknown"
                 : value.ToString("0.###", CultureInfo.InvariantCulture) + "s";
+        }
+
+        private static string ComparatorLabel(ChallengeRouteBoundProvenance provenance)
+        {
+            return provenance == ChallengeRouteBoundProvenance.SourceAuditedHistoricalReplay
+                ? "modeled permanent-reward time-saved budget"
+                : "same-objective continuation lower bound";
         }
     }
 }

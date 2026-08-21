@@ -28,8 +28,9 @@ FILE PURPOSE
 Main is the Unity orchestration, lifecycle-epoch, save/load, and native-mutation dispatch host. It
 publishes its instance before callbacks, discovers/rebinds live controllers, establishes the
 active-game synchronization barrier, keys queued work and decision latches to GameEpoch, selects
-exactly one allocation owner, executes typed permanent Blood spells and the END-Blood item delivery
-before reset, and writes confirmed action/deployment telemetry. Inputs are Unity
+exactly one allocation owner, records same-root challenge route evidence only at a due ordinary
+reset, executes typed permanent Blood spells and the END-Blood item delivery before reset, and
+writes confirmed action/deployment telemetry. Inputs are Unity
 state, legacy settings, autopilot config/plans, watched files, and manual snapshot keys; outputs are
 leased manager/controller calls, durable last-good snapshot generations, and append-only runtime
 evidence, including the exact loaded-assembly native-binding health used by deployment admission.
@@ -61,6 +62,7 @@ namespace NGUInjector
         private TitanExecutionManager _titanExecution;
         private LiveTitanExecutionRuntime _titanRuntime;
         private LiveResetProgressionRuntime _resetProgressionRuntime;
+        private LiveChallengeRouteBoundModel _challengeRouteBoundModel;
         private EndgameTransactionManager _endgameTransactions;
         private RootTransaction _activeTitanRoot;
         private static CustomAllocation _profile;
@@ -1286,6 +1288,8 @@ namespace NGUInjector
                            && _combManager.HasTerminalLethalReservation(titanId));
             _resetProgressionRuntime = LiveResetProgressionRuntime.Create(Character,
                 () => _activeTitanRoot);
+            _challengeRouteBoundModel = new LiveChallengeRouteBoundModel(Character,
+                () => Autopilot == null ? null : Autopilot.Plan);
             _endgameTransactions = new EndgameTransactionManager(
                 new CharacterEndgameTransactionPort(Character,
                     () => CurrentGameEpochFingerprint));
@@ -2138,6 +2142,8 @@ namespace NGUInjector
                     && Autopilot.CanExecuteIrreversible
                     && Autopilot.Config.AllowChallenges)
                 {
+                    ChallengeRouteProofProducer.TryRecordLiveCandidates(Character,
+                        mutationRoot, _challengeRouteBoundModel);
                     var challenge = ResetProgressionTransaction.ExecuteNormalChallenge(
                         mutationRoot, _resetProgressionRuntime, true);
                     resetProgressionSelected = challenge.Selected;

@@ -12,7 +12,9 @@ this layer sequences them and stamps the task-29 staged-authority ceiling onto t
 Prefer live events over fixed chapter-clock schedules. Number loss is an explicit counterfactual
 cost, never an invented admission rule; only invalid native previews or an unverified mutation
 boundary may turn a scheduled ordinary rebirth into a hard hold. The task-28 scheduler remains a
-typed shadow output and never replaces incumbent execution here.
+typed shadow output and never replaces incumbent execution here. Inactive challenge telemetry is
+added only after the ordinary checkpoint has been finalized, so the historical replay preview can
+truthfully say whether that checkpoint is due without changing it.
 */
 namespace NGUInjector.Autopilot
 {
@@ -31,6 +33,7 @@ namespace NGUInjector.Autopilot
             ApplyProgressionCheckpoint(c, plan);
             ApplyActiveChallengePlan(c, plan);
             FinalizeOrdinaryRebirthProjection(c, plan);
+            AddChallengeRecommendation(c, plan);
             plan.ApplyDeploymentAuthority(config);
             return plan;
         }
@@ -391,9 +394,10 @@ namespace NGUInjector.Autopilot
 
         private static AutopilotPlan NewPlan(Character c)
         {
-            var plan = new AutopilotPlan {Stage = "Unknown", Objective = "wait for game state", RebirthSeconds = -1};
-            AddChallengeRecommendation(c, plan);
-            return plan;
+            return new AutopilotPlan
+            {
+                Stage = "Unknown", Objective = "wait for game state", RebirthSeconds = -1
+            };
         }
 
         private static void AddChallengeRecommendation(Character c, AutopilotPlan plan)
@@ -404,6 +408,9 @@ namespace NGUInjector.Autopilot
             foreach (var admission in admissions)
                 plan.Challenges.Add(admission.ProfileCode);
             plan.ChallengeEvidenceSummary = evidence;
+            var replay = LiveChallengeRouteBoundModel.PreviewNext(c, plan);
+            if (!string.IsNullOrEmpty(replay))
+                plan.ChallengeEvidenceSummary += " | " + replay;
             var next = admissions.FirstOrDefault();
             if (next == null) return;
             plan.ChallengeAdmitted = true;
