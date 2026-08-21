@@ -10,10 +10,10 @@ asynchronous perk-231 item delivery.  It complements MechanicsItopod's installed
 without reading or changing a live Character.
 
 Mechanism: A climb plan uses the native-valid H-1 start and aims at the next ten-floor permanent-PP
-boundary.  A newest-zone core-set lease may yield briefly to an already-partial decade or the
-immediately following 100-floor super-boundary only when the estimated award time, plus an explicit
-uncertainty margin, fits before the selected rebirth; routine or unfinishable pushes cannot starve
-that required set.
+boundary. A newest-zone core-set lease yields only when that award is exactly one new record floor
+away and its estimated final-floor time, plus an explicit uncertainty margin, fits before the
+selected rebirth. A current-floor cadence is not extrapolated across several harder floors to
+preempt permanent core development; routine or unproven pushes cannot starve that required set.
 Combat formulas remain useful diagnostics but never cap exploration; a session-local
 controller stops only after repeated confirmed deaths or no-enemy-HP-progress attempts on one fought
 floor, farms the best lower floor actually cleared during the session (falling back to the separate
@@ -1096,9 +1096,9 @@ namespace NGUInjector.Autopilot
         importantly, detects when that exact award crosses the next typed perk-purchase gate.
         Unknown core-set ETAs remain conservative: they retain their ordinary route unless a
         discrete perk gate or terminal END route proves ITOPOD should preempt it. A newest fightable
-        core set is stricter: ITOPOD may finish the current partial decade and an immediately next
-        100-floor super-boundary, then the core set owns Adventure until its required pieces are
-        MAXXED. Optional item
+        core set is stricter: ITOPOD may take an award only when exactly one new record floor remains
+        and its guarded ETA fits before rebirth, then the core set owns Adventure until its required
+        pieces are MAXXED. Optional item
         debt is stricter: a merely positive finished-item score cannot own Adventure without a
         source-calibrated ETA that beats exact ordinary ITOPOD PP progress toward the next typed
         perk. When an audited optional drop law lacks only current cadence, one explicitly requested
@@ -1198,24 +1198,24 @@ namespace NGUInjector.Autopilot
                     awardFloor, award, kills, seconds, completesGate, itopodRate, collectionRate);
             if (frontlineCoreSetIncomplete)
             {
-                var finishesPartialDecade = highestRecord % 10 != 0;
-                var isImmediateSuperDecade = awardFloor > 0 && awardFloor % 100 == 0;
-                var nearbyAward = awardFloor > 0
-                                  && (finishesPartialDecade || isImmediateSuperDecade);
+                // Current-floor cadence is evidence for one floor, not for every harder floor
+                // remaining in a decade. Only clean up an award that is one record advance away;
+                // otherwise the known permanent core-set reward owns Adventure immediately.
+                var finalFloorOnly = awardFloor > 0 && awardFloor == highestRecord + 1;
                 var completionRequiredSeconds = seconds > 0.0 && !double.IsInfinity(seconds)
                     ? seconds * (1.0 + FrontlineCompletionSafetyFraction)
                       + FrontlineCompletionDispatchSeconds
                     : double.PositiveInfinity;
-                var completionFits = nearbyAward && awardCanBePursued
+                var completionFits = finalFloorOnly && awardCanBePursued
                                      && (double.IsPositiveInfinity(frontlineCompletionHorizonSeconds)
                                          || frontlineCompletionHorizonSeconds >= 0.0
                                          && completionRequiredSeconds
                                          <= frontlineCompletionHorizonSeconds);
                 if (completionFits)
                     return Route(AdventureRouteChoice.ItopodFrontier,
-                        finishesPartialDecade
-                            ? "the already-partial ITOPOD decade fits inside a finite completion lease before rebirth; finish it before developing the newest core set"
-                            : "the immediately next tenfold ITOPOD super-decade fits inside a finite completion lease before rebirth; take it before developing the newest core set",
+                        awardFloor % 100 == 0
+                            ? "the tenfold ITOPOD super-decade is exactly one record floor away and fits inside a finite completion lease; take it before developing the newest core set"
+                            : "the next ITOPOD award is exactly one record floor away and fits inside a finite completion lease; take it before developing the newest core set",
                         awardFloor, award, kills, seconds, completesGate,
                         itopodRate, collectionRate);
                 var frontlineChoice = progressionPush ? AdventureRouteChoice.ProgressionPush
@@ -1224,9 +1224,13 @@ namespace NGUInjector.Autopilot
                 string frontlineReason;
                 if (!firstClearPushActive)
                     frontlineReason = "the ITOPOD push is backed off; develop the newest fightable core set until every required piece is MAXXED";
-                else if (nearbyAward && frontlineCompletionHorizonSeconds < 0.0)
+                else if (!finalFloorOnly && awardFloor > 0)
+                    frontlineReason = "the next ITOPOD award is "
+                                      + (awardFloor - highestRecord).ToString("0")
+                                      + " record floors away; current-floor cadence cannot prove the harder floors, so develop the newest fightable core set first";
+                else if (finalFloorOnly && frontlineCompletionHorizonSeconds < 0.0)
                     frontlineReason = "the next ITOPOD award has no finite rebirth completion lease; develop the newest fightable core set instead";
-                else if (nearbyAward && !completionFits)
+                else if (finalFloorOnly && !completionFits)
                     frontlineReason = "the next ITOPOD award needs about "
                                       + Math.Ceiling(seconds).ToString("0")
                                       + "s (" + Math.Ceiling(completionRequiredSeconds).ToString("0")

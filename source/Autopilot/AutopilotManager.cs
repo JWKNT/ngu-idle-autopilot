@@ -30,10 +30,10 @@ separately. Open pushes price and schedule the next record divisible by ten; rep
 floor deaths pause that push on a lower session-proven clear when one exists. Continuous
 ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
 ten-kill floor counter; floor-boundary healing happens in place without erasing partial progress.
-The newest fightable incomplete core set yields to an already-partial ITOPOD decade or immediately
-following 100-floor super-boundary only when the fresh award ETA plus its uncertainty margin fits
-before the selected rebirth. This finite lease is recomputed each second; optional novelty drops
-never extend the core-set lease.
+The newest fightable incomplete core set yields to an ITOPOD award only when exactly one new record
+floor remains and the fresh final-floor ETA plus its uncertainty margin fits before the selected
+rebirth. A current cadence is never extrapolated across several harder floors to preempt the core
+set. This finite lease is recomputed each second; optional novelty drops never extend it.
 After a rebirth, ordinary Adventure briefly preempts ITOPOD only when a source-proved Augment or
 Blood purchase can finish inside the run but has no Gold. Before the native Time Machine record
 gate this farms only the required liquid Gold; afterward one enemy drop seeds positive passive GPS.

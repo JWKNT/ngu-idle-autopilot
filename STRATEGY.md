@@ -266,12 +266,14 @@ chooses ITOPOD immediately when:
 A newly fightable zone's required core set gets special treatment because its MAXX reward and its
 stronger equipment can improve every later Adventure choice. Being partway through an ITOPOD decade
 is not enough reason to keep climbing: that progress is permanent, so leaving does not throw it away.
-The bot estimates the remaining kills and time to the next award every second. It may finish the
-current partial decade—or an immediately following 100-floor super-boundary—only when that estimate,
-plus a 25% uncertainty margin and two seconds for final dispatch, fits before the selected rebirth.
-If the rebirth horizon is unknown, the estimate no longer fits, or the empirical push has backed off,
-the newest core set takes Adventure immediately. This prevents a slow or merely survivable ITOPOD
-floor from consuming an entire rebirth. Routine later decades—even one that would buy the next
+A kill rate measured on the current floor also does not prove that several harder floors can be
+cleared at the same speed—or at all. The incomplete core set therefore owns Adventure unless the
+next PP award is exactly one new record floor away. For that one-floor cleanup only, the bot requires
+the estimated remaining time plus a 25% uncertainty margin and two seconds for final dispatch to fit
+before the selected rebirth. This still permits a nearly completed floor 90 or the unusually valuable
+floor 100 award, without letting an eight-floor 82-to-90 attempt consume another rebirth. If the
+rebirth horizon is unknown, the estimate no longer fits, or the empirical push has backed off, the
+newest core set takes Adventure immediately. Routine later decades—even one that would buy the next
 perk—cannot keep starving the set. Optional novelty drops do not extend this lease; they still need
 their own measured value proof.
 
@@ -423,10 +425,10 @@ Adventure routing first checks for hard obligations:
 5. the best-valued choice among progression push, boss-only gear sniping, full-zone collection,
    backfill, and ITOPOD.
 
-Inside step 5, a newest fightable incomplete core set uses the bounded lease above: finish a nearby
-ITOPOD award only when its guarded ETA fits before rebirth, then MAXX the required set. Partial record
-progress is saved for a stronger run when it does not fit. The next due Titan still interrupts the
-lease because its clock and reward are separate events.
+Inside step 5, a newest fightable incomplete core set uses the bounded lease above: finish an ITOPOD
+award only when exactly one record floor remains and its guarded ETA fits before rebirth, then MAXX
+the required set. Multi-floor partial record progress is saved for a stronger run. The next due Titan
+still interrupts the lease because its clock and reward are separate events.
 
 The collection planner tracks permanent Item List debt, but collection debt is not automatically a
 farming obligation. An unfinished core set, an unclaimed useful set reward, ordinary-enemy boosts

@@ -8,10 +8,10 @@ and fought/drop-floor ordering, 8.4% boost
 table, clue-four naked session, online/offline estimator split, floor-1600 bounds and END forecast,
 typed perk/ID/Fibonacci behavior, asynchronous perk-231 slot lifetime, MOVE69 idle charging/strict
 cooldown/ETA/capacity/post-69 retry, timer cancellation/restart telemetry, and exactly one verified
-task-1 mutation atom. It proves that a newest-zone core set yields only to an already-partial decade
-or immediately following super-decade whose conservative completion lease fits before rebirth, then
-owns Adventure when that ETA does not fit or the empirical ITOPOD breaker opens. It also guards the
-live policy against spending post-sequence PP through
+task-1 mutation atom. It proves that a newest-zone core set yields only when the next ITOPOD award
+is exactly one record floor away and its conservative completion lease fits before rebirth, then
+owns Adventure across multi-floor, over-horizon, or empirically backed-off pushes. It also guards
+the live policy against spending post-sequence PP through
 name/effect heuristics. It loads no game assembly, Unity UI, controller, save, or runtime process.
 */
 using System;
@@ -223,30 +223,40 @@ internal static class ItopodPerkTests
                && conservative.Reason.Contains("not source-calibrated"),
             "unknown core-set time is retained when a small record award does not close a perk gate");
 
-        var finishPartialDecade = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
+        var multiFloorPartialDecade = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
             0L, 0L, 1L, .10, true, false, false,
             -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false,
             true, true, 1000.0);
-        Assert(finishPartialDecade.Choice == AdventureRouteChoice.ItopodFrontier
-               && finishPartialDecade.AwardFloor == 90
-               && finishPartialDecade.Reason.Contains("already-partial"),
-            "frontline core collection first finishes a record already inside its current decade");
+        Assert(multiFloorPartialDecade.Choice == AdventureRouteChoice.ProgressionPush
+               && multiFloorPartialDecade.AwardFloor == 90
+               && multiFloorPartialDecade.Reason.Contains("8 record floors away"),
+            "current-floor cadence cannot make an eight-floor partial decade preempt frontline core development");
 
-        var takeSuperDecade = ItopodPerkPlanner.ChooseAdventureRoute(90, 99, 1.0,
+        var takeFinalNormalFloor = ItopodPerkPlanner.ChooseAdventureRoute(89, 89, 1.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 30506.0, true, false, 89, 9, 88, 90, 0.0, false, false,
+            true, true, 1000.0);
+        Assert(takeFinalNormalFloor.Choice == AdventureRouteChoice.ItopodFrontier
+               && takeFinalNormalFloor.AwardFloor == 90
+               && takeFinalNormalFloor.KillsToAward == 1L,
+            "one remaining live kill may finish a normal decade before the frontline core-set lease");
+
+        var takeSuperDecade = ItopodPerkPlanner.ChooseAdventureRoute(99, 99, 1.0,
             0L, 0L, 999L, .10, true, false, false,
-            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false,
+            -1.0, 30506.0, true, false, 99, 9, 98, 100, 0.0, false, false,
             true, true, 1000.0);
         Assert(takeSuperDecade.Choice == AdventureRouteChoice.ItopodFrontier
                && takeSuperDecade.AwardFloor == 100
-               && takeSuperDecade.FirstClearPerkPoints == 10L,
-            "the immediately next tenfold floor-100 award precedes a frontline core-set lease");
+               && takeSuperDecade.FirstClearPerkPoints == 10L
+               && takeSuperDecade.KillsToAward == 1L,
+            "a tenfold floor-100 award exactly one live kill away precedes a frontline core-set lease");
 
         var coreLease = ItopodPerkPlanner.ChooseAdventureRoute(100, 109, 1.0,
             0L, 0L, 1L, .10, true, false, false,
             -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false, true, true);
         Assert(coreLease.Choice == AdventureRouteChoice.ProgressionPush
                && !coreLease.CompletesPerkGate
-               && coreLease.Reason.Contains("every required piece is MAXXED"),
+               && coreLease.Reason.Contains("10 record floors away"),
             "routine floor-110 PP cannot starve the newest incomplete core set even when it closes a perk gate");
 
         var backedOffCoreLease = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
@@ -256,16 +266,16 @@ internal static class ItopodPerkTests
                && backedOffCoreLease.Reason.Contains("backed off"),
             "an empirical ITOPOD backoff immediately yields the Adventure lease to frontline core development");
 
-        var partialCannotFinish = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 60.0,
+        var partialCannotFinish = ItopodPerkPlanner.ChooseAdventureRoute(89, 89, 60.0,
             0L, 0L, 1L, .10, true, false, false,
-            -1.0, 30506.0, true, false, 81, 3, 81, 90, 0.0, false, false,
-            true, true, 1049.0);
+            -1.0, 30506.0, true, false, 89, 0, 88, 90, 0.0, false, false,
+            true, true, 500.0);
         Assert(partialCannotFinish.Choice == AdventureRouteChoice.ProgressionPush
-               && partialCannotFinish.SecondsToAward > 1049.0
-               && partialCannotFinish.Reason.Contains("only 1049s remain before rebirth"),
-            "a partial record whose live remaining kills cannot fit before rebirth yields immediately to the frontline set");
+               && partialCannotFinish.SecondsToAward > 500.0
+               && partialCannotFinish.Reason.Contains("only 500s remain before rebirth"),
+            "a final record floor whose live remaining kills cannot fit before rebirth yields immediately to the frontline set");
 
-        var unknownCompletionLease = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
+        var unknownCompletionLease = ItopodPerkPlanner.ChooseAdventureRoute(89, 89, 1.0,
             0L, 0L, 1L, .10, true, false, false,
             -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false,
             true, true, -1.0);
