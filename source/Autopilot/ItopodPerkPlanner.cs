@@ -10,7 +10,9 @@ asynchronous perk-231 item delivery.  It complements MechanicsItopod's installed
 without reading or changing a live Character.
 
 Mechanism: A climb plan uses the native-valid H-1 start and aims at the next ten-floor permanent-PP
-boundary.  Combat formulas remain useful diagnostics but never cap exploration; a session-local
+boundary.  A newest-zone core-set lease may first finish an already-partial decade and the immediately
+following 100-floor super-boundary, but routine later decades cannot starve that required set.
+Combat formulas remain useful diagnostics but never cap exploration; a session-local
 controller stops only after repeated confirmed deaths or no-enemy-HP-progress attempts on one fought
 floor, farms the best lower floor actually cleared during the session (falling back to the separate
 repeatable Regular-Attack one-hit floor), and reopens when effective Adventure offense or durability
@@ -1089,7 +1091,10 @@ namespace NGUInjector.Autopilot
         prices the next reachable award against the selected collection debt and, most
         importantly, detects when that exact award crosses the next typed perk-purchase gate.
         Unknown core-set ETAs remain conservative: they retain their ordinary route unless a
-        discrete perk gate or terminal END route proves ITOPOD should preempt it. Optional item
+        discrete perk gate or terminal END route proves ITOPOD should preempt it. A newest fightable
+        core set is stricter: ITOPOD may finish the current partial decade and an immediately next
+        100-floor super-boundary, then the core set owns Adventure until its required pieces are
+        MAXXED. Optional item
         debt is stricter: a merely positive finished-item score cannot own Adventure without a
         source-calibrated ETA that beats exact ordinary ITOPOD PP progress toward the next typed
         perk. When an audited optional drop law lacks only current cadence, one explicitly requested
@@ -1108,7 +1113,9 @@ namespace NGUInjector.Autopilot
             int savedStart = -1, int savedEnd = -1,
             double ordinaryItopodPpPerSecond = 0.0,
             bool collectionOptionalOnly = false,
-            bool collectionNeedsCadenceProbe = false)
+            bool collectionNeedsCadenceProbe = false,
+            bool frontlineCoreSetIncomplete = false,
+            bool firstClearPushActive = true)
         {
             ValidateFloor(highestRecord, "highestRecord");
             ValidateFloor(provenFrontierFloor, "provenFrontierFloor");
@@ -1150,14 +1157,15 @@ namespace NGUInjector.Autopilot
 
             var spendable = Math.Max(0L, currentPerkPoints - reservePerkPoints);
             var gap = nextPerkCost <= spendable ? 0L : nextPerkCost - spendable;
-            var completesGate = gap > 0L && award >= gap;
+            var awardCanBePursued = awardFloor > 0 && firstClearPushActive;
+            var completesGate = awardCanBePursued && gap > 0L && award >= gap;
             // nextPerkLogGain describes the whole next level, not one PP.  Credit only the
             // fraction of that discrete gate supplied by this award and cap a gate-closing
             // super-decade at one whole level; otherwise a ten-PP award is spuriously priced
             // as ten complete copies of the same perk effect.
             var creditedFraction = gap > 0L
                 ? Math.Min(1.0, award / (double)Math.Max(1L, gap)) : 0.0;
-            var firstClearRate = awardFloor > 0 && seconds > 0.0
+            var firstClearRate = awardCanBePursued && seconds > 0.0
                 ? nextPerkLogGain * creditedFraction / seconds : 0.0;
             var steadyRate = gap > 0L
                 ? nextPerkLogGain * ordinaryItopodPpPerSecond / Math.Max(1L, gap) : 0.0;
@@ -1172,12 +1180,32 @@ namespace NGUInjector.Autopilot
                     "Sadistic END item 491 is missing; its only source is the eligible ITOPOD farm",
                     awardFloor, award, kills, seconds, completesGate, itopodRate, collectionRate);
             if (!hasCollectionDebt)
-                return Route(awardFloor > 0 ? AdventureRouteChoice.ItopodFrontier
+                return Route(awardCanBePursued ? AdventureRouteChoice.ItopodFrontier
                         : AdventureRouteChoice.ItopodFarm,
-                    awardFloor > 0
+                    awardCanBePursued
                         ? "all fightable collection debt is complete; take the next exact first-clear PP award"
                         : "all fightable collection debt is complete; maximize steady ITOPOD rewards",
                     awardFloor, award, kills, seconds, completesGate, itopodRate, collectionRate);
+            if (frontlineCoreSetIncomplete)
+            {
+                var finishesPartialDecade = highestRecord % 10 != 0;
+                var isImmediateSuperDecade = awardFloor > 0 && awardFloor % 100 == 0;
+                if (awardCanBePursued && (finishesPartialDecade || isImmediateSuperDecade))
+                    return Route(AdventureRouteChoice.ItopodFrontier,
+                        finishesPartialDecade
+                            ? "finish the already-partial ITOPOD decade before leasing Adventure to the newest incomplete core set"
+                            : "take the immediately next tenfold ITOPOD super-decade award before leasing Adventure to the newest incomplete core set",
+                        awardFloor, award, kills, seconds, completesGate,
+                        itopodRate, collectionRate);
+                var frontlineChoice = progressionPush ? AdventureRouteChoice.ProgressionPush
+                    : collectionBossOnly ? AdventureRouteChoice.BossSnipe
+                    : AdventureRouteChoice.CollectionFarm;
+                return Route(frontlineChoice,
+                    firstClearPushActive
+                        ? "the newest fightable core set owns Adventure until every required piece is MAXXED; routine later ITOPOD decades wait"
+                        : "the ITOPOD push is backed off; develop the newest fightable core set until every required piece is MAXXED",
+                    awardFloor, award, kills, seconds, false, itopodRate, collectionRate);
+            }
             if (completesGate)
                 return Route(AdventureRouteChoice.ItopodFrontier,
                     "the next reachable first-clear award supplies " + award

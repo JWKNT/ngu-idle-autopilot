@@ -8,7 +8,9 @@ and fought/drop-floor ordering, 8.4% boost
 table, clue-four naked session, online/offline estimator split, floor-1600 bounds and END forecast,
 typed perk/ID/Fibonacci behavior, asynchronous perk-231 slot lifetime, MOVE69 idle charging/strict
 cooldown/ETA/capacity/post-69 retry, timer cancellation/restart telemetry, and exactly one verified
-task-1 mutation atom. It also guards the live policy against spending post-sequence PP through
+task-1 mutation atom. It proves that a newest-zone core set yields only to an already-partial decade
+and the immediately following super-decade, then owns Adventure through completion or an empirical
+ITOPOD backoff. It also guards the live policy against spending post-sequence PP through
 name/effect heuristics. It loads no game assembly, Unity UI, controller, save, or runtime process.
 */
 using System;
@@ -219,6 +221,37 @@ internal static class ItopodPerkTests
         Assert(conservative.Choice == AdventureRouteChoice.CollectionFarm
                && conservative.Reason.Contains("not source-calibrated"),
             "unknown core-set time is retained when a small record award does not close a perk gate");
+
+        var finishPartialDecade = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false, true, true);
+        Assert(finishPartialDecade.Choice == AdventureRouteChoice.ItopodFrontier
+               && finishPartialDecade.AwardFloor == 90
+               && finishPartialDecade.Reason.Contains("already-partial"),
+            "frontline core collection first finishes a record already inside its current decade");
+
+        var takeSuperDecade = ItopodPerkPlanner.ChooseAdventureRoute(90, 99, 1.0,
+            0L, 0L, 999L, .10, true, false, false,
+            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false, true, true);
+        Assert(takeSuperDecade.Choice == AdventureRouteChoice.ItopodFrontier
+               && takeSuperDecade.AwardFloor == 100
+               && takeSuperDecade.FirstClearPerkPoints == 10L,
+            "the immediately next tenfold floor-100 award precedes a frontline core-set lease");
+
+        var coreLease = ItopodPerkPlanner.ChooseAdventureRoute(100, 109, 1.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false, true, true);
+        Assert(coreLease.Choice == AdventureRouteChoice.ProgressionPush
+               && !coreLease.CompletesPerkGate
+               && coreLease.Reason.Contains("every required piece is MAXXED"),
+            "routine floor-110 PP cannot starve the newest incomplete core set even when it closes a perk gate");
+
+        var backedOffCoreLease = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false, true, false);
+        Assert(backedOffCoreLease.Choice == AdventureRouteChoice.ProgressionPush
+               && backedOffCoreLease.Reason.Contains("backed off"),
+            "an empirical ITOPOD backoff immediately yields the Adventure lease to frontline core development");
 
         var optionalUnknown = ItopodPerkPlanner.ChooseAdventureRoute(4, 4, 2.0,
             0L, 0L, 1L, .10, true, false, false,

@@ -3,7 +3,8 @@ FILE PURPOSE
 
 Pure regression executable for the source-backed collection model. It loads no Unity/game assembly,
 save, runtime config, or process. Goldens cover Pirate's correlated one-of-eight law, merge deficits,
-unseen optional debt, once-only numeric rewards, cosmetic Pirate valuation through the immutable
+unseen optional debt, exact High Security Base/GRB permanent rewards, once-only numeric rewards,
+cosmetic Pirate valuation through the immutable
 loadout objective, exact Normal Bonus Shiny membership/drop laws, exact-signature online cadence,
 Daycare ownership, capacity service state, and the audited zero offline equipment-trial rule.
 */
@@ -110,6 +111,29 @@ internal static class CollectionModelTests
 
     private static void RewardOnceAndPirateCosmeticValue()
     {
+        var hsb = LootSourceCatalog.OrdinaryZone(5).SetReward;
+        True(hsb.NumericSourceExact && !hsb.CosmeticOnly && hsb.SetKey == "hsb",
+            "High Security Base completion is exact permanent progression metadata");
+        var hsbEffects = hsb.Effects();
+        Near(3.0, hsbEffects.Single(x => x.Metric == CollectionRewardMetric.MagicPower).Amount,
+            0.0, "High Security Base grants exactly three Magic Power");
+        Near(30000.0, hsbEffects.Single(x => x.Metric == CollectionRewardMetric.MagicCap).Amount,
+            0.0, "High Security Base grants exactly thirty thousand Magic Cap");
+        Near(3.0, hsbEffects.Single(x => x.Metric == CollectionRewardMetric.MagicPerBar).Amount,
+            0.0, "High Security Base grants exactly three Magic Per Bar");
+        Near(500.0, hsbEffects.Single(x => x.Metric == CollectionRewardMetric.Experience).Amount,
+            0.0, "High Security Base grants exactly five hundred EXP");
+        True(hsb.Description.Contains("Magic Bar Bar")
+             && hsb.Description.Contains("alpha/beta"),
+            "High Security Base metadata preserves its three one-shot consumable rewards");
+
+        var grb = LootSourceCatalog.TitanZone(6).SetReward;
+        True(grb.NumericSourceExact && grb.Description.Contains("x5 to x10"),
+            "GRB completion describes the exact safe-zone regeneration transition");
+        Near(2.0, grb.Effects().Single(x => x.Metric
+            == CollectionRewardMetric.AdventureRegen).Amount, 0.0,
+            "GRB safe-zone regeneration transition is a relative doubling");
+
         var pirate = LootSourceCatalog.OrdinaryZone(43).SetReward;
         True(pirate.NumericSourceExact && pirate.CosmeticOnly,
             "Pirate portrait reward is source-exact and classified cosmetic");

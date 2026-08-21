@@ -257,10 +257,28 @@ the award completes a strong perk gate.
 The bot compares that value against ordinary zone collection when both sides have usable ETAs. It
 chooses ITOPOD immediately when:
 
-- the next reachable award completes the selected perk purchase;
+- the next reachable award completes the selected perk purchase, unless a bounded newest-core-set
+  lease described below has started;
 - its proven permanent gain per second beats the selected collection reward;
 - all fightable collection debt is complete; or
 - a required END item can only come from ITOPOD.
+
+A newly fightable zone's required core set gets special treatment because its MAXX reward and its
+stronger equipment can improve every later Adventure choice. Before that lease begins, the bot may
+finish the ITOPOD decade that the permanent record is already partway through. If that lands on floor
+90, 190, 290, and so on, it also takes the immediately following 100-floor super-boundary because
+that award is ten times the surrounding decade award. It then gives the newest zone Adventure time
+until every required core piece is MAXXED. Routine later ITOPOD decades—even one that would buy the
+next perk—cannot keep starving the set. A backed-off ITOPOD push yields immediately. Optional novelty
+drops do not extend this lease; they still need their own measured value proof.
+
+At High Security Base, the required Magitech set is IDs 68 through 74. Its installed completion
+reward is 500 EXP, +3 Magic Power, +30,000 Magic Cap, +3 Magic Per Bar, one Magic Bar Bar, and the two
+Magic potions. The separate Dragon Ball is optional and cannot keep High Security Base in control
+after the seven required pieces are MAXXED. Gordon Ramsay Bolton is not treated as an ordinary farm:
+when his clock is due and the strongest legal loadout can execute him, the Titan transaction goes
+first. MAXXING his seven required drops gives 2,000 EXP and raises Safe-Zone regeneration from x5 to
+x10. After those bounded obligations, Adventure returns to the best ITOPOD push or farm.
 
 The bot treats climbing and farming as different jobs. Before it has useful live evidence, steady
 farming uses a floor that even a minimum-damage Regular Attack can defeat in one hit, so PP, EXP,
@@ -401,6 +419,10 @@ Adventure routing first checks for hard obligations:
    otherwise be stuck at zero Gold;
 5. the best-valued choice among progression push, boss-only gear sniping, full-zone collection,
    backfill, and ITOPOD.
+
+Inside step 5, a newest fightable incomplete core set uses the bounded lease above: finish an
+already-partial ITOPOD decade and an immediately next 100-floor super-boundary, then MAXX the required
+set. The next due Titan still interrupts the lease because its clock and reward are separate events.
 
 The collection planner tracks permanent Item List debt, but collection debt is not automatically a
 farming obligation. An unfinished core set, an unclaimed useful set reward, ordinary-enemy boosts

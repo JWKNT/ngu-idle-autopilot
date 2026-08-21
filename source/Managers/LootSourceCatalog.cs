@@ -11,7 +11,9 @@ Mechanism: Immutable zone/source/branch descriptors mirror the installed 1.260 l
 tables. CollectionItemState derives debt from itemMaxxed plus exact physical copies; itemDropped is
 retained only as telemetry. Pirate loot is represented as one uniform one-of-eight branch per
 eligible kill, while T12 END rolls retain their cumulative version predicates as independent
-branches. CollectionServiceState consumes PhysicalTopology and LootCapacity proofs. Online cadence
+branches. The early exact reward catalog includes the High Security Base's permanent Magic/EXP
+bundle and describes its three one-shot consumables without pretending they share one numeric unit.
+CollectionServiceState consumes PhysicalTopology and LootCapacity proofs. Online cadence
 samples never accept offline time. A sample may be reused only for the same route, combat mode, and
 equipped item identities when the current combat capability is no worse than the sampled capability;
 this lets normal level/stat growth preserve a conservative observation without letting a weaker
@@ -1080,6 +1082,11 @@ namespace NGUInjector.Managers
                     "+2 Magic Power, +40,000 Magic Cap, +2 Magic Per Bar, and 300 EXP",
                     E(CollectionRewardMetric.MagicPower,2), E(CollectionRewardMetric.MagicCap,40000),
                     E(CollectionRewardMetric.MagicPerBar,2), E(CollectionRewardMetric.Experience,300));
+                case 5: return Reward("hsb", "High Security Base", true, false,
+                    "+3 Magic Power, +30,000 Magic Cap, +3 Magic Per Bar, 500 EXP, "
+                    + "one Magic Bar Bar, and Magic Potions alpha/beta",
+                    E(CollectionRewardMetric.MagicPower,3), E(CollectionRewardMetric.MagicCap,30000),
+                    E(CollectionRewardMetric.MagicPerBar,3), E(CollectionRewardMetric.Experience,500));
                 case 7: return Reward("clock", "Clock", true, false, "+5% spawn rate",
                     E(CollectionRewardMetric.SpawnRate,.05));
                 case 9: return Reward("2d", "2D", true, false, "+7.43% drop chance",
@@ -1109,7 +1116,8 @@ namespace NGUInjector.Managers
         private static CollectionSetRewardDescriptor RewardForTitanZone(int zone)
         {
             if (zone == 6)
-                return Reward("grb", "GRB", true, false, "2,000 EXP and x2 safe-zone regeneration",
+                return Reward("grb", "GRB", true, false,
+                    "2,000 EXP and safe-zone regeneration raised from x5 to x10",
                     E(CollectionRewardMetric.Experience,2000), M(CollectionRewardMetric.AdventureRegen,2));
             return Reward("titan-" + zone, "Titan zone " + zone, false, false,
                 "Numeric native reward has not yet been converted into this catalog");

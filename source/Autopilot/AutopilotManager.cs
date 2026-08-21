@@ -30,6 +30,9 @@ separately. Open pushes price and schedule the next record divisible by ten; rep
 floor deaths pause that push on a lower session-proven clear when one exists. Continuous
 ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
 ten-kill floor counter; floor-boundary healing happens in place without erasing partial progress.
+The newest fightable incomplete core set receives a bounded Adventure lease after an already-partial
+ITOPOD decade and an immediately following 100-floor super-boundary are collected; optional novelty
+drops never extend that lease.
 After a rebirth, ordinary Adventure briefly preempts ITOPOD only when a source-proved Augment or
 Blood purchase can finish inside the run but has no Gold. Before the native Time Machine record
 gate this farms only the required liquid Gold; afterward one enemy drop seeds positive passive GPS.
@@ -1261,7 +1264,11 @@ namespace NGUInjector.Autopilot
                     Main.Character.adventure.itopodEnd,
                     ordinaryPpPerSecond, optionalOnly,
                     optionalOnly && _collectionTarget != null
-                    && _collectionTarget.NeedsCadenceProbe);
+                    && _collectionTarget.NeedsCadenceProbe,
+                    _collectionTarget != null
+                    && _collectionTarget.CoreSetIncomplete
+                    && !_collectionTarget.IsBackfill,
+                    route.Climbing);
                 var chooseItopod = routePlan.Choice == AdventureRouteChoice.ItopodFrontier
                                    || routePlan.Choice == AdventureRouteChoice.ItopodFarm;
                 if (!chooseItopod)
