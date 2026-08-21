@@ -235,20 +235,65 @@ namespace NGUInjector.Autopilot
         {
             var gain = IronPillGain(before.Blood,
                 before.Difficulty >= (int)difficulty.evil, before.IronPillBonus);
-            if (gain <= 0f || !ResetTimerObserved(after.IronElapsed)
-                || !TimerAdvancedWithinSettlement(before.AlphaElapsed, after.AlphaElapsed)
-                || !TimerAdvancedWithinSettlement(before.BetaElapsed, after.BetaElapsed)
-                || after.AdventureAttack != before.AdventureAttack + gain
-                || after.AdventureDefense != before.AdventureDefense + gain
-                || after.AdventureMaxHp != before.AdventureMaxHp + gain * 3f
-                || after.AdventureRegen != before.AdventureRegen + gain * 0.03f
-                || !SameMacGuffinLevels(before, after))
+            if (gain <= 0f)
             {
-                reason = "Iron Pill lacked its exact attack/defense/HP/regen gain or cooldown reset.";
+                reason = "Iron Pill had no finite positive source-formula gain.";
                 return false;
             }
-            reason = "Exact full-pool Iron Pill debit and permanent Adventure-stat vector confirmed.";
-            return true;
+            if (!ResetTimerObserved(after.IronElapsed)
+                || !TimerAdvancedWithinSettlement(before.AlphaElapsed, after.AlphaElapsed)
+                || !TimerAdvancedWithinSettlement(before.BetaElapsed, after.BetaElapsed))
+            {
+                reason = "Iron Pill did not reset only its own cooldown within the settlement window.";
+                return false;
+            }
+            if (!SameMacGuffinLevels(before, after))
+            {
+                reason = "Iron Pill changed an equipped MacGuffin level.";
+                return false;
+            }
+            if (IronVectorMatches(before, after, gain))
+            {
+                reason = "Exact full-pool Iron Pill debit and predicted permanent Adventure-stat vector confirmed.";
+                return true;
+            }
+
+            // The native controller is the mutation authority.  A live Normal cast demonstrated
+            // that the separately captured difficulty/perk quote can drift across the synchronous
+            // call even though the controller applies the unmistakable Iron Pill vector exactly.
+            // Accept that source-specific vector (Power=Toughness, HP=3x, regen=.03x) when its
+            // effective float gain is at least the unbonused fourth-root floor.  This remains much
+            // narrower than accepting a Blood debit or arbitrary Adventure-stat change.
+            float observedGain;
+            if (TryObservedIronVector(before, after, out observedGain))
+            {
+                reason = "Exact full-pool Iron Pill debit and source-consistent observed permanent vector confirmed"
+                         + " (effective gain " + observedGain + "; prediction quote drifted).";
+                return true;
+            }
+            reason = "Iron Pill lacked both its predicted and source-consistent observed attack/defense/HP/regen vector.";
+            return false;
+        }
+
+        private static bool IronVectorMatches(PermanentBloodSpellState before,
+            PermanentBloodSpellState after, float gain)
+        {
+            return after.AdventureAttack == before.AdventureAttack + gain
+                   && after.AdventureDefense == before.AdventureDefense + gain
+                   && after.AdventureMaxHp == before.AdventureMaxHp + gain * 3f
+                   && after.AdventureRegen == before.AdventureRegen + gain * 0.03f;
+        }
+
+        private static bool TryObservedIronVector(PermanentBloodSpellState before,
+            PermanentBloodSpellState after, out float observedGain)
+        {
+            observedGain = after.AdventureAttack - before.AdventureAttack;
+            var baseGain = (float)Math.Floor(Math.Pow(before.Blood, 0.25));
+            if (observedGain <= 0f || observedGain > 100000000f
+                || float.IsNaN(observedGain) || float.IsInfinity(observedGain)
+                || baseGain <= 0f || observedGain < baseGain)
+                return false;
+            return IronVectorMatches(before, after, observedGain);
         }
 
         private static bool VerifyAlpha(PermanentBloodSpellState before,
@@ -668,7 +713,10 @@ namespace NGUInjector.Autopilot
         {
             if (state == null) return "missing";
             var text = new StringBuilder();
-            text.Append("blood=").Append(state.Blood.ToString("R", CultureInfo.InvariantCulture))
+            text.Append("difficulty=").Append(state.Difficulty)
+                .Append(";ironBonus=").Append(state.IronPillBonus.ToString("R",
+                    CultureInfo.InvariantCulture))
+                .Append(";blood=").Append(state.Blood.ToString("R", CultureInfo.InvariantCulture))
                 .Append(";timers=").Append(state.IronElapsed.ToString("R",
                     CultureInfo.InvariantCulture)).Append(',')
                 .Append(state.AlphaElapsed.ToString("R", CultureInfo.InvariantCulture)).Append(',')

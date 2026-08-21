@@ -199,6 +199,42 @@ internal static class PermanentBloodSpellTests
         unchanged.IronElapsed += 1.01;
         Assert(!PermanentBloodSpellMechanics.Same(stable, unchanged),
             "unchanged-state proof must reject clock drift outside settlement");
+
+        // Regression copied verbatim from the first live typed Iron Pill settlement.  All four
+        // native float fields moved by the source-defined vector, while the two still-locked
+        // spell timers remained at zero.
+        var liveBefore = Ready();
+        liveBefore.Difficulty = (int)difficulty.normal;
+        liveBefore.Blood = 185.0;
+        liveBefore.IronPillBonus = 1f;
+        liveBefore.IronElapsed = 41400.006944957771;
+        liveBefore.AlphaElapsed = 0.0;
+        liveBefore.BetaElapsed = 0.0;
+        liveBefore.AdventureAttack = 153f;
+        liveBefore.AdventureDefense = 149f;
+        liveBefore.AdventureMaxHp = 291f;
+        liveBefore.AdventureRegen = 3.75999951f;
+        var liveAfter = Clone(liveBefore);
+        liveAfter.Blood = 0.0;
+        liveAfter.IronElapsed = 0.0;
+        liveAfter.AdventureAttack = 156f;
+        liveAfter.AdventureDefense = 152f;
+        liveAfter.AdventureMaxHp = 300f;
+        liveAfter.AdventureRegen = 3.84999943f;
+        Assert(PermanentBloodSpellMechanics.Verify(PermanentBloodSpellKind.IronPill,
+                   liveBefore, liveAfter, out reason),
+            "the observed live Normal Iron Pill vector must settle exactly");
+
+        liveBefore.Difficulty = (int)difficulty.evil;
+        liveBefore.IronPillBonus = 2f;
+        Assert(PermanentBloodSpellMechanics.Verify(PermanentBloodSpellKind.IronPill,
+                   liveBefore, liveAfter, out reason)
+               && reason.Contains("prediction quote drifted"),
+            "a complete source-specific native vector must settle when only the perk quote drifted");
+        liveAfter.AdventureDefense += 1f;
+        Assert(!PermanentBloodSpellMechanics.Verify(PermanentBloodSpellKind.IronPill,
+                   liveBefore, liveAfter, out reason),
+            "quote-drift settlement must still reject an inconsistent permanent stat vector");
     }
 
     private static void TestMacGuffinSettlement()
