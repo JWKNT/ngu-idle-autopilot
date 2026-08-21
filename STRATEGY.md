@@ -264,13 +264,16 @@ chooses ITOPOD immediately when:
 - a required END item can only come from ITOPOD.
 
 A newly fightable zone's required core set gets special treatment because its MAXX reward and its
-stronger equipment can improve every later Adventure choice. Before that lease begins, the bot may
-finish the ITOPOD decade that the permanent record is already partway through. If that lands on floor
-90, 190, 290, and so on, it also takes the immediately following 100-floor super-boundary because
-that award is ten times the surrounding decade award. It then gives the newest zone Adventure time
-until every required core piece is MAXXED. Routine later ITOPOD decades—even one that would buy the
-next perk—cannot keep starving the set. A backed-off ITOPOD push yields immediately. Optional novelty
-drops do not extend this lease; they still need their own measured value proof.
+stronger equipment can improve every later Adventure choice. Being partway through an ITOPOD decade
+is not enough reason to keep climbing: that progress is permanent, so leaving does not throw it away.
+The bot estimates the remaining kills and time to the next award every second. It may finish the
+current partial decade—or an immediately following 100-floor super-boundary—only when that estimate,
+plus a 25% uncertainty margin and two seconds for final dispatch, fits before the selected rebirth.
+If the rebirth horizon is unknown, the estimate no longer fits, or the empirical push has backed off,
+the newest core set takes Adventure immediately. This prevents a slow or merely survivable ITOPOD
+floor from consuming an entire rebirth. Routine later decades—even one that would buy the next
+perk—cannot keep starving the set. Optional novelty drops do not extend this lease; they still need
+their own measured value proof.
 
 At High Security Base, the required Magitech set is IDs 68 through 74. Its installed completion
 reward is 500 EXP, +3 Magic Power, +30,000 Magic Cap, +3 Magic Per Bar, one Magic Bar Bar, and the two
@@ -420,9 +423,10 @@ Adventure routing first checks for hard obligations:
 5. the best-valued choice among progression push, boss-only gear sniping, full-zone collection,
    backfill, and ITOPOD.
 
-Inside step 5, a newest fightable incomplete core set uses the bounded lease above: finish an
-already-partial ITOPOD decade and an immediately next 100-floor super-boundary, then MAXX the required
-set. The next due Titan still interrupts the lease because its clock and reward are separate events.
+Inside step 5, a newest fightable incomplete core set uses the bounded lease above: finish a nearby
+ITOPOD award only when its guarded ETA fits before rebirth, then MAXX the required set. Partial record
+progress is saved for a stronger run when it does not fit. The next due Titan still interrupts the
+lease because its clock and reward are separate events.
 
 The collection planner tracks permanent Item List debt, but collection debt is not automatically a
 farming obligation. An unfinished core set, an unclaimed useful set reward, ordinary-enemy boosts

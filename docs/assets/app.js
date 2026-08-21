@@ -166,7 +166,8 @@ exposes no mutation endpoint.
 
   function itopodPresentation(s) {
     const mode = text(s.itopodMode, "locked").toLowerCase();
-    const climbing = mode.includes("climb");
+    const selectedItopod = number(s.adventureTargetZone, -2) === 1000;
+    const climbing = selectedItopod && mode.includes("climb");
     const target = Math.max(number(s.itopodRangeEnd), number(s.itopodNextAwardFloor));
     const current = optionalNumber(s.itopodCurrentFloor);
     const record = optionalNumber(s.itopodHighestFloor);
@@ -188,10 +189,15 @@ exposes no mutation endpoint.
     const currentHp = optionalNumber(s.adventureHP);
     const maxHp = optionalNumber(s.adventureMaxHP);
     const recoveryEta = optionalNumber(s.adventureRecoveryEtaSeconds);
+    const awardEta = optionalNumber(s.itopodNextAwardEtaSeconds);
+    const completionHorizon = optionalNumber(s.itopodFrontlineCompletionHorizonSeconds);
+    const routeReason = text(s.adventureRouteReason, "");
 
     let route;
     if (recovering) {
       route = "Healing to full HP before the ITOPOD retry";
+    } else if (!selectedItopod && text(s.adventureTargetName, "")) {
+      route = `Paused for ${text(s.adventureTargetName)}`;
     } else if (climbing) {
       route = target > 0 ? `Climbing to record ${target}` : "Climbing for the next PP record";
       if (liveOutcomesOwnLimit) route += " · live fights decide the limit";
@@ -213,6 +219,10 @@ exposes no mutation endpoint.
     if (noProgressSeconds !== null && noProgressSeconds > 0) {
       evidence += ` · ${compactDecimal(noProgressSeconds, 0)}s without lower enemy HP counts as a failure`;
     }
+    if (awardEta !== null && awardEta > 0 && completionHorizon !== null
+        && completionHorizon >= 0) {
+      evidence += ` · next award about ${duration(awardEta, true)} versus ${duration(completionHorizon, true)} left before rebirth`;
+    }
     if (!climbing && blockedFloor !== null && blockedFloor >= 0 && retryFraction !== null && retryFraction > 0) {
       evidence += ` · retry after ${compactDecimal(retryFraction * 100, 1)}% Adventure capability growth`;
     }
@@ -230,6 +240,8 @@ exposes no mutation endpoint.
       : fullHpEntry ? "Full Adventure HP required before every entry from Safe Zone" : "Retry-health policy unavailable";
     const decision = recovering
       ? `Waiting in Safe Zone for full Adventure HP before retrying record ${target}.`
+      : !selectedItopod && routeReason
+      ? sentence(routeReason)
       : climbing
       ? `Pushing toward record ${target} for first-clear PP. Live fights—not formulas—decide when to pause.`
       : blockedFloor !== null && blockedFloor >= 0
@@ -486,14 +498,14 @@ exposes no mutation endpoint.
       priorities.push({ score: 95, tone: "purchase", title: `Start Gold income for ${text(s.goldBootstrapSink, "the next useful purchase")}`, detail: `${text(s.goldBootstrapReason, "Fight an ordinary enemy to restart the Gold loop")} · ${optionalDuration(s.goldBootstrapEtaSeconds)}.` });
     }
 
-    const itopodMode = text(s.itopodMode, "").toLowerCase();
-    if (!goldBootstrap && (number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm"))) {
+    const itopodActive = number(s.adventureTargetZone, -1) >= 1000;
+    if (!goldBootstrap && itopodActive) {
       const itopod = itopodPresentation(s);
       priorities.push({ score: itopod.climbing ? 94 : 80, tone: "itopod", title: itopod.recovering ? "Heal before retrying ITOPOD" : itopod.climbing ? `Claim ITOPOD floor ${itopod.target}` : "Farm ITOPOD efficiently", detail: `${itopod.decision} Current floor ${itopod.current === null ? "unavailable" : itopod.current}.` });
     }
 
     if (s.majorUnlockActive) priorities.push({ score: 91, tone: "route", title: `Unlock ${text(s.majorUnlockName, "the next system")}`, detail: text(s.majorUnlockReason || s.adventureControlReason, "Push the Adventure gate that opens the next mechanic.") });
-    else if (!goldBootstrap && !(number(s.adventureTargetZone, -1) >= 1000 || itopodMode.includes("climb") || itopodMode.includes("farm"))) priorities.push({ score: 78, tone: "route", title: text(s.loadoutObjective || s.adventureTargetName, "Keep progressing Adventure"), detail: text(s.adventureControlReason || s.loadoutDecision, "Use the strongest useful loadout for the selected route.") });
+    else if (!goldBootstrap && !itopodActive) priorities.push({ score: 78, tone: "route", title: text(s.loadoutObjective || s.adventureTargetName, "Keep progressing Adventure"), detail: text(s.adventureControlReason || s.loadoutDecision, "Use the strongest useful loadout for the selected route.") });
 
     if (!observability.rebirth.noResetHold && observability.rebirth.resetEtaSeconds !== null) {
       priorities.push({ score: 72, tone: "rebirth", title: "Rebirth at the selected checkpoint", detail: `${optionalDuration(observability.rebirth.resetEtaSeconds)} remaining · ${text(observability.rebirth.reason, "value checked at the boundary")}.` });

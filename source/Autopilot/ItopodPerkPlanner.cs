@@ -10,8 +10,10 @@ asynchronous perk-231 item delivery.  It complements MechanicsItopod's installed
 without reading or changing a live Character.
 
 Mechanism: A climb plan uses the native-valid H-1 start and aims at the next ten-floor permanent-PP
-boundary.  A newest-zone core-set lease may first finish an already-partial decade and the immediately
-following 100-floor super-boundary, but routine later decades cannot starve that required set.
+boundary.  A newest-zone core-set lease may yield briefly to an already-partial decade or the
+immediately following 100-floor super-boundary only when the estimated award time, plus an explicit
+uncertainty margin, fits before the selected rebirth; routine or unfinishable pushes cannot starve
+that required set.
 Combat formulas remain useful diagnostics but never cap exploration; a session-local
 controller stops only after repeated confirmed deaths or no-enemy-HP-progress attempts on one fought
 floor, farms the best lower floor actually cleared during the session (falling back to the separate
@@ -1074,6 +1076,8 @@ namespace NGUInjector.Autopilot
     {
         internal const double AnyBoostProbability = 0.084;
         internal const double EachBoostFamilyProbability = 0.028;
+        internal const double FrontlineCompletionSafetyFraction = 0.25;
+        internal const double FrontlineCompletionDispatchSeconds = 2.0;
         internal const int Perk231Id = 231;
         internal const long Perk231Cost = 2500000000L;
         internal const int Perk231ItemId = 482;
@@ -1115,7 +1119,8 @@ namespace NGUInjector.Autopilot
             bool collectionOptionalOnly = false,
             bool collectionNeedsCadenceProbe = false,
             bool frontlineCoreSetIncomplete = false,
-            bool firstClearPushActive = true)
+            bool firstClearPushActive = true,
+            double frontlineCompletionHorizonSeconds = double.PositiveInfinity)
         {
             ValidateFloor(highestRecord, "highestRecord");
             ValidateFloor(provenFrontierFloor, "provenFrontierFloor");
@@ -1135,6 +1140,11 @@ namespace NGUInjector.Autopilot
                 || double.IsInfinity(ordinaryItopodPpPerSecond)
                 || ordinaryItopodPpPerSecond < 0.0)
                 throw new ArgumentOutOfRangeException("ordinaryItopodPpPerSecond");
+            if (double.IsNaN(frontlineCompletionHorizonSeconds)
+                || double.IsNegativeInfinity(frontlineCompletionHorizonSeconds)
+                || frontlineCompletionHorizonSeconds < 0.0
+                && frontlineCompletionHorizonSeconds != -1.0)
+                throw new ArgumentOutOfRangeException("frontlineCompletionHorizonSeconds");
 
             var awardFloor = NextReachableAwardFloor(highestRecord, provenFrontierFloor);
             long award = 0L;
@@ -1190,20 +1200,43 @@ namespace NGUInjector.Autopilot
             {
                 var finishesPartialDecade = highestRecord % 10 != 0;
                 var isImmediateSuperDecade = awardFloor > 0 && awardFloor % 100 == 0;
-                if (awardCanBePursued && (finishesPartialDecade || isImmediateSuperDecade))
+                var nearbyAward = awardFloor > 0
+                                  && (finishesPartialDecade || isImmediateSuperDecade);
+                var completionRequiredSeconds = seconds > 0.0 && !double.IsInfinity(seconds)
+                    ? seconds * (1.0 + FrontlineCompletionSafetyFraction)
+                      + FrontlineCompletionDispatchSeconds
+                    : double.PositiveInfinity;
+                var completionFits = nearbyAward && awardCanBePursued
+                                     && (double.IsPositiveInfinity(frontlineCompletionHorizonSeconds)
+                                         || frontlineCompletionHorizonSeconds >= 0.0
+                                         && completionRequiredSeconds
+                                         <= frontlineCompletionHorizonSeconds);
+                if (completionFits)
                     return Route(AdventureRouteChoice.ItopodFrontier,
                         finishesPartialDecade
-                            ? "finish the already-partial ITOPOD decade before leasing Adventure to the newest incomplete core set"
-                            : "take the immediately next tenfold ITOPOD super-decade award before leasing Adventure to the newest incomplete core set",
+                            ? "the already-partial ITOPOD decade fits inside a finite completion lease before rebirth; finish it before developing the newest core set"
+                            : "the immediately next tenfold ITOPOD super-decade fits inside a finite completion lease before rebirth; take it before developing the newest core set",
                         awardFloor, award, kills, seconds, completesGate,
                         itopodRate, collectionRate);
                 var frontlineChoice = progressionPush ? AdventureRouteChoice.ProgressionPush
                     : collectionBossOnly ? AdventureRouteChoice.BossSnipe
                     : AdventureRouteChoice.CollectionFarm;
+                string frontlineReason;
+                if (!firstClearPushActive)
+                    frontlineReason = "the ITOPOD push is backed off; develop the newest fightable core set until every required piece is MAXXED";
+                else if (nearbyAward && frontlineCompletionHorizonSeconds < 0.0)
+                    frontlineReason = "the next ITOPOD award has no finite rebirth completion lease; develop the newest fightable core set instead";
+                else if (nearbyAward && !completionFits)
+                    frontlineReason = "the next ITOPOD award needs about "
+                                      + Math.Ceiling(seconds).ToString("0")
+                                      + "s (" + Math.Ceiling(completionRequiredSeconds).ToString("0")
+                                      + "s with safety), but only "
+                                      + Math.Ceiling(frontlineCompletionHorizonSeconds).ToString("0")
+                                      + "s remain before rebirth; develop the newest fightable core set instead";
+                else
+                    frontlineReason = "the newest fightable core set owns Adventure until every required piece is MAXXED; routine later ITOPOD decades wait";
                 return Route(frontlineChoice,
-                    firstClearPushActive
-                        ? "the newest fightable core set owns Adventure until every required piece is MAXXED; routine later ITOPOD decades wait"
-                        : "the ITOPOD push is backed off; develop the newest fightable core set until every required piece is MAXXED",
+                    frontlineReason,
                     awardFloor, award, kills, seconds, false, itopodRate, collectionRate);
             }
             if (completesGate)

@@ -30,9 +30,10 @@ separately. Open pushes price and schedule the next record divisible by ten; rep
 floor deaths pause that push on a lower session-proven clear when one exists. Continuous
 ITOPOD combat never leaves merely to pre-cast a recycled buff, because native re-entry resets the
 ten-kill floor counter; floor-boundary healing happens in place without erasing partial progress.
-The newest fightable incomplete core set receives a bounded Adventure lease after an already-partial
-ITOPOD decade and an immediately following 100-floor super-boundary are collected; optional novelty
-drops never extend that lease.
+The newest fightable incomplete core set yields to an already-partial ITOPOD decade or immediately
+following 100-floor super-boundary only when the fresh award ETA plus its uncertainty margin fits
+before the selected rebirth. This finite lease is recomputed each second; optional novelty drops
+never extend the core-set lease.
 After a rebirth, ordinary Adventure briefly preempts ITOPOD only when a source-proved Augment or
 Blood purchase can finish inside the run but has no Gold. Before the native Time Machine record
 gate this farms only the required liquid Gold; afterward one enemy drop seeds positive passive GPS.
@@ -61,6 +62,8 @@ namespace NGUInjector.Autopilot
         private MajorUnlockTarget _majorUnlockTarget;
         private GoldBootstrapDecision _goldBootstrapDecision = GoldBootstrapDecision.Hold(
             "Gold bootstrap has not been evaluated");
+        private AdventureRoutePlan _lastAdventureRoutePlan;
+        private double _lastItopodCompletionHorizonSeconds = -1.0;
         private int _loggedAdventureZone = int.MinValue;
         private int _loggedAdventureFightType = int.MinValue;
         private bool _loggedTitanAutoKill;
@@ -1024,6 +1027,8 @@ namespace NGUInjector.Autopilot
         {
             if (!CanExecuteSafe || !Config.ManageAdventure)
                 return false;
+            _lastAdventureRoutePlan = null;
+            _lastItopodCompletionHorizonSeconds = -1.0;
             // A major-unlock target owns Adventure only while its native unlock
             // condition remains unmet. Clear its cached route before reevaluating
             // so consuming a key cannot leave a stale Sky target for another cycle.
@@ -1242,6 +1247,12 @@ namespace NGUInjector.Autopilot
                 var valuedItopodReach = route.Climbing
                     ? Math.Max(route.FrontierFloor, Math.Max(0, route.End - 1))
                     : route.FrontierFloor;
+                var frontlineCompletionHorizon = Plan == null
+                                                  || Plan.RebirthExecutionHold
+                                                  || Plan.RebirthSeconds < 0
+                    ? -1.0
+                    : Math.Max(0.0, Plan.RebirthSeconds
+                        - Main.Character.rebirthTime.totalseconds);
                 routePlan = ItopodPerkPlanner.ChooseAdventureRoute(
                     Math.Max(1, Main.Character.adventure.highestItopodLevel),
                     valuedItopodReach,
@@ -1268,7 +1279,9 @@ namespace NGUInjector.Autopilot
                     _collectionTarget != null
                     && _collectionTarget.CoreSetIncomplete
                     && !_collectionTarget.IsBackfill,
-                    route.Climbing);
+                    route.Climbing, frontlineCompletionHorizon);
+                _lastAdventureRoutePlan = routePlan;
+                _lastItopodCompletionHorizonSeconds = frontlineCompletionHorizon;
                 var chooseItopod = routePlan.Choice == AdventureRouteChoice.ItopodFrontier
                                    || routePlan.Choice == AdventureRouteChoice.ItopodFarm;
                 if (!chooseItopod)
@@ -1886,6 +1899,7 @@ namespace NGUInjector.Autopilot
             var adventureControlReason = _goldBootstrapDecision != null
                                          && _goldBootstrapDecision.ShouldRoute
                 ? _goldBootstrapDecision.Reason
+                : _lastAdventureRoutePlan != null ? _lastAdventureRoutePlan.Reason
                 : adventureZone != -1 ? "engaged selected Adventure target"
                 : !string.IsNullOrEmpty(_adventureRecoveryReason) ? _adventureRecoveryReason
                 : adventureTargetZone >= 0 ? "transiting from Safe Zone to " + adventureTargetName
@@ -2060,6 +2074,8 @@ namespace NGUInjector.Autopilot
                        + "  \"adventureTargetName\": \"" + escapedAdventureTargetName + "\",\n"
                        + "  \"adventureFightType\": " + adventureFightType + ",\n"
                        + "  \"adventureBossOnlyForSet\": " + adventureBossOnlyForSet.ToString().ToLowerInvariant() + ",\n"
+                       + "  \"adventureRouteChoice\": \"" + EscapeJson(_lastAdventureRoutePlan == null ? string.Empty : _lastAdventureRoutePlan.Choice.ToString()) + "\",\n"
+                       + "  \"adventureRouteReason\": \"" + EscapeJson(_lastAdventureRoutePlan == null ? string.Empty : _lastAdventureRoutePlan.Reason) + "\",\n"
                        + "  \"itopodMode\": \"" + EscapeJson(itopodRoute.Mode) + "\",\n"
                        + "  \"itopodRouteConfirmed\": " + itopodRoute.Confirmed.ToString().ToLowerInvariant() + ",\n"
                        + "  \"itopodRouteReason\": \"" + EscapeJson(itopodRoute.Reason) + "\",\n"
@@ -2086,6 +2102,9 @@ namespace NGUInjector.Autopilot
                        + "  \"itopodRangeEnd\": " + c.adventure.itopodEnd + ",\n"
                        + "  \"itopodFarmFloor\": " + itopodRoute.FarmFloor + ",\n"
                        + "  \"itopodKillsOnFloor\": " + c.adventureController.itopodKillCount + ",\n"
+                       + "  \"itopodNextAwardFloor\": " + (_lastAdventureRoutePlan == null ? 0 : _lastAdventureRoutePlan.AwardFloor) + ",\n"
+                       + "  \"itopodNextAwardEtaSeconds\": " + (_lastAdventureRoutePlan == null || double.IsInfinity(_lastAdventureRoutePlan.SecondsToAward) ? -1.0 : _lastAdventureRoutePlan.SecondsToAward).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
+                       + "  \"itopodFrontlineCompletionHorizonSeconds\": " + _lastItopodCompletionHorizonSeconds.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ",\n"
                        + "  \"itopodPerkPoints\": " + c.adventure.itopod.perkPoints + ",\n"
                        + "  \"itopodPointProgress\": " + c.adventure.itopod.pointProgress + ",\n"
                        + "  \"itopodPointThreshold\": " + itopodPointThreshold + ",\n"

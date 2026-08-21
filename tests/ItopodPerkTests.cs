@@ -9,8 +9,9 @@ table, clue-four naked session, online/offline estimator split, floor-1600 bound
 typed perk/ID/Fibonacci behavior, asynchronous perk-231 slot lifetime, MOVE69 idle charging/strict
 cooldown/ETA/capacity/post-69 retry, timer cancellation/restart telemetry, and exactly one verified
 task-1 mutation atom. It proves that a newest-zone core set yields only to an already-partial decade
-and the immediately following super-decade, then owns Adventure through completion or an empirical
-ITOPOD backoff. It also guards the live policy against spending post-sequence PP through
+or immediately following super-decade whose conservative completion lease fits before rebirth, then
+owns Adventure when that ETA does not fit or the empirical ITOPOD breaker opens. It also guards the
+live policy against spending post-sequence PP through
 name/effect heuristics. It loads no game assembly, Unity UI, controller, save, or runtime process.
 */
 using System;
@@ -224,7 +225,8 @@ internal static class ItopodPerkTests
 
         var finishPartialDecade = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
             0L, 0L, 1L, .10, true, false, false,
-            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false, true, true);
+            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false,
+            true, true, 1000.0);
         Assert(finishPartialDecade.Choice == AdventureRouteChoice.ItopodFrontier
                && finishPartialDecade.AwardFloor == 90
                && finishPartialDecade.Reason.Contains("already-partial"),
@@ -232,7 +234,8 @@ internal static class ItopodPerkTests
 
         var takeSuperDecade = ItopodPerkPlanner.ChooseAdventureRoute(90, 99, 1.0,
             0L, 0L, 999L, .10, true, false, false,
-            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false, true, true);
+            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false,
+            true, true, 1000.0);
         Assert(takeSuperDecade.Choice == AdventureRouteChoice.ItopodFrontier
                && takeSuperDecade.AwardFloor == 100
                && takeSuperDecade.FirstClearPerkPoints == 10L,
@@ -252,6 +255,23 @@ internal static class ItopodPerkTests
         Assert(backedOffCoreLease.Choice == AdventureRouteChoice.ProgressionPush
                && backedOffCoreLease.Reason.Contains("backed off"),
             "an empirical ITOPOD backoff immediately yields the Adventure lease to frontline core development");
+
+        var partialCannotFinish = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 60.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 30506.0, true, false, 81, 3, 81, 90, 0.0, false, false,
+            true, true, 1049.0);
+        Assert(partialCannotFinish.Choice == AdventureRouteChoice.ProgressionPush
+               && partialCannotFinish.SecondsToAward > 1049.0
+               && partialCannotFinish.Reason.Contains("only 1049s remain before rebirth"),
+            "a partial record whose live remaining kills cannot fit before rebirth yields immediately to the frontline set");
+
+        var unknownCompletionLease = ItopodPerkPlanner.ChooseAdventureRoute(82, 89, 1.0,
+            0L, 0L, 1L, .10, true, false, false,
+            -1.0, 30506.0, true, false, -1, 0, -1, -1, 0.0, false, false,
+            true, true, -1.0);
+        Assert(unknownCompletionLease.Choice == AdventureRouteChoice.ProgressionPush
+               && unknownCompletionLease.Reason.Contains("no finite rebirth completion lease"),
+            "an unknown rebirth horizon cannot authorize delaying the newest core set");
 
         var optionalUnknown = ItopodPerkPlanner.ChooseAdventureRoute(4, 4, 2.0,
             0L, 0L, 1L, .10, true, false, false,
