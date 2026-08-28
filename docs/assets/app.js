@@ -1079,6 +1079,47 @@ exposes no mutation endpoint.
   if (!document.documentElement.dataset.theme) {
     document.documentElement.dataset.theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
+
+  const sectionIndex = document.querySelector(".section-index");
+  const sectionLinks = sectionIndex ? [...sectionIndex.querySelectorAll("a[href^='#']")] : [];
+  const indexedSections = sectionLinks.map((link) => document.querySelector(link.hash)).filter(Boolean);
+  let sectionFrame = 0;
+  let activeSectionId = "";
+  function updateCurrentSection() {
+    if (!sectionIndex) return;
+    const marker = window.scrollY + sectionIndex.offsetHeight + 56;
+    const current = indexedSections.reduce(
+      (match, section) => section.offsetTop <= marker ? section : match,
+      indexedSections[0] || null,
+    );
+    sectionLinks.forEach((link) => {
+      if (current && link.hash === `#${current.id}`) link.setAttribute("aria-current", "location");
+      else link.removeAttribute("aria-current");
+    });
+    if (current && current.id !== activeSectionId) {
+      activeSectionId = current.id;
+      const activeLink = sectionLinks.find((link) => link.hash === `#${current.id}`);
+      if (activeLink && sectionIndex.scrollWidth > sectionIndex.clientWidth) {
+        sectionIndex.scrollTo({
+          left: activeLink.offsetLeft - (sectionIndex.clientWidth - activeLink.offsetWidth) / 2,
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        });
+      }
+    }
+  }
+  window.addEventListener("scroll", () => {
+    if (sectionFrame) return;
+    sectionFrame = window.requestAnimationFrame(() => {
+      updateCurrentSection();
+      sectionFrame = 0;
+    });
+  }, { passive: true });
+  sectionLinks.forEach((link) => link.addEventListener("click", () => {
+    sectionLinks.forEach((item) => item.removeAttribute("aria-current"));
+    link.setAttribute("aria-current", "location");
+  }));
+  updateCurrentSection();
+
   document.querySelectorAll("[data-filter-target]").forEach((input) => input.addEventListener("input", refreshTableFilters));
   poll();
   window.setInterval(poll, pollMs);
