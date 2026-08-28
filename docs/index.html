@@ -5,7 +5,7 @@ This is the public and locally served NGU Idle dashboard shell. It leads with th
 and Boss record, three ranked priorities followed immediately by the current route, complete
 resource allocation, active growth systems, an Adventure journal, compact inventory, and equipped
 gear. The large inventory and permanent-system ledgers are closed by default so decisions stay
-readable at a glance. The shared JWKNT theme remains the visual foundation; this page has no
+readable at a glance. The shared jehlp.net theme remains the visual foundation; this page has no
 mutation controls.
 -->
 <!doctype html>
@@ -18,11 +18,14 @@ mutation controls.
     <meta property="og:title" content="NGU Idle Dashboard">
     <meta property="og:description" content="Inspect the current route, rebirth safety, resources, stats, gear, inventory, permanent systems, unlocks, and key events.">
     <meta property="og:url" content="https://jehlp.net/ngu-idle-dashboard/">
+    <meta property="og:site_name" content="jehlp.net">
     <meta name="twitter:card" content="summary">
     <meta name="theme-color" content="#ffffff">
-    <title>NGU Idle Dashboard</title>
-    <script src="https://jehlp.net/site-theme/v1/theme.js"></script>
-    <link rel="stylesheet" href="https://jehlp.net/site-theme/v1/base.css">
+    <link rel="canonical" href="https://jehlp.net/ngu-idle-dashboard/">
+    <title>NGU Idle Dashboard · jehlp.net</title>
+    <link rel="icon" href="https://jehlp.net/site-theme/v2/favicons/ngu-idle-dashboard.png" type="image/png">
+    <script src="https://jehlp.net/site-theme/v2/theme.js"></script>
+    <link rel="stylesheet" href="https://jehlp.net/site-theme/v2/base.css">
     <link rel="stylesheet" href="assets/styles.css?v=20260818.6">
     <script src="assets/app.js?v=20260821.1" defer></script>
   </head>
@@ -34,7 +37,7 @@ mutation controls.
       <nav aria-label="Site links">
         <a href="https://jehlp.net/">Projects</a>
         <a href="https://github.com/JWKNT/ngu-idle-dashboard">Source</a>
-        <button class="theme-toggle" type="button" data-theme-toggle aria-label="Use dark theme">◐</button>
+        <button class="theme-toggle" type="button" data-theme-toggle aria-label="Use dark theme" aria-pressed="false">◐</button>
       </nav>
     </header>
 
@@ -53,7 +56,7 @@ mutation controls.
       </dl>
       <div id="stale-banner" class="notice" role="status" aria-live="polite" hidden></div>
       <div id="action-error-banner" class="notice notice-error" role="alert" aria-live="assertive" hidden></div>
-      <nav class="section-index" aria-label="Dashboard sections"><a href="#priorities">Priorities</a><a href="#now">Now</a><a href="#resources">Resources</a><a href="#growth">Growth</a><a href="#activity">Adventure log</a><a href="#inventory">Inventory</a><a href="#alerts">Problems</a><a href="#combat">Combat</a><a href="#character">Character</a><a href="#permanent">Permanent</a><a href="#unlocks">Unlocks</a><a href="#events">Events</a></nav>
+      <nav class="section-index" aria-label="Dashboard sections"><a href="#priorities">Priorities</a><a href="#now">Current action</a><a href="#resources">Allocation</a><a href="#growth">Growth</a><a href="#activity">Adventure</a><a href="#inventory">Inventory</a><a href="#permanent">Permanent</a><a href="#alerts">Diagnostics</a></nav>
 
       <section id="priorities" class="section-block priority-section" aria-labelledby="priorities-heading">
         <div class="section-heading"><div><p class="section-kicker">Right now</p><h2 id="priorities-heading">Top three priorities</h2></div><p id="priority-summary" class="section-meta">Ranked from the current progression gates.</p></div>
@@ -61,7 +64,7 @@ mutation controls.
       </section>
 
       <section id="now" class="section-block now-section" aria-labelledby="route-heading">
-        <div class="section-heading"><div><p class="section-kicker">Now</p><h2 id="route-heading">What the bot is doing</h2></div><p id="run-stage" class="section-meta">—</p></div>
+        <div class="section-heading"><div><h2 id="route-heading">Current action</h2></div><p id="run-stage" class="section-meta">—</p></div>
         <div class="route-grid">
           <div class="route-primary"><h3 id="route-title">Waiting for a synchronized transaction</h3><p id="route-reason">The dashboard reports confirmed game state, not intended inputs.</p></div>
           <dl class="compact-facts"><div><dt>Run mode</dt><dd id="fact-mode">—</dd></div><div><dt>Run age</dt><dd id="fact-run-age">—</dd></div><div><dt>Difficulty</dt><dd id="fact-difficulty">—</dd></div><div><dt>Selected boss</dt><dd id="fact-selected-boss">—</dd></div></dl>
@@ -79,7 +82,7 @@ mutation controls.
       </section>
 
       <section id="resources" class="section-block" aria-labelledby="resources-heading">
-        <div class="section-heading"><div><p class="section-kicker">Resources</p><h2 id="resources-heading">Where every resource is working</h2></div><p id="resource-summary" class="section-meta">—</p></div>
+        <div class="section-heading"><div><h2 id="resources-heading">Allocation</h2></div><p id="resource-summary" class="section-meta">—</p></div>
         <div class="allocation-grid">
           <article class="allocation-row energy-allocation"><div class="allocation-copy"><h3>Energy</h3><p id="energy-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="energy-value">—</strong><span id="energy-rate">—</span></div><div class="meter" aria-hidden="true"><span id="energy-meter"></span></div><ul id="energy-allocation-list" class="allocation-flow"><li><span>Waiting for allocation map</span><strong>—</strong></li></ul><span id="energy-bt" hidden></span><span id="energy-other" hidden></span><span id="energy-idle" hidden></span></article>
           <article class="allocation-row magic-allocation"><div class="allocation-copy"><h3>Magic</h3><p id="magic-decision">Waiting for a verified allocation sweep.</p></div><div class="allocation-value"><strong id="magic-value">—</strong><span id="magic-rate">—</span></div><div class="meter" aria-hidden="true"><span id="magic-meter"></span></div><ul id="magic-allocation-list" class="allocation-flow"><li><span>Waiting for allocation map</span><strong>—</strong></li></ul><span id="magic-blood" hidden></span><span id="magic-tm" hidden></span><span id="magic-idle" hidden></span></article>
@@ -96,7 +99,7 @@ mutation controls.
       </section>
 
       <section id="growth" class="section-block" aria-labelledby="growth-heading">
-        <div class="section-heading"><div><p class="section-kicker">Leveling now</p><h2 id="growth-heading">What is getting stronger</h2></div><p id="growth-summary" class="section-meta">Reset-local systems are shown separately from permanent progress.</p></div>
+        <div class="section-heading"><div><h2 id="growth-heading">Growth</h2></div><p id="growth-summary" class="section-meta">Reset-local systems are shown separately from permanent progress.</p></div>
         <div class="growth-grid">
           <article id="growth-augment" data-state="held"><div><span>Augments</span><strong id="growth-augment-value">—</strong></div><p id="growth-augment-detail">Waiting for Augment telemetry.</p></article>
           <article id="growth-wandoos" data-state="held"><div><span>Wandoos</span><strong id="growth-wandoos-value">—</strong></div><p id="growth-wandoos-detail">Waiting for Wandoos telemetry.</p></article>
@@ -107,7 +110,7 @@ mutation controls.
       </section>
 
       <section id="activity" class="section-block" aria-labelledby="activity-heading">
-        <div class="section-heading"><div><p class="section-kicker">Adventure</p><h2 id="activity-heading">Recent fights, travel, and loot</h2></div><p id="activity-summary" class="section-meta">Useful outcomes only; ordinary attack-button spam is hidden.</p></div>
+        <div class="section-heading"><div><h2 id="activity-heading">Adventure log</h2></div><p id="activity-summary" class="section-meta">Useful outcomes only; ordinary attack-button spam is hidden.</p></div>
         <div class="activity-grid">
           <article><h3>Adventure journal</h3><ol id="adventure-log-list" class="adventure-log"><li data-tone="route"><span>—</span><p>Waiting for the current session.</p></li></ol></article>
           <article><div class="card-heading"><h3>Inventory at a glance</h3><strong id="inventory-glance-summary">—</strong></div><p id="inventory-glance-policy" class="section-note">Waiting for the boost and collection policy.</p><ul id="inventory-glance-list" class="inventory-glance"><li><span>Waiting for inventory</span><strong>—</strong></li></ul></article>
@@ -139,7 +142,7 @@ mutation controls.
       </section>
 
       <section id="inventory" class="section-block" aria-labelledby="inventory-heading">
-        <div class="section-heading"><div><p class="section-kicker">Inventory</p><h2 id="inventory-heading">Physical items and Item List</h2></div><p id="inventory-space" class="section-meta">—</p></div>
+        <div class="section-heading"><div><h2 id="inventory-heading">Inventory</h2></div><p id="inventory-space" class="section-meta">—</p></div>
         <div class="inventory-policy"><dl class="data-list"><div><dt>Pressure</dt><dd id="inventory-pressure">—</dd></div><div><dt>Boost target</dt><dd id="boost-target">—</dd></div><div><dt>Trash policy</dt><dd id="trash-policy">—</dd></div></dl></div>
         <details><summary>Inventory slots <span id="inventory-summary">—</span></summary><label class="table-search">Filter inventory <input type="search" data-filter-target="inventory-body" placeholder="name, part, special"></label><div class="table-scroll"><table><thead><tr><th>Slot</th><th>Item</th><th>Part</th><th>Level</th><th>Attack</th><th>Defense</th><th>Specials</th><th>State</th></tr></thead><tbody id="inventory-body"><tr><td colspan="8">Waiting for inventory telemetry.</td></tr></tbody></table></div></details>
         <div class="two-column detail-pair">
